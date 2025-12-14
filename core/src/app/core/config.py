@@ -67,6 +67,44 @@ class PostgresSettings(DatabaseSettings):
         return f"{credentials}@{location}"
 
 
+class SnowflakeSettings(BaseSettings):
+    """Snowflake connection settings for AI SQL and data analysis."""
+
+    SNOWFLAKE_ACCOUNT: str = "WKUKTVG-CX42955"
+    SNOWFLAKE_USER: str = "andy"
+    SNOWFLAKE_PASSWORD: SecretStr = SecretStr("MyJOBPass123!!!")
+    SNOWFLAKE_WAREHOUSE: str = "AI_SQL_COMP"
+    SNOWFLAKE_DATABASE: str = "AI_SQL_COMP"
+    SNOWFLAKE_SCHEMA: str = "PUBLIC"
+    SNOWFLAKE_ROLE: str = "ACCOUNTADMIN"
+
+    # Optional: For Snowflake SQLAlchemy integration
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def SNOWFLAKE_CONNECTION_STRING(self) -> str:
+        """Generate Snowflake connection string for SQLAlchemy."""
+        password = self.SNOWFLAKE_PASSWORD.get_secret_value()
+        return (
+            f"snowflake://{self.SNOWFLAKE_USER}:{password}@"
+            f"{self.SNOWFLAKE_ACCOUNT}/{self.SNOWFLAKE_DATABASE}/{self.SNOWFLAKE_SCHEMA}"
+            f"?warehouse={self.SNOWFLAKE_WAREHOUSE}&role={self.SNOWFLAKE_ROLE}"
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def SNOWFLAKE_CONNECTOR_PARAMS(self) -> dict:
+        """Get Snowflake connector parameters as dict."""
+        return {
+            "account": self.SNOWFLAKE_ACCOUNT,
+            "user": self.SNOWFLAKE_USER,
+            "password": self.SNOWFLAKE_PASSWORD.get_secret_value(),
+            "warehouse": self.SNOWFLAKE_WAREHOUSE,
+            "database": self.SNOWFLAKE_DATABASE,
+            "schema": self.SNOWFLAKE_SCHEMA,
+            "role": self.SNOWFLAKE_ROLE,
+        }
+
+
 class FirstUserSettings(BaseSettings):
     ADMIN_NAME: str = "admin"
     ADMIN_EMAIL: str = "admin@admin.com"
@@ -153,6 +191,7 @@ class Settings(
     AppSettings,
     SQLiteSettings,
     PostgresSettings,
+    SnowflakeSettings,
     CryptSettings,
     FirstUserSettings,
     TestSettings,

@@ -1,36 +1,44 @@
 [project]
-name = "fastapi-boilerplate"
+name = "scarat-snowflake-ai"
 version = "0.1.0"
-description = "Batteries-included FastAPI starter with production-ready defaults, optional modules, and clear docs."
-authors = [{ name = "Benav Labs", email = "contact@benav.io" }]
+description = "Snowflake AI-powered data analysis and visualization platform with automated EDA and collaborative dashboards."
+authors = [{ name = "SCARAT Team", email = "team@scarat.io" }]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.11, <4"
+requires-python = ">=3.12, <4"
 dependencies = [
+    # Core FastAPI
     "python-dotenv>=1.0.0",
     "pydantic[email]>=2.6.1",
     "fastapi>=0.109.1",
     "uvicorn>=0.27.0",
     "uvloop>=0.19.0",
     "httptools>=0.6.1",
-    "uuid>=1.30",
-    "uuid6>=2024.1.12",
-    "alembic>=1.13.1",
-    "asyncpg>=0.29.0",
-    "SQLAlchemy-Utils>=0.41.1",
-    "python-jose>=3.3.0",
-    "SQLAlchemy>=2.0.25",
     "python-multipart>=0.0.9",
-    "greenlet>=2.0.2",
     "httpx>=0.26.0",
     "pydantic-settings>=2.0.3",
+
+    # Snowflake & Data Processing
+    "snowflake-connector-python>=3.6.0",
+    "snowflake-sqlalchemy>=1.5.0",
+    "pandas>=2.1.0",
+    "numpy>=1.26.0",
+    "openpyxl>=3.1.0",
+
+    # Background Tasks & Caching
     "redis>=5.0.1",
     "arq>=0.25.0",
-    "bcrypt>=4.1.1",
-    "psycopg2-binary>=2.9.9",
-    "fastcrud>=0.19.2",
-    "crudadmin>=0.4.2",
+
+    # Database (for metadata storage)
+    "alembic>=1.13.1",
+    "asyncpg>=0.29.0",
+    "SQLAlchemy>=2.0.25",
+    "greenlet>=2.0.2",
+
+    # Production Server
     "gunicorn>=23.0.0",
+
+    # Code Quality
     "ruff>=0.11.13",
     "mypy>=1.16.0",
 ]
@@ -57,7 +65,7 @@ include = ["src/"]
 packages = ["src"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 120
 fix = true
 
@@ -110,7 +118,7 @@ dev = [
 ]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
