@@ -130,10 +130,10 @@ def test_service_methods():
     print("Testing AI SQL Service Methods")
     print("=" * 60)
 
-    from app.services.ai_sql_service import AISQLService
+    from app.services.modular_ai_sql_service import ModularAISQLService
 
     # Get all public methods
-    methods = [m for m in dir(AISQLService) if not m.startswith('_')]
+    methods = [m for m in dir(ModularAISQLService) if not m.startswith('_')]
 
     print(f"\nFound {len(methods)} public methods:")
 
@@ -147,10 +147,11 @@ def test_service_methods():
         'summarize',
         'semantic_join',
         'extract_structured_data',
-        'generate_column_description',
-        'classify_table_purpose',
-        'suggest_data_quality_checks',
-        'generate_chart_recommendation'
+        'create_select_query',
+        'execute_custom_query',
+        'multi_sentiment_analysis',
+        'classify_and_summarize',
+        'aggregate_with_sentiment',
     ]
 
     for method in expected_methods:

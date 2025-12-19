@@ -1,0 +1,92 @@
+[
+  {
+    "PRODUCT_ID": 1001,
+    "PRODUCT_NAME": "Ergonomic Office Chair",
+    "CATEGORY": "Furniture",
+    "PRICE": 299.99,
+    "QUANTITY": 15,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  },
+  {
+    "PRODUCT_ID": 1002,
+    "PRODUCT_NAME": "Standing Desk",
+    "CATEGORY": "Furniture",
+    "PRICE": 599.99,
+    "QUANTITY": 8,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  },
+  {
+    "PRODUCT_ID": 1003,
+    "PRODUCT_NAME": "Laptop Stand",
+    "CATEGORY": "Accessories",
+    "PRICE": 49.99,
+    "QUANTITY": 50,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  },
+  {
+    "PRODUCT_ID": 1004,
+    "PRODUCT_NAME": "Wireless Mouse",
+    "CATEGORY": "Electronics",
+    "PRICE": 29.99,
+    "QUANTITY": 100,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  },
+  {
+    "PRODUCT_ID": 1005,
+    "PRODUCT_NAME": "Mechanical Keyboard",
+    "CATEGORY": "Electronics",
+    "PRICE": 129.99,
+    "QUANTITY": 25,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  },
+  {
+    "PRODUCT_ID": 1006,
+    "PRODUCT_NAME": "Monitor Arm",
+    "CATEGORY": "Accessories",
+    "PRICE": 89.99,
+    "QUANTITY": 30,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  },
+  {
+    "PRODUCT_ID": 1007,
+    "PRODUCT_NAME": "Desk Lamp",
+    "CATEGORY": "Lighting",
+    "PRICE": 45.0,
+    "QUANTITY": 40,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  },
+  {
+    "PRODUCT_ID": 1008,
+    "PRODUCT_NAME": "Cable Organizer",
+    "CATEGORY": "Accessories",
+    "PRICE": 15.99,
+    "QUANTITY": 75,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  },
+  {
+    "PRODUCT_ID": 1009,
+    "PRODUCT_NAME": "Footrest",
+    "CATEGORY": "Furniture",
+    "PRICE": 39.99,
+    "QUANTITY": 20,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  },
+  {
+    "PRODUCT_ID": 1010,
+    "PRODUCT_NAME": "Webcam HD",
+    "CATEGORY": "Electronics",
+    "PRICE": 79.99,
+    "QUANTITY": 35,
+    "IN_STOCK": true,
+    "UPLOADED_AT": "2025-12-14T06:02:18.988000"
+  }
+]

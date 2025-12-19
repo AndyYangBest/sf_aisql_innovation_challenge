@@ -23,7 +23,7 @@ from ...schemas.ai_sql import (
     SummarizeRequest,
     SummarizeResponse,
 )
-from ...services.ai_sql_service import AISQLService
+from ...services.modular_ai_sql_service import ModularAISQLService
 from ...services.snowflake_service import SnowflakeService
 
 router = APIRouter(prefix="/ai-sql", tags=["AI SQL"])
@@ -32,10 +32,10 @@ router = APIRouter(prefix="/ai-sql", tags=["AI SQL"])
 # For now, we'll initialize in each endpoint
 
 
-async def get_ai_sql_service() -> AISQLService:
+async def get_ai_sql_service() -> ModularAISQLService:
     """Get AI SQL service instance."""
     snowflake_service = SnowflakeService()
-    return AISQLService(snowflake_service)
+    return ModularAISQLService(snowflake_service)
 
 
 # ============================================================================
@@ -52,7 +52,7 @@ async def get_ai_sql_service() -> AISQLService:
 )
 async def ai_complete(
     request: AICompleteRequest,
-    service: AISQLService = Depends(get_ai_sql_service),
+    service: ModularAISQLService = Depends(get_ai_sql_service),
 ) -> AICompleteResponse:
     """Execute AI_COMPLETE for text generation."""
     try:
@@ -80,7 +80,7 @@ async def ai_complete(
 )
 async def ai_transcribe(
     request: AITranscribeRequest,
-    service: AISQLService = Depends(get_ai_sql_service),
+    service: ModularAISQLService = Depends(get_ai_sql_service),
 ) -> AITranscribeResponse:
     """Transcribe audio files."""
     try:
@@ -107,7 +107,7 @@ async def ai_transcribe(
 )
 async def ai_classify(
     request: AIClassifyRequest,
-    service: AISQLService = Depends(get_ai_sql_service),
+    service: ModularAISQLService = Depends(get_ai_sql_service),
 ) -> AIClassifyResponse:
     """Classify content using AI."""
     try:
@@ -136,7 +136,7 @@ async def ai_classify(
 )
 async def ai_filter(
     request: AIFilterRequest,
-    service: AISQLService = Depends(get_ai_sql_service),
+    service: ModularAISQLService = Depends(get_ai_sql_service),
 ) -> AIFilterResponse:
     """Filter data using AI."""
     try:
@@ -164,7 +164,7 @@ async def ai_filter(
 )
 async def ai_aggregate(
     request: AIAggregateRequest,
-    service: AISQLService = Depends(get_ai_sql_service),
+    service: ModularAISQLService = Depends(get_ai_sql_service),
 ) -> AIAggregateResponse:
     """Aggregate data using AI."""
     try:
@@ -193,7 +193,7 @@ async def ai_aggregate(
 )
 async def ai_sentiment(
     request: AISentimentRequest,
-    service: AISQLService = Depends(get_ai_sql_service),
+    service: ModularAISQLService = Depends(get_ai_sql_service),
 ) -> AISentimentResponse:
     """Analyze sentiment."""
     try:
@@ -220,7 +220,7 @@ async def ai_sentiment(
 )
 async def summarize(
     request: SummarizeRequest,
-    service: AISQLService = Depends(get_ai_sql_service),
+    service: ModularAISQLService = Depends(get_ai_sql_service),
 ) -> SummarizeResponse:
     """Summarize text."""
     try:
@@ -247,7 +247,7 @@ async def summarize(
 )
 async def semantic_join(
     request: SemanticJoinRequest,
-    service: AISQLService = Depends(get_ai_sql_service),
+    service: ModularAISQLService = Depends(get_ai_sql_service),
 ) -> SemanticJoinResponse:
     """Perform semantic JOIN."""
     try:
@@ -272,7 +272,7 @@ async def semantic_join(
 )
 async def extract_structured_data(
     request: ExtractStructuredDataRequest,
-    service: AISQLService = Depends(get_ai_sql_service),
+    service: ModularAISQLService = Depends(get_ai_sql_service),
 ) -> ExtractStructuredDataResponse:
     """Extract structured data from text."""
     try:

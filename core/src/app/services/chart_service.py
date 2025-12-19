@@ -6,9 +6,8 @@ from typing import Any
 class ChartService:
     """Service for generating chart candidates and configurations."""
 
-    def __init__(self, ai_service, eda_service):
-        """Initialize with AI and EDA services."""
-        self.ai_service = ai_service
+    def __init__(self, eda_service):
+        """Initialize with EDA service."""
         self.eda_service = eda_service
 
     def identify_dimension_columns(

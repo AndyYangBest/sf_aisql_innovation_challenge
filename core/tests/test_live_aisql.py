@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, '/Users/andyyang/synogize/Challenge/sf_aisql_innovation_challenge/core/src')
 
 from app.services.snowflake_service import SnowflakeService
-from app.services.ai_sql_service import AISQLService
+from app.services.modular_ai_sql_service import ModularAISQLService
 
 
 async def test_ai_complete():
@@ -18,7 +18,7 @@ async def test_ai_complete():
     print("=" * 60)
 
     sf = SnowflakeService()
-    ai_service = AISQLService(sf)
+    ai_service = ModularAISQLService(sf)
 
     try:
         result = await ai_service.ai_complete(
