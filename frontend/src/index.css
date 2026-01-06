@@ -1,0 +1,237 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* React Grid Layout styles */
+.chart-grid-container .react-grid-item {
+  transition: all 200ms ease;
+  transition-property: left, top, width, height;
+}
+
+.chart-grid-container .react-grid-item.cssTransforms {
+  transition-property: transform, width, height;
+}
+
+.chart-grid-container .react-grid-item.resizing {
+  z-index: 10;
+  will-change: width, height;
+}
+
+.chart-grid-container .react-grid-item.react-draggable-dragging {
+  z-index: 10;
+  will-change: transform;
+}
+
+.chart-grid-container .react-grid-item > .react-resizable-handle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+}
+
+.chart-grid-container .react-grid-item > .react-resizable-handle::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid hsl(var(--muted-foreground) / 0.4);
+  border-bottom: 2px solid hsl(var(--muted-foreground) / 0.4);
+  border-radius: 2px;
+}
+
+.chart-grid-container .react-grid-item:hover > .react-resizable-handle::after {
+  border-color: hsl(var(--primary) / 0.6);
+}
+
+.chart-grid-container .react-grid-placeholder {
+  background: hsl(var(--primary) / 0.1);
+  border: 2px dashed hsl(var(--primary) / 0.4);
+  border-radius: 8px;
+  transition-duration: 100ms;
+  z-index: 2;
+}
+
+.chart-grid-item {
+  height: 100%;
+}
+
+@layer base {
+  :root {
+    /* Snowflake-inspired dark theme */
+    --background: 220 16% 6%;
+    --foreground: 210 20% 96%;
+
+    --card: 220 16% 9%;
+    --card-foreground: 210 20% 96%;
+
+    --popover: 220 14% 11%;
+    --popover-foreground: 210 20% 96%;
+
+    --primary: 199 100% 50%;
+    --primary-foreground: 220 16% 4%;
+
+    --secondary: 220 14% 14%;
+    --secondary-foreground: 210 20% 92%;
+
+    --muted: 220 12% 12%;
+    --muted-foreground: 215 14% 48%;
+
+    --accent: 199 100% 50%;
+    --accent-foreground: 220 16% 4%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 20% 98%;
+
+    --border: 220 12% 17%;
+    --input: 220 14% 14%;
+    --ring: 199 100% 50%;
+
+    --radius: 0.625rem;
+
+    /* Status colors */
+    --success: 142 72% 45%;
+    --warning: 38 92% 55%;
+    --info: 199 89% 48%;
+
+    /* Visualization colors - vibrant and modern palette */
+    --viz-blue: 217 91% 60%;
+    --viz-cyan: 187 85% 53%;
+    --viz-green: 158 64% 52%;
+    --viz-yellow: 45 93% 58%;
+    --viz-orange: 27 96% 61%;
+    --viz-pink: 330 81% 60%;
+    --viz-purple: 271 81% 56%;
+    --viz-red: 0 84% 60%;
+    --viz-teal: 174 72% 46%;
+    --viz-indigo: 239 84% 67%;
+
+    /* Sidebar */
+    --sidebar-background: 220 16% 7%;
+    --sidebar-foreground: 210 14% 68%;
+    --sidebar-primary: 199 100% 50%;
+    --sidebar-primary-foreground: 220 16% 4%;
+    --sidebar-accent: 220 14% 12%;
+    --sidebar-accent-foreground: 210 20% 92%;
+    --sidebar-border: 220 12% 14%;
+    --sidebar-ring: 199 100% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'Fira Code', monospace;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-card/90 backdrop-blur-sm border border-border;
+  }
+
+  .glass-hover {
+    @apply hover:bg-secondary transition-colors duration-150;
+  }
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-[hsl(180,80%,50%)];
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* React Grid Layout Styles */
+.react-grid-layout {
+  position: relative;
+  transition: height 200ms ease;
+}
+
+.react-grid-item {
+  transition: all 200ms ease;
+  transition-property: left, top, width, height;
+}
+
+.react-grid-item.cssTransforms {
+  transition-property: transform, width, height;
+}
+
+.react-grid-item.resizing {
+  z-index: 1;
+  will-change: width, height;
+}
+
+.react-grid-item.react-draggable-dragging {
+  z-index: 3;
+  will-change: transform;
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.4);
+}
+
+.react-grid-item.dropping {
+  visibility: hidden;
+}
+
+.react-grid-item.react-grid-placeholder {
+  background: hsl(var(--primary) / 0.15);
+  border: 2px dashed hsl(var(--primary) / 0.4);
+  border-radius: var(--radius);
+  opacity: 1;
+  transition-duration: 100ms;
+  z-index: 2;
+}
+
+.react-grid-item > .react-resizable-handle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+}
+
+.react-grid-item > .react-resizable-handle::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid hsl(var(--muted-foreground) / 0.4);
+  border-bottom: 2px solid hsl(var(--muted-foreground) / 0.4);
+  border-radius: 2px;
+  transition: border-color 0.2s ease;
+}
+
+.react-grid-item:hover > .react-resizable-handle::after {
+  border-color: hsl(var(--primary) / 0.6);
+}
+
+.react-resizable-handle-se {
+  bottom: 0;
+  right: 0;
+  cursor: se-resize;
+}
