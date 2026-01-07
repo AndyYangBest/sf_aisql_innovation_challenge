@@ -153,9 +153,10 @@ interface TableStore {
   artifacts: Artifact[];
   changelog: ChangelogEntry[];
   selectedColumn: string | null;
-  
+
   // Actions
   addTableAsset: (asset: TableAsset) => void;
+  setTableAssets: (assets: TableAsset[]) => void;
   updateTableAsset: (id: string, updates: Partial<TableAsset>) => void;
   deleteTableAsset: (id: string) => void;
   getTableResult: (id: string) => TableResult | undefined;
@@ -179,6 +180,11 @@ export const useTableStore = create<TableStore>()(
       addTableAsset: (asset) =>
         set((state) => ({
           tableAssets: [...state.tableAssets, asset],
+        })),
+
+      setTableAssets: (assets) =>
+        set(() => ({
+          tableAssets: assets,
         })),
 
       updateTableAsset: (id, updates) =>

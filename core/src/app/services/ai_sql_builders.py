@@ -48,13 +48,19 @@ class AICompleteBuilder:
 
     def build(self) -> str:
         """Build AI_COMPLETE function call."""
+        # Escape single quotes in prompt
+        escaped_prompt = self.prompt.replace("'", "''")
+
         if self.response_format:
+            # Convert dict to JSON string for Snowflake
+            import json
+            format_json = json.dumps(self.response_format).replace("'", "''")
             return f"""SNOWFLAKE.CORTEX.COMPLETE(
-                model => '{self.model}',
-                prompt => '{self.prompt}',
-                response_format => {self.response_format}
+                '{self.model}',
+                '{escaped_prompt}',
+                PARSE_JSON('{format_json}')
             )"""
-        return f"SNOWFLAKE.CORTEX.COMPLETE('{self.model}', '{self.prompt}')"
+        return f"SNOWFLAKE.CORTEX.COMPLETE('{self.model}', '{escaped_prompt}')"
 
 
 class AIClassifyBuilder:

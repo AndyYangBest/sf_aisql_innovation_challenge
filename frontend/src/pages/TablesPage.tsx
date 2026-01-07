@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Clock,
@@ -11,6 +11,7 @@ import {
   Plus,
   Database,
   Table,
+  Loader2,
 } from "lucide-react";
 import { useTableStore } from "@/store/tableStore";
 import { Badge } from "@/components/ui/badge";
@@ -19,12 +20,45 @@ import { Button } from "@/components/ui/button";
 import NewTableDrawer from "@/components/NewTableDrawer";
 import { StatCard } from "@/components/shared/StatCard";
 import { PageContainer, PageHeader } from "@/components/shared/PageContainer";
+import { tablesApi } from "@/api/tables";
+import { useToast } from "@/hooks/use-toast";
 
 const TablesPage = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const { tableAssets, artifacts } = useTableStore();
+  const [isLoading, setIsLoading] = useState(true);
+  const { tableAssets, artifacts, setTableAssets } = useTableStore();
   const navigate = useNavigate();
+  const { toast } = useToast();
+
+  // Load tables from database on mount
+  useEffect(() => {
+    loadTablesFromDatabase();
+  }, []);
+
+  const loadTablesFromDatabase = async () => {
+    setIsLoading(true);
+    try {
+      const response = await tablesApi.getAllTableAssets();
+      if (response.status === 'success' && response.data) {
+        setTableAssets(response.data.items);
+      } else {
+        toast({
+          title: "Failed to load tables",
+          description: response.error || "Could not fetch table assets",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Failed to load tables",
+        description: "Could not connect to server",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Filter tables by search query
   const filteredTables = useMemo(() => {
@@ -132,10 +166,17 @@ const TablesPage = () => {
         <div className="space-y-2 sm:space-y-3">
           <h2 className="text-base sm:text-lg font-semibold mb-3 sm:mb-4">All Tables</h2>
 
-          {filteredTables.length === 0 ? (
+          {isLoading ? (
+            <div className="text-center py-8 sm:py-12">
+              <Loader2 className="h-10 w-10 sm:h-12 sm:w-12 mx-auto mb-3 animate-spin text-primary" />
+              <p className="text-sm sm:text-base text-muted-foreground">Loading tables...</p>
+            </div>
+          ) : filteredTables.length === 0 ? (
             <div className="text-center py-8 sm:py-12 text-muted-foreground">
               <Table className="h-10 w-10 sm:h-12 sm:w-12 mx-auto mb-3 opacity-30" />
-              <p className="text-sm sm:text-base">No tables found matching "{searchQuery}"</p>
+              <p className="text-sm sm:text-base">
+                {searchQuery ? `No tables found matching "${searchQuery}"` : "No tables yet. Create your first table!"}
+              </p>
             </div>
           ) : (
             filteredTables.map((table) => {

@@ -1,5 +1,14 @@
 import { useRef, useEffect, useState, useCallback } from "react";
-import { LayoutGrid, Table, BarChart3, FileText, Columns, Lightbulb, Network, GitBranch } from "lucide-react";
+import {
+  LayoutGrid,
+  Table,
+  BarChart3,
+  FileText,
+  Columns,
+  Lightbulb,
+  Network,
+  GitBranch,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TableAsset, TableResult } from "@/types";
 import OverviewTab from "./tabs/OverviewTab";
@@ -17,17 +26,60 @@ interface ScrollableWorkspaceProps {
 }
 
 const sections = [
-  { id: "overview", label: "Overview", icon: LayoutGrid, color: "text-[hsl(var(--viz-blue))]" },
-  { id: "data", label: "Data", icon: Table, color: "text-[hsl(var(--viz-cyan))]" },
-  { id: "profile", label: "Profile", icon: Columns, color: "text-[hsl(var(--viz-green))]" },
-  { id: "columnmap", label: "Column Map", icon: Network, color: "text-[hsl(var(--viz-purple))]" },
-  { id: "charts", label: "Charts", icon: BarChart3, color: "text-[hsl(var(--viz-orange))]" },
-  { id: "insights", label: "Insights", icon: Lightbulb, color: "text-[hsl(var(--viz-yellow))]" },
-  { id: "notes", label: "Notes", icon: FileText, color: "text-[hsl(var(--viz-pink))]" },
-  { id: "lineage", label: "Lineage", icon: GitBranch, color: "text-muted-foreground" },
+  {
+    id: "overview",
+    label: "Overview",
+    icon: LayoutGrid,
+    color: "text-[hsl(var(--viz-blue))]",
+  },
+  {
+    id: "data",
+    label: "Data",
+    icon: Table,
+    color: "text-[hsl(var(--viz-cyan))]",
+  },
+  {
+    id: "profile",
+    label: "Profile",
+    icon: Columns,
+    color: "text-[hsl(var(--viz-green))]",
+  },
+  {
+    id: "columnmap",
+    label: "Column Map",
+    icon: Network,
+    color: "text-[hsl(var(--viz-purple))]",
+  },
+  {
+    id: "charts",
+    label: "Charts",
+    icon: BarChart3,
+    color: "text-[hsl(var(--viz-orange))]",
+  },
+  {
+    id: "insights",
+    label: "Insights",
+    icon: Lightbulb,
+    color: "text-[hsl(var(--viz-yellow))]",
+  },
+  {
+    id: "notes",
+    label: "Notes",
+    icon: FileText,
+    color: "text-[hsl(var(--viz-pink))]",
+  },
+  {
+    id: "lineage",
+    label: "Lineage",
+    icon: GitBranch,
+    color: "text-muted-foreground",
+  },
 ];
 
-const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspaceProps) => {
+const ScrollableWorkspace = ({
+  tableAsset,
+  tableResult,
+}: ScrollableWorkspaceProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [activeSection, setActiveSection] = useState("overview");
@@ -38,8 +90,9 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
     if (element && containerRef.current) {
       const containerTop = containerRef.current.getBoundingClientRect().top;
       const elementTop = element.getBoundingClientRect().top;
-      const offset = elementTop - containerTop + containerRef.current.scrollTop - 20;
-      
+      const offset =
+        elementTop - containerTop + containerRef.current.scrollTop - 20;
+
       containerRef.current.scrollTo({
         top: offset,
         behavior: "smooth",
@@ -55,22 +108,22 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
     const handleScroll = () => {
       const containerRect = container.getBoundingClientRect();
       const scrollTop = container.scrollTop;
-      
+
       let currentSection = "overview";
-      
+
       for (const section of sections) {
         const element = sectionRefs.current[section.id];
         if (element) {
           const rect = element.getBoundingClientRect();
           const relativeTop = rect.top - containerRect.top;
-          
+
           // 当 section 顶部进入视口上半部分时激活
           if (relativeTop <= containerRect.height * 0.3) {
             currentSection = section.id;
           }
         }
       }
-      
+
       setActiveSection(currentSection);
     };
 
@@ -93,7 +146,12 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
                 : "text-muted-foreground hover:text-foreground hover:bg-muted"
             )}
           >
-            <section.icon className={cn("h-5 w-5", activeSection !== section.id && section.color)} />
+            <section.icon
+              className={cn(
+                "h-5 w-5",
+                activeSection !== section.id && section.color
+              )}
+            />
             <span className="absolute left-full ml-2 px-2 py-1 rounded bg-popover text-popover-foreground text-xs font-medium opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap transition-opacity z-50 shadow-lg border border-border">
               {section.label}
             </span>
@@ -102,22 +160,26 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
       </div>
 
       {/* Main Scrollable Content */}
-      <div 
+      <div
         ref={containerRef}
         className="flex-1 overflow-y-auto p-6 scrollbar-thin scroll-smooth"
       >
-        <div className="max-w-4xl space-y-12">
+        <div className="space-y-12">
           {/* Overview Section */}
-          <div 
-            ref={(el) => { sectionRefs.current["overview"] = el; }}
+          <div
+            ref={(el) => {
+              sectionRefs.current["overview"] = el;
+            }}
             id="overview"
           >
             <OverviewTab tableAsset={tableAsset} tableResult={tableResult} />
           </div>
 
           {/* Data Section */}
-          <div 
-            ref={(el) => { sectionRefs.current["data"] = el; }}
+          <div
+            ref={(el) => {
+              sectionRefs.current["data"] = el;
+            }}
             id="data"
             className="pt-6 border-t border-border"
           >
@@ -129,8 +191,10 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
           </div>
 
           {/* Profile Section */}
-          <div 
-            ref={(el) => { sectionRefs.current["profile"] = el; }}
+          <div
+            ref={(el) => {
+              sectionRefs.current["profile"] = el;
+            }}
             id="profile"
             className="pt-6 border-t border-border"
           >
@@ -142,8 +206,10 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
           </div>
 
           {/* Column Map Section */}
-          <div 
-            ref={(el) => { sectionRefs.current["columnmap"] = el; }}
+          <div
+            ref={(el) => {
+              sectionRefs.current["columnmap"] = el;
+            }}
             id="columnmap"
             className="pt-6 border-t border-border"
           >
@@ -155,8 +221,10 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
           </div>
 
           {/* Charts Section */}
-          <div 
-            ref={(el) => { sectionRefs.current["charts"] = el; }}
+          <div
+            ref={(el) => {
+              sectionRefs.current["charts"] = el;
+            }}
             id="charts"
             className="pt-6 border-t border-border"
           >
@@ -168,8 +236,10 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
           </div>
 
           {/* Insights Section */}
-          <div 
-            ref={(el) => { sectionRefs.current["insights"] = el; }}
+          <div
+            ref={(el) => {
+              sectionRefs.current["insights"] = el;
+            }}
             id="insights"
             className="pt-6 border-t border-border"
           >
@@ -181,8 +251,10 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
           </div>
 
           {/* Notes Section */}
-          <div 
-            ref={(el) => { sectionRefs.current["notes"] = el; }}
+          <div
+            ref={(el) => {
+              sectionRefs.current["notes"] = el;
+            }}
             id="notes"
             className="pt-6 border-t border-border"
           >
@@ -194,8 +266,10 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
           </div>
 
           {/* Lineage Section */}
-          <div 
-            ref={(el) => { sectionRefs.current["lineage"] = el; }}
+          <div
+            ref={(el) => {
+              sectionRefs.current["lineage"] = el;
+            }}
             id="lineage"
             className="pt-6 border-t border-border"
           >
@@ -205,7 +279,7 @@ const ScrollableWorkspace = ({ tableAsset, tableResult }: ScrollableWorkspacePro
             </h2>
             <LineageTab tableAsset={tableAsset} tableResult={tableResult} />
           </div>
-          
+
           {/* Bottom padding */}
           <div className="h-24" />
         </div>

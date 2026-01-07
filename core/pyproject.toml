@@ -1,8 +1,8 @@
 [project]
-name = "scarat-snowflake-ai"
+name = "scrat-snowflake-ai"
 version = "0.1.0"
 description = "Snowflake AI-powered data analysis and visualization platform with automated EDA and collaborative dashboards."
-authors = [{ name = "SCARAT Team", email = "team@scarat.io" }]
+authors = [{ name = "SCRAT Team", email = "team@scrat.io" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.12, <4"
@@ -17,30 +17,27 @@ dependencies = [
     "python-multipart>=0.0.9",
     "httpx>=0.26.0",
     "pydantic-settings>=2.0.3",
-
     # Snowflake & Data Processing
     "snowflake-connector-python>=3.6.0",
     "snowflake-sqlalchemy>=1.5.0",
     "pandas>=2.1.0",
     "numpy>=1.26.0",
     "openpyxl>=3.1.0",
-
     # Background Tasks & Caching
     "redis>=5.0.1",
     "arq>=0.25.0",
-
     # Database (for metadata storage)
     "alembic>=1.13.1",
     "asyncpg>=0.29.0",
     "SQLAlchemy>=2.0.25",
     "greenlet>=2.0.2",
-
     # Production Server
     "gunicorn>=23.0.0",
-
     # Code Quality
     "ruff>=0.11.13",
     "mypy>=1.16.0",
+    "fastcrud>=0.20.1",
+    "uuid6>=2025.0.1",
 ]
 
 [project.optional-dependencies]

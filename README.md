@@ -1,4 +1,4 @@
-# SCARAT - Snowflake AI SQL Innovation Challenge
+# SCRAT - Snowflake AI SQL Innovation Challenge
 
 Snowflake AI-powered data analysis and visualization platform with automated EDA, collaborative dashboards, and comprehensive Cortex AI SQL functions.
 
