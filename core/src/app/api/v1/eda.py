@@ -6,9 +6,13 @@ using the Strands-based agent orchestration system.
 
 from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, Integer
+import json
+import asyncio
+from datetime import datetime
 
 from ...core.db.database import get_async_db_session
 from ...models.table_asset import TableAsset
@@ -166,6 +170,175 @@ async def run_eda_workflow(
             summary={},
             error=str(e),
         )
+
+
+@router.get("/run-stream")
+async def run_eda_workflow_stream(
+    table_asset_id: int,
+    user_intent: str | None = None,
+    workflow_type: WorkflowType | None = None,
+    db: AsyncSession = Depends(get_async_db_session),
+    sf_service: SnowflakeService = Depends(get_snowflake_service),
+    ai_sql_service: ModularAISQLService = Depends(get_ai_sql_service),
+):
+    """Run EDA workflow with streaming logs (Server-Sent Events).
+
+    This endpoint streams workflow execution logs in real-time using SSE.
+    The frontend can display these logs as they arrive.
+
+    Event types:
+    - log: General log messages
+    - status: Node status updates
+    - progress: Progress updates
+    - complete: Workflow completion
+    - error: Error messages
+    """
+
+    def _sse(event_type: str, payload: dict[str, Any]) -> str:
+        return f"event: {event_type}\ndata: {json.dumps(payload, default=str)}\n\n"
+
+    async def event_generator():
+        resolved_workflow_type = workflow_type
+        try:
+            # Send initial log
+            yield _sse(
+                "log",
+                {
+                    "type": "log",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": "Starting EDA workflow...",
+                },
+            )
+
+            # Fetch table asset
+            result = await db.execute(
+                select(TableAsset).where(
+                    TableAsset.id == table_asset_id,
+                    TableAsset.is_deleted == False,
+                )
+            )
+            table_asset = result.scalar_one_or_none()
+
+            if not table_asset:
+                yield _sse(
+                    "workflow-error",
+                    {
+                        "type": "error",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": f"Table asset {table_asset_id} not found",
+                    },
+                )
+                return
+
+            yield _sse(
+                "log",
+                {
+                    "type": "log",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": f"Found table: {table_asset.name}",
+                },
+            )
+
+            # Create orchestrator with database session
+            orchestrator = create_eda_orchestrator(sf_service, ai_sql_service, db=db)
+
+            yield _sse(
+                "status",
+                {
+                    "type": "status",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": "Orchestrator created",
+                },
+            )
+
+            # Determine workflow type
+            if resolved_workflow_type is None:
+                resolved_workflow_type = await orchestrator.router.route_workflow(
+                    table_asset,
+                    user_intent,
+                )
+                yield _sse(
+                    "log",
+                    {
+                        "type": "log",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": f"Auto-routed to workflow: {resolved_workflow_type}",
+                    },
+                )
+
+            yield _sse(
+                "status",
+                {
+                    "type": "status",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": f"Starting {resolved_workflow_type} workflow",
+                },
+            )
+
+            # Run workflow (this will take time)
+            # Note: In a real implementation, you'd want to run this in a background task
+            # and stream logs from the Strands hooks
+            results = await orchestrator.run_eda(
+                table_asset=table_asset,
+                user_intent=user_intent,
+                workflow_type=resolved_workflow_type,
+            )
+
+            # Send progress updates (simulated - in real implementation, hook into Strands progress)
+            summary = results.get("summary", {})
+            tasks_completed = summary.get("tasks_completed", 0)
+            tasks_total = summary.get("tasks_total", 0)
+
+            if tasks_total > 0:
+                progress = int((tasks_completed / tasks_total) * 100)
+                yield _sse(
+                    "progress",
+                    {
+                        "type": "progress",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": f"Progress: {progress}%",
+                        "data": {
+                            "progress": progress,
+                            "tasks_completed": tasks_completed,
+                            "tasks_total": tasks_total,
+                        },
+                    },
+                )
+
+            # Send completion event
+            yield _sse(
+                "complete",
+                {
+                    "type": "complete",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": "Workflow completed successfully",
+                    "data": results,
+                },
+            )
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            yield _sse(
+                "workflow-error",
+                {
+                    "type": "error",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": str(e),
+                },
+            )
+        finally:
+            await db.close()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
 
 
 @router.get("/workflows", response_model=WorkflowListResponse)
@@ -384,3 +557,144 @@ async def eda_health_check():
         ],
         "version": "1.0.0",
     }
+
+
+# ============================================================================
+# Workflow History & Management
+# ============================================================================
+
+
+@router.get("/history/{table_asset_id}")
+async def get_workflow_history(
+    table_asset_id: int,
+    limit: int = 10,
+    db: AsyncSession = Depends(get_async_db_session),
+):
+    """Get workflow execution history for a table asset.
+
+    Returns recent workflow executions with their status, results, and metadata.
+    Useful for displaying analysis history and caching results.
+    """
+    try:
+        from ...services.eda_workflow_persistence import EDAWorkflowPersistenceService
+
+        persistence = EDAWorkflowPersistenceService(db)
+        executions = await persistence.get_executions_for_table(table_asset_id, limit=limit)
+
+        return {
+            "table_asset_id": table_asset_id,
+            "total": len(executions),
+            "executions": [
+                {
+                    "id": e.id,
+                    "workflow_id": e.workflow_id,
+                    "workflow_type": e.workflow_type,
+                    "status": e.status,
+                    "progress": e.progress,
+                    "tasks_total": e.tasks_total,
+                    "tasks_completed": e.tasks_completed,
+                    "tasks_failed": e.tasks_failed,
+                    "data_structure_type": e.data_structure_type,
+                    "started_at": e.started_at.isoformat() if e.started_at else None,
+                    "completed_at": e.completed_at.isoformat() if e.completed_at else None,
+                    "duration_seconds": e.duration_seconds,
+                    "user_intent": e.user_intent,
+                    "error_message": e.error_message,
+                }
+                for e in executions
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workflow/{workflow_id}")
+async def get_workflow_details(
+    workflow_id: str,
+    db: AsyncSession = Depends(get_async_db_session),
+):
+    """Get detailed information about a specific workflow execution.
+
+    Returns complete workflow data including artifacts, summary, and type detection results.
+    """
+    try:
+        from ...services.eda_workflow_persistence import EDAWorkflowPersistenceService
+
+        persistence = EDAWorkflowPersistenceService(db)
+        execution = await persistence.get_execution(workflow_id)
+
+        if not execution:
+            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+
+        return {
+            "id": execution.id,
+            "workflow_id": execution.workflow_id,
+            "workflow_type": execution.workflow_type,
+            "table_asset_id": execution.table_asset_id,
+            "status": execution.status,
+            "progress": execution.progress,
+            "tasks_total": execution.tasks_total,
+            "tasks_completed": execution.tasks_completed,
+            "tasks_failed": execution.tasks_failed,
+            "started_at": execution.started_at.isoformat() if execution.started_at else None,
+            "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+            "duration_seconds": execution.duration_seconds,
+            "artifacts": execution.artifacts,
+            "summary": execution.summary,
+            "data_structure_type": execution.data_structure_type,
+            "column_type_inferences": execution.column_type_inferences,
+            "user_intent": execution.user_intent,
+            "error_message": execution.error_message,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/stats/{table_asset_id}")
+async def get_workflow_stats(
+    table_asset_id: int,
+    db: AsyncSession = Depends(get_async_db_session),
+):
+    """Get workflow execution statistics for a table asset.
+
+    Returns aggregated statistics like success rate, average duration, etc.
+    """
+    try:
+        from ...services.eda_workflow_persistence import EDAWorkflowPersistenceService
+        from sqlalchemy import func
+        from ...models.eda_workflow import EDAWorkflowExecution
+
+        # Get all executions for this table
+        result = await db.execute(
+            select(
+                func.count(EDAWorkflowExecution.id).label("total_executions"),
+                func.sum(
+                    func.cast(EDAWorkflowExecution.status == "completed", Integer)
+                ).label("successful_executions"),
+                func.avg(EDAWorkflowExecution.duration_seconds).label("avg_duration"),
+                func.max(EDAWorkflowExecution.completed_at).label("last_execution"),
+            ).where(
+                EDAWorkflowExecution.table_asset_id == table_asset_id,
+                EDAWorkflowExecution.is_deleted == False,
+            )
+        )
+
+        stats = result.first()
+
+        total = stats.total_executions or 0
+        successful = stats.successful_executions or 0
+        success_rate = (successful / total * 100) if total > 0 else 0
+
+        return {
+            "table_asset_id": table_asset_id,
+            "total_executions": total,
+            "successful_executions": successful,
+            "failed_executions": total - successful,
+            "success_rate": round(success_rate, 2),
+            "avg_duration_seconds": round(stats.avg_duration, 2) if stats.avg_duration else None,
+            "last_execution": stats.last_execution.isoformat() if stats.last_execution else None,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

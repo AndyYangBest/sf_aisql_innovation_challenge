@@ -17,6 +17,9 @@ importers:
       '@flowgram.ai/free-layout-editor':
         specifier: ^1.0.6
         version: 1.0.6(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(styled-components@6.1.19(react-dom@18.3.1(react@18.3.1))(react@18.3.1))
+      '@flowgram.ai/minimap-plugin':
+        specifier: ^1.0.6
+        version: 1.0.6(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@hookform/resolvers':
         specifier: ^3.10.0
         version: 3.10.0(react-hook-form@7.70.0(react@18.3.1))
@@ -575,6 +578,12 @@ packages:
 
   '@flowgram.ai/materials-plugin@1.0.6':
     resolution: {integrity: sha512-7wNnSsduImX7mEi7ZND28cYk1jomN7cV/OPlCfMUzJpTO8tflmqnYsnjbi7X3cUwJp9QP707ui/v4AAKvQX+mg==}
+    peerDependencies:
+      react: '>=16.8'
+      react-dom: '>=16.8'
+
+  '@flowgram.ai/minimap-plugin@1.0.6':
+    resolution: {integrity: sha512-G8Y9CsDAUlf4bq4RDd7VvOeuBt36l6/gRxlcI5rpVKt/bCGnfqyCD8mARK+UYv+zciRLgarTpl2xhMi7laF7ow==}
     peerDependencies:
       react: '>=16.8'
       react-dom: '>=16.8'
@@ -3295,6 +3304,17 @@ snapshots:
       '@flowgram.ai/core': 1.0.6(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@flowgram.ai/renderer': 1.0.6(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       inversify: 6.2.2(reflect-metadata@0.2.2)
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+      reflect-metadata: 0.2.2
+
+  '@flowgram.ai/minimap-plugin@1.0.6(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
+    dependencies:
+      '@flowgram.ai/core': 1.0.6(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@flowgram.ai/document': 1.0.6(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@flowgram.ai/utils': 1.0.6(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      inversify: 6.2.2(reflect-metadata@0.2.2)
+      lodash-es: 4.17.22
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
       reflect-metadata: 0.2.2

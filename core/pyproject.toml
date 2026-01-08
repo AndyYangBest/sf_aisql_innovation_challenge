@@ -38,6 +38,10 @@ dependencies = [
     "mypy>=1.16.0",
     "fastcrud>=0.20.1",
     "uuid6>=2025.0.1",
+    # AI Agents & Workflows
+    "strands-agents>=1.21.0",
+    "strands-agents-tools>=0.2.19",
+    "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]

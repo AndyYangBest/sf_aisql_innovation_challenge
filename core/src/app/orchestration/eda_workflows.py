@@ -398,22 +398,16 @@ class EDAOrchestrator:
         self.coordinator = Agent(
             name="EDA Workflow Coordinator",
             system_prompt="""You are an EDA workflow coordinator. You manage the execution
-of exploratory data analysis workflows by coordinating multiple specialized agents.
+                                of exploratory data analysis workflows by coordinating multiple specialized agents.
 
-You have access to powerful data type detection tools:
-- infer_column_type: Infer semantic types of columns (identifier, categorical, numeric, etc.)
-- detect_data_structure: Detect if data is time-series, panel, cross-sectional, etc.
-- suggest_sampling_strategy: Get optimal sampling strategy for large datasets
+                                You have access to powerful data type detection tools:
+                                - infer_column_type: Infer semantic types of columns (identifier, categorical, numeric, etc.)
+                                - detect_data_structure: Detect if data is time-series, panel, cross-sectional, etc.
+                                - suggest_sampling_strategy: Get optimal sampling strategy for large datasets
 
-Use these tools to enhance your analysis and provide better insights.""",
+                                Use these tools to enhance your analysis and provide better insights.""",
             tools=[
                 workflow,
-                workflow_tools.sql,
-                workflow_tools.profile_table,
-                workflow_tools.file_write,
-                workflow_tools.calculator,
-                workflow_tools.python_repl,
-                # Type detection tools
                 workflow_tools.infer_column_type,
                 workflow_tools.detect_data_structure,
                 workflow_tools.suggest_sampling_strategy,
@@ -444,21 +438,21 @@ Use these tools to enhance your analysis and provide better insights.""",
                 "description": f"Profile the table '{table_asset.name}' to extract schema, statistics, sample data, AND semantic type inference for each column. Table SQL: {table_asset.source_sql}",
                 "system_prompt": """You are a data profiling expert. Extract comprehensive table profiles including:
 
-1. Schema (column names and SQL types)
-2. Statistics (row count, null counts, distinct values, cardinality)
-3. Sample data
-4. **Semantic type inference** - The profile_table tool now automatically includes:
-   - column_type_inferences: Semantic types for each column (identifier, categorical, numeric, etc.)
-   - data_structure_type: Overall data structure (time_series, panel, cross_sectional, etc.)
+                1. Schema (column names and SQL types)
+                2. Statistics (row count, null counts, distinct values, cardinality)
+                3. Sample data
+                4. **Semantic type inference** - The profile_table tool now automatically includes:
+                - column_type_inferences: Semantic types for each column (identifier, categorical, numeric, etc.)
+                - data_structure_type: Overall data structure (time_series, panel, cross_sectional, etc.)
 
-The profile you receive will already contain semantic type information in metadata.column_type_inferences.
-Each column inference includes:
-- inferred_type: Semantic type (e.g., "identifier", "nominal_categorical", "continuous_numeric")
-- confidence: Confidence score (0.0-1.0)
-- recommendations: How to handle this type
+                The profile you receive will already contain semantic type information in metadata.column_type_inferences.
+                Each column inference includes:
+                - inferred_type: Semantic type (e.g., "identifier", "nominal_categorical", "continuous_numeric")
+                - confidence: Confidence score (0.0-1.0)
+                - recommendations: How to handle this type
 
-Use the profile_table tool to fetch the complete profile with type inference.
-Return results as JSON with keys: schema, statistics, samples, metadata (including column_type_inferences and data_structure_type).""",
+                Use the profile_table tool to fetch the complete profile with type inference.
+                Return results as JSON with keys: schema, statistics, samples, metadata (including column_type_inferences and data_structure_type).""",
                 "priority": 5,
                 "dependencies": [],
             },

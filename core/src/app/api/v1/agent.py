@@ -8,15 +8,19 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ...core.db.database import get_snowflake_service
 from ...services.snowflake_service import SnowflakeService
-from ..agent import AgentSession, AISQLAgent
+from ...orchestration.agent import AgentSession, AISQLAgent
 
 router = APIRouter(prefix="/agent", tags=["AI SQL Agent"])
 
 # In-memory session storage (replace with Redis/DB in production)
 _sessions: dict[str, AgentSession] = {}
 
+
+# Dependency to get SnowflakeService
+def get_snowflake_service() -> SnowflakeService:
+    """Get SnowflakeService instance."""
+    return SnowflakeService()
 
 # ============================================================================
 # Request/Response Models

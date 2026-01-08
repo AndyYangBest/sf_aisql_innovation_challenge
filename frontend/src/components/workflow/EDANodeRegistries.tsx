@@ -1,0 +1,231 @@
+/**
+ * EDA Node Registries
+ * EDA 节点注册配置
+ */
+
+import { WorkflowNodeRegistry, ValidateTrigger, Field } from '@flowgram.ai/free-layout-editor';
+import { EDANodeType, EDA_NODE_DEFINITIONS } from '@/types/eda-workflow';
+
+/**
+ * Create EDA node registries for Flowgram
+ */
+export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
+  return [
+    // Data Source Node (Start)
+    {
+      type: 'data_source',
+      meta: {
+        isStart: true,
+        deleteDisable: true,
+        copyDisable: true,
+        defaultPorts: [{ type: 'output', location: 'right' }],
+      },
+      formMeta: {
+        validateTrigger: ValidateTrigger.onChange,
+        validate: {
+          table_asset_id: ({ value }) => (value ? undefined : 'Table asset is required'),
+        },
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Data Source'}
+                </div>
+              )}
+            </Field>
+            <Field name="table_name">
+              {({ field }) => (
+                <div className="text-xs text-slate-600">
+                  {field.value || 'No table selected'}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Profile Table Node
+    {
+      type: 'profile_table',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Profile Table'}
+                </div>
+              )}
+            </Field>
+            <Field name="sample_size">
+              {({ field }) => (
+                <div className="text-xs text-slate-600">
+                  Sample: {field.value || 100} rows
+                </div>
+              )}
+            </Field>
+            <Field name="include_type_inference">
+              {({ field }) => (
+                <div className="text-xs text-slate-600">
+                  {field.value ? '✓ Type inference enabled' : '✗ Type inference disabled'}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Generate Insights Node
+    {
+      type: 'generate_insights',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Generate Insights'}
+                </div>
+              )}
+            </Field>
+            <Field name="focus">
+              {({ field }) => (
+                <div className="text-xs text-slate-600">
+                  Focus: {field.value || 'general'}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Generate Charts Node
+    {
+      type: 'generate_charts',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Generate Charts'}
+                </div>
+              )}
+            </Field>
+            <Field name="chart_count">
+              {({ field }) => (
+                <div className="text-xs text-slate-600">
+                  Charts: {field.value || 3}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Generate Documentation Node
+    {
+      type: 'generate_documentation',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Generate Documentation'}
+                </div>
+              )}
+            </Field>
+            <div className="text-xs text-slate-600">
+              Complete documentation
+            </div>
+          </>
+        ),
+      },
+    },
+
+    // Export Node (End)
+    {
+      type: 'export',
+      meta: {
+        deleteDisable: true,
+        copyDisable: true,
+        defaultPorts: [{ type: 'input', location: 'left' }],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Export Results'}
+                </div>
+              )}
+            </Field>
+            <Field name="format">
+              {({ field }) => (
+                <div className="text-xs text-slate-600">
+                  Format: {field.value || 'json'}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+    // Comment Node
+    {
+      type: 'comment',
+      meta: {
+        defaultPorts: [],
+        size: {
+          width: 260,
+          height: 160,
+        },
+      },
+      formMeta: {
+        render: () => (
+          <Field name="note">
+            {({ field }) => (
+              <textarea
+                className="w-full min-h-[96px] rounded-md border border-amber-200 bg-amber-50/70 p-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                placeholder="Add a note..."
+                value={field.value || ''}
+                onChange={(event) => field.onChange(event.target.value)}
+              />
+            )}
+          </Field>
+        ),
+      },
+    },
+  ];
+}

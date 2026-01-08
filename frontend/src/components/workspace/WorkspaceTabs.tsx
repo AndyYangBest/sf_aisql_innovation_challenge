@@ -59,8 +59,8 @@ const WorkspaceTabs = ({ activeTab, onTabChange, tableAsset, tableResult, onWork
 
       {/* Main Content Area - Independent Scroll */}
       <div className={cn(
-        "flex-1 overflow-x-hidden",
-        activeTab === "workflow" ? "overflow-hidden" : "overflow-y-auto p-6 scrollbar-thin"
+        "flex-1 h-full",
+        activeTab === "workflow" ? "overflow-hidden" : "overflow-y-auto p-6 scrollbar-thin overflow-x-hidden"
       )}>
         {activeTab === "workflow" && <WorkflowTab tableId={tableAsset.id} onRunComplete={onWorkflowRunComplete} />}
         {activeTab === "overview" && <OverviewTab tableAsset={tableAsset} tableResult={tableResult} />}
