@@ -2,6 +2,7 @@
 
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
+import json
 from pydantic import BaseModel, Field
 
 from ...api.dependencies import rate_limiter_dependency
@@ -350,6 +351,44 @@ async def execute_sql(
     service: SnowflakeService = Depends(get_snowflake_service),
 ) -> ExecuteSQLResponse:
     """Execute SQL query and return results."""
+    async def run_json_fallback(clean_sql: str) -> ExecuteSQLResponse:
+        """Fallback: return rows via JSON serialization to dodge driver parsing issues."""
+        json_sql = f"""
+        SELECT TO_JSON(OBJECT_CONSTRUCT(*)) AS ROW_JSON
+        FROM (
+          {clean_sql}
+        )
+        """
+        try:
+            json_rows = await service.execute_query(json_sql)
+            parsed_rows = []
+            for r in json_rows:
+                raw = r.get("ROW_JSON")
+                if raw is None:
+                    parsed_rows.append({})
+                    continue
+                try:
+                    parsed_rows.append(json.loads(raw))
+                except Exception:
+                    parsed_rows.append({"ROW_JSON": raw})
+
+            columns = [{"name": k, "type": "VARIANT"} for k in (parsed_rows[0].keys() if parsed_rows else [])]
+            return ExecuteSQLResponse(
+                success=True,
+                columns=columns,
+                rows=parsed_rows,
+                row_count=len(parsed_rows),
+                error=None,
+            )
+        except Exception as fallback_error:
+            return ExecuteSQLResponse(
+                success=False,
+                columns=[],
+                rows=[],
+                row_count=0,
+                error=str(fallback_error),
+            )
+
     try:
         # Add LIMIT to SQL if not already present
         sql = request.sql.strip()
@@ -360,22 +399,13 @@ async def execute_sql(
         if "LIMIT" not in sql.upper():
             sql = f"{sql} LIMIT {request.limit}"
 
-        # Wrap the query to convert all timestamps to strings to avoid parsing issues
-        # This prevents the "Timestamp is not recognized" error
-        sql = f"""
-        SELECT * FROM (
-            {sql}
-        )
-        """
+        wrapped_sql = f"SELECT * FROM ({sql})"
 
         # Execute query
-        rows = await service.execute_query(sql)
+        rows = await service.execute_query(wrapped_sql)
 
         # Extract column names from first row (if exists)
-        if rows and len(rows) > 0:
-            columns = [{"name": col, "type": "VARCHAR"} for col in rows[0].keys()]
-        else:
-            columns = []
+        columns = [{"name": col, "type": "VARCHAR"} for col in rows[0].keys()] if rows else []
 
         return ExecuteSQLResponse(
             success=True,
@@ -385,12 +415,16 @@ async def execute_sql(
             error=None,
         )
     except Exception as e:
+        # Fallback: JSON serialization path to avoid timestamp parsing issues
+        err_text = str(e)
+        if "Timestamp" in err_text or "seconds_since_epoch" in err_text or "100035" in err_text:
+            return await run_json_fallback(sql)
         return ExecuteSQLResponse(
             success=False,
             columns=[],
             rows=[],
             row_count=0,
-            error=str(e),
+            error=err_text,
         )
 
 

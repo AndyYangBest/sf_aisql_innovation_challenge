@@ -147,6 +147,116 @@ class AITranscribeBuilder:
         return f"AI_TRANSCRIBE({self.audio_column})"
 
 
+class AIEmbedBuilder:
+    """Builder for AI_EMBED function calls."""
+
+    def __init__(self, content: str, model: str = "e5-base-v2"):
+        self.content = content
+        self.model = model
+
+    def build(self) -> str:
+        """Build AI_EMBED function call."""
+        return f"SNOWFLAKE.CORTEX.EMBED_TEXT_768('{self.model}', {self.content})"
+
+
+class AISimilarityBuilder:
+    """Builder for AI_SIMILARITY function calls."""
+
+    def __init__(self, content1: str, content2: str):
+        self.content1 = content1
+        self.content2 = content2
+
+    def build(self) -> str:
+        """Build AI_SIMILARITY function call."""
+        return f"SNOWFLAKE.CORTEX.SIMILARITY({self.content1}, {self.content2})"
+
+
+class AITranslateBuilder:
+    """Builder for AI_TRANSLATE function calls."""
+
+    def __init__(self, text: str, source_lang: str, target_lang: str):
+        self.text = text
+        self.source_lang = source_lang
+        self.target_lang = target_lang
+
+    def build(self) -> str:
+        """Build AI_TRANSLATE function call."""
+        return f"SNOWFLAKE.CORTEX.TRANSLATE({self.text}, '{self.source_lang}', '{self.target_lang}')"
+
+
+class AIExtractBuilder:
+    """Builder for AI_EXTRACT function calls."""
+
+    def __init__(self, content: str, instruction: str):
+        self.content = content
+        self.instruction = instruction
+
+    def build(self) -> str:
+        """Build AI_EXTRACT function call."""
+        escaped_instruction = self.instruction.replace("'", "''")
+        return f"SNOWFLAKE.CORTEX.EXTRACT_ANSWER({self.content}, '{escaped_instruction}')"
+
+
+class AISummarizeAggBuilder:
+    """Builder for AI_SUMMARIZE_AGG function calls."""
+
+    def __init__(self, column: str):
+        self.column = column
+
+    def build(self) -> str:
+        """Build AI_SUMMARIZE_AGG function call."""
+        return f"SNOWFLAKE.CORTEX.SUMMARIZE_AGG({self.column})"
+
+
+class AICountTokensBuilder:
+    """Builder for AI_COUNT_TOKENS function calls."""
+
+    def __init__(self, model: str, text: str):
+        self.model = model
+        self.text = text
+
+    def build(self) -> str:
+        """Build AI_COUNT_TOKENS function call."""
+        return f"SNOWFLAKE.CORTEX.COUNT_TOKENS('{self.model}', {self.text})"
+
+
+class AIRedactBuilder:
+    """Builder for AI_REDACT function calls."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.pii_types = None
+
+    def with_pii_types(self, pii_types: list[str]) -> "AIRedactBuilder":
+        """Specify PII types to redact."""
+        self.pii_types = pii_types
+        return self
+
+    def build(self) -> str:
+        """Build AI_REDACT function call."""
+        if self.pii_types:
+            types_str = ", ".join(f"'{t}'" for t in self.pii_types)
+            return f"SNOWFLAKE.CORTEX.REDACT({self.text}, ARRAY_CONSTRUCT({types_str}))"
+        return f"SNOWFLAKE.CORTEX.REDACT({self.text})"
+
+
+class AIParseDocumentBuilder:
+    """Builder for AI_PARSE_DOCUMENT function calls."""
+
+    def __init__(self, file_path: str):
+        self.file_path = file_path
+        self.mode = "layout"
+
+    def with_mode(self, mode: str) -> "AIParseDocumentBuilder":
+        """Set parsing mode (layout or ocr)."""
+        self.mode = mode
+        return self
+
+    def build(self) -> str:
+        """Build AI_PARSE_DOCUMENT function call."""
+        return f"SNOWFLAKE.CORTEX.PARSE_DOCUMENT({self.file_path}, {{'mode': '{self.mode}'}})"
+
+
 # ============================================================================
 # Query Composition Builders
 # ============================================================================
@@ -429,6 +539,46 @@ def summarize(text_column: str) -> SummarizeBuilder:
 def ai_transcribe(audio_column: str) -> AITranscribeBuilder:
     """Create AI_TRANSCRIBE builder."""
     return AITranscribeBuilder(audio_column)
+
+
+def ai_embed(content: str, model: str = "e5-base-v2") -> AIEmbedBuilder:
+    """Create AI_EMBED builder."""
+    return AIEmbedBuilder(content, model)
+
+
+def ai_similarity(content1: str, content2: str) -> AISimilarityBuilder:
+    """Create AI_SIMILARITY builder."""
+    return AISimilarityBuilder(content1, content2)
+
+
+def ai_translate(text: str, source_lang: str, target_lang: str) -> AITranslateBuilder:
+    """Create AI_TRANSLATE builder."""
+    return AITranslateBuilder(text, source_lang, target_lang)
+
+
+def ai_extract(content: str, instruction: str) -> AIExtractBuilder:
+    """Create AI_EXTRACT builder."""
+    return AIExtractBuilder(content, instruction)
+
+
+def ai_summarize_agg(column: str) -> AISummarizeAggBuilder:
+    """Create AI_SUMMARIZE_AGG builder."""
+    return AISummarizeAggBuilder(column)
+
+
+def ai_count_tokens(model: str, text: str) -> AICountTokensBuilder:
+    """Create AI_COUNT_TOKENS builder."""
+    return AICountTokensBuilder(model, text)
+
+
+def ai_redact(text: str) -> AIRedactBuilder:
+    """Create AI_REDACT builder."""
+    return AIRedactBuilder(text)
+
+
+def ai_parse_document(file_path: str) -> AIParseDocumentBuilder:
+    """Create AI_PARSE_DOCUMENT builder."""
+    return AIParseDocumentBuilder(file_path)
 
 
 def select(table_name: str) -> SelectQueryBuilder:

@@ -4,14 +4,25 @@ This service leverages the composable query builders for cleaner, more maintaina
 """
 
 from typing import Any
+import json
+import re
+from snowflake.connector.errors import ProgrammingError
 
 from .ai_sql_builders import (
     AIAggregateBuilder,
     AIClassifyBuilder,
     AICompleteBuilder,
+    AICountTokensBuilder,
+    AIEmbedBuilder,
+    AIExtractBuilder,
     AIFilterBuilder,
+    AIParseDocumentBuilder,
+    AIRedactBuilder,
     AISentimentBuilder,
+    AISimilarityBuilder,
+    AISummarizeAggBuilder,
     AITranscribeBuilder,
+    AITranslateBuilder,
     SelectQueryBuilder,
     SemanticJoinBuilder,
     StructuredExtractionBuilder,
@@ -19,9 +30,17 @@ from .ai_sql_builders import (
     ai_aggregate,
     ai_classify,
     ai_complete,
+    ai_count_tokens,
+    ai_embed,
+    ai_extract,
     ai_filter,
+    ai_parse_document,
+    ai_redact,
     ai_sentiment,
+    ai_similarity,
+    ai_summarize_agg,
     ai_transcribe,
+    ai_translate,
     extract_structured,
     select,
     semantic_join,
@@ -58,13 +77,67 @@ class ModularAISQLService:
                 'What is the capital of France?'
             )
         """
-        builder = ai_complete(model, prompt)
-        if response_format:
-            builder = builder.with_response_format(response_format)
+        # Snowflake COMPLETE requires model and prompt to be string literals
 
-        query = f"SELECT {builder.build()} as response"
-        result = await self.sf.execute_query(query)
-        return result[0]["RESPONSE"] if result else ""
+        # Debug visibility for current prompt
+        print("\n[AI_COMPLETE] prompt length:", len(prompt))
+        print("[AI_COMPLETE] prompt content:\n", prompt)
+
+        # Snowflake requires string literals and limits prompt length (~16KB)
+        MAX_LEN = 16000
+
+        def sanitize(text: str, aggressive: bool = False) -> str:
+            """Produce a safe single-quoted literal (no raw newlines)."""
+            # Remove control chars
+            text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)
+            if aggressive:
+                text = text.encode("ascii", "ignore").decode()
+            # Escape backslash/single-quote
+            text = text.replace("\\", "\\\\").replace("'", "''")
+            # Encode newlines/tabs as literal sequences to keep prompt on one line
+            text = text.replace("\r", "\\n").replace("\n", "\\n").replace("\t", " ")
+            return text
+
+        def build_query(safe_prompt: str) -> str:
+            if len(safe_prompt) > MAX_LEN:
+                raise ValueError("Prompt too long for AI_COMPLETE; please reduce context under 16KB.")
+
+            if response_format:
+                response_format_json = json.dumps(response_format).replace("'", "''")
+                return f"""
+                SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                    '{model}',
+                    '{safe_prompt}',
+                    PARSE_JSON('{response_format_json}')
+                ) as response
+                """
+            return f"""
+            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                '{model}',
+                '{safe_prompt}'
+            ) as response
+            """
+
+        # First attempt with mild sanitization
+        safe_prompt = sanitize(prompt, aggressive=False)
+        query = build_query(safe_prompt)
+
+        print("[AI_COMPLETE] query used:\n", query)
+        try:
+            result = await self.sf.execute_query(query)
+            return result[0]["RESPONSE"] if result else ""
+        except ProgrammingError as e:
+            msg = str(e)
+            if "needs to be a string literal" not in msg:
+                raise
+            # Retry once with aggressive sanitization and truncation
+            safe_prompt = sanitize(prompt, aggressive=True)
+            if len(safe_prompt) > MAX_LEN:
+                safe_prompt = safe_prompt[:MAX_LEN]
+            query = build_query(safe_prompt)
+            print("[AI_COMPLETE] retry with aggressive sanitization:\n", query)
+            result = await self.sf.execute_query(query)
+            return result[0]["RESPONSE"] if result else ""
 
     async def ai_classify(
         self,
@@ -211,6 +284,217 @@ class ModularAISQLService:
             .select_ai_function(transcribe, "transcription")
             .select("transcription['text']::VARCHAR", "transcription_text")
             .select("transcription['audio_duration']::FLOAT", "audio_duration_seconds")
+            .limit(100)
+            .build()
+        )
+
+        return await self.sf.execute_query(query)
+
+    async def ai_embed(
+        self,
+        content_column: str,
+        table_name: str,
+        model: str = "e5-base-v2",
+    ) -> list[dict[str, Any]]:
+        """Generate embeddings for text content.
+
+        Example:
+            results = await service.ai_embed('description', 'products')
+        """
+        embed = ai_embed(content_column, model)
+
+        query = (
+            select(table_name)
+            .select(content_column)
+            .select_ai_function(embed, "embedding")
+            .limit(100)
+            .build()
+        )
+
+        return await self.sf.execute_query(query)
+
+    async def ai_similarity(
+        self,
+        table_name: str,
+        column1: str,
+        column2: str,
+    ) -> list[dict[str, Any]]:
+        """Calculate similarity between two text columns.
+
+        Example:
+            results = await service.ai_similarity('comparisons', 'text1', 'text2')
+        """
+        similarity = ai_similarity(column1, column2)
+
+        query = (
+            select(table_name)
+            .select(column1, column2)
+            .select_ai_function(similarity, "similarity_score")
+            .limit(100)
+            .build()
+        )
+
+        return await self.sf.execute_query(query)
+
+    async def ai_translate(
+        self,
+        text_column: str,
+        table_name: str,
+        source_lang: str,
+        target_lang: str,
+    ) -> list[dict[str, Any]]:
+        """Translate text from one language to another.
+
+        Example:
+            results = await service.ai_translate(
+                'content', 'articles', 'en', 'es'
+            )
+        """
+        translate = ai_translate(text_column, source_lang, target_lang)
+
+        query = (
+            select(table_name)
+            .select(text_column)
+            .select_ai_function(translate, "translated_text")
+            .limit(100)
+            .build()
+        )
+
+        return await self.sf.execute_query(query)
+
+    async def ai_extract(
+        self,
+        content_column: str,
+        table_name: str,
+        instruction: str,
+    ) -> list[dict[str, Any]]:
+        """Extract specific information from text.
+
+        Example:
+            results = await service.ai_extract(
+                'document_text',
+                'documents',
+                'Extract all email addresses'
+            )
+        """
+        extract = ai_extract(content_column, instruction)
+
+        query = (
+            select(table_name)
+            .select(content_column)
+            .select_ai_function(extract, "extracted_data")
+            .limit(100)
+            .build()
+        )
+
+        return await self.sf.execute_query(query)
+
+    async def ai_summarize_agg(
+        self,
+        text_column: str,
+        table_name: str,
+        group_by: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Aggregate and summarize multiple rows of text.
+
+        Example:
+            results = await service.ai_summarize_agg(
+                'feedback',
+                'customer_reviews',
+                group_by='product_id'
+            )
+        """
+        summarize_agg = ai_summarize_agg(text_column)
+
+        query_builder = (
+            select(table_name)
+            .select_ai_function(summarize_agg, "aggregated_summary")
+        )
+
+        if group_by:
+            query_builder = query_builder.select(group_by).group_by(group_by).limit(20)
+
+        return await self.sf.execute_query(query_builder.build())
+
+    async def ai_count_tokens(
+        self,
+        model: str,
+        text_column: str,
+        table_name: str,
+    ) -> list[dict[str, Any]]:
+        """Count tokens in text for a specific model.
+
+        Example:
+            results = await service.ai_count_tokens(
+                'claude-3-7-sonnet',
+                'prompt_text',
+                'prompts'
+            )
+        """
+        count_tokens = ai_count_tokens(model, text_column)
+
+        query = (
+            select(table_name)
+            .select(text_column)
+            .select_ai_function(count_tokens, "token_count")
+            .limit(100)
+            .build()
+        )
+
+        return await self.sf.execute_query(query)
+
+    async def ai_redact(
+        self,
+        text_column: str,
+        table_name: str,
+        pii_types: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Redact PII from text.
+
+        Example:
+            results = await service.ai_redact(
+                'user_comments',
+                'comments',
+                pii_types=['EMAIL', 'PHONE_NUMBER']
+            )
+        """
+        redact = ai_redact(text_column)
+        if pii_types:
+            redact = redact.with_pii_types(pii_types)
+
+        query = (
+            select(table_name)
+            .select(text_column)
+            .select_ai_function(redact, "redacted_text")
+            .limit(100)
+            .build()
+        )
+
+        return await self.sf.execute_query(query)
+
+    async def ai_parse_document(
+        self,
+        file_path_column: str,
+        table_name: str,
+        mode: str = "layout",
+    ) -> list[dict[str, Any]]:
+        """Parse documents (PDF, images) to extract text.
+
+        Example:
+            results = await service.ai_parse_document(
+                'document_path',
+                'uploaded_docs',
+                mode='ocr'
+            )
+        """
+        parse_doc = ai_parse_document(file_path_column)
+        if mode != "layout":
+            parse_doc = parse_doc.with_mode(mode)
+
+        query = (
+            select(table_name)
+            .select(file_path_column)
+            .select_ai_function(parse_doc, "parsed_content")
             .limit(100)
             .build()
         )
@@ -428,3 +712,45 @@ class ModularAISQLService:
     def build_ai_transcribe(audio_column: str) -> AITranscribeBuilder:
         """Create AI_TRANSCRIBE builder."""
         return ai_transcribe(audio_column)
+
+    @staticmethod
+    def build_ai_embed(content: str, model: str = "e5-base-v2") -> AIEmbedBuilder:
+        """Create AI_EMBED builder."""
+        return ai_embed(content, model)
+
+    @staticmethod
+    def build_ai_similarity(content1: str, content2: str) -> AISimilarityBuilder:
+        """Create AI_SIMILARITY builder."""
+        return ai_similarity(content1, content2)
+
+    @staticmethod
+    def build_ai_translate(
+        text: str, source_lang: str, target_lang: str
+    ) -> AITranslateBuilder:
+        """Create AI_TRANSLATE builder."""
+        return ai_translate(text, source_lang, target_lang)
+
+    @staticmethod
+    def build_ai_extract(content: str, instruction: str) -> AIExtractBuilder:
+        """Create AI_EXTRACT builder."""
+        return ai_extract(content, instruction)
+
+    @staticmethod
+    def build_ai_summarize_agg(column: str) -> AISummarizeAggBuilder:
+        """Create AI_SUMMARIZE_AGG builder."""
+        return ai_summarize_agg(column)
+
+    @staticmethod
+    def build_ai_count_tokens(model: str, text: str) -> AICountTokensBuilder:
+        """Create AI_COUNT_TOKENS builder."""
+        return ai_count_tokens(model, text)
+
+    @staticmethod
+    def build_ai_redact(text: str) -> AIRedactBuilder:
+        """Create AI_REDACT builder."""
+        return ai_redact(text)
+
+    @staticmethod
+    def build_ai_parse_document(file_path: str) -> AIParseDocumentBuilder:
+        """Create AI_PARSE_DOCUMENT builder."""
+        return ai_parse_document(file_path)

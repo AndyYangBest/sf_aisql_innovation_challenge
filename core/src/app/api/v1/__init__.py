@@ -5,6 +5,8 @@ from .health import router as health_router
 from .tables import router as tables_router
 from .ai_sql import router as ai_sql_router
 from .table_assets import router as table_assets_router
+from .agent import router as agent_router
+from .eda import router as eda_router
 
 # Comment out routers with authentication dependencies for now
 # from .login import router as login_router
@@ -20,6 +22,8 @@ router.include_router(health_router)
 router.include_router(tables_router)
 router.include_router(ai_sql_router)
 router.include_router(table_assets_router)
+router.include_router(agent_router)
+router.include_router(eda_router)
 
 # Comment out routers with authentication dependencies for now
 # router.include_router(login_router)

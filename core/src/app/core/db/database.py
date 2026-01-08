@@ -93,7 +93,14 @@ class SnowflakeConnection:
                 try:
                     _run(safe_query)
                 except Exception:
-                    raise primary_error
+                    # Final generic fallback: convert entire row to JSON to bypass type parsing
+                    try:
+                        fallback_query = f"SELECT TO_JSON(OBJECT_CONSTRUCT(*)) AS ROW_JSON FROM ({query})"
+                        _run(fallback_query)
+                        rows = cursor.fetchall()
+                        return [json.loads(r[0]) if r and r[0] else {} for r in rows]
+                    except Exception:
+                        raise primary_error
 
             # Use fetch_pandas_all() to get data as DataFrame
             # This handles large numbers and timestamps better
