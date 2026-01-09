@@ -173,7 +173,9 @@ export const WorkflowLogPanel = ({
                   </div>
 
                   {/* Message */}
-                  <span className={cn('flex-1', getLogColor(log.type))}>
+                  <span
+                    className={cn('flex-1 whitespace-pre-wrap break-words', getLogColor(log.type))}
+                  >
                     {log.message || JSON.stringify(log.data)}
                   </span>
                 </div>

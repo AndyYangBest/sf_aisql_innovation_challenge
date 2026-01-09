@@ -15,12 +15,15 @@ Router Logic:
 """
 
 from typing import Any, Literal
+import asyncio
+import copy
 import json
 import uuid
 import os
 from pathlib import Path
 import ast
 import operator
+import logging
 
 from strands import Agent, tool
 from strands_tools import workflow
@@ -32,8 +35,11 @@ from ..services.modular_ai_sql_service import ModularAISQLService
 from ..services.snowflake_service import SnowflakeService
 from ..services.data_type_detector import DataTypeDetector
 from ..services.eda_workflow_persistence import EDAWorkflowPersistenceService
+from ..core.config import settings
 from .eda_agents import SnowflakeProfiler
 from .eda_hooks import create_default_eda_hooks
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -374,12 +380,31 @@ class EDAOrchestrator:
         hooks = create_default_eda_hooks() if enable_hooks else []
 
         # Prefer OpenAI provider if API key is available
-        openai_key = os.getenv("OPENAI_API_KEY")
+        openai_key = (
+            settings.OPENAI_API_KEY.get_secret_value()
+            if settings.OPENAI_API_KEY
+            else os.getenv("OPENAI_API_KEY")
+        )
+        if openai_key:
+            os.environ.setdefault("OPENAI_API_KEY", openai_key)
+
         openai_model_id = (
-            os.getenv("STRANDS_MODEL_ID")
+            settings.STRANDS_MODEL_ID
+            or settings.OPENAI_MODEL_ID
+            or os.getenv("STRANDS_MODEL_ID")
             or os.getenv("OPENAI_MODEL_ID")
             or "gpt-4o-mini"
         )
+        model_provider = (
+            settings.STRANDS_MODEL_PROVIDER
+            or os.getenv("STRANDS_MODEL_PROVIDER")
+        )
+        if not model_provider or model_provider == "ollama":
+            model_provider = "openai"
+
+        os.environ["STRANDS_MODEL_PROVIDER"] = model_provider
+        os.environ["STRANDS_MODEL_ID"] = openai_model_id
+        os.environ["STRANDS_PROVIDER"] = model_provider
         openai_model = (
             OpenAIModel(
                 model_id=openai_model_id,
@@ -391,6 +416,11 @@ class EDAOrchestrator:
             if openai_key
             else None
         )
+
+        if not openai_model:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not configured. Set it in core/src/.env or your environment."
+            )
 
         workflow_tools = EDAWorkflowTools(snowflake_service)
 
@@ -408,6 +438,9 @@ class EDAOrchestrator:
                                 Use these tools to enhance your analysis and provide better insights.""",
             tools=[
                 workflow,
+                workflow_tools.profile_table,
+                workflow_tools.sql,
+                workflow_tools.calculator,
                 workflow_tools.infer_column_type,
                 workflow_tools.detect_data_structure,
                 workflow_tools.suggest_sampling_strategy,
@@ -435,6 +468,7 @@ class EDAOrchestrator:
         tasks = [
             {
                 "task_id": "profile_table",
+                "tools": ["profile_table"],
                 "description": f"Profile the table '{table_asset.name}' to extract schema, statistics, sample data, AND semantic type inference for each column. Table SQL: {table_asset.source_sql}",
                 "system_prompt": """You are a data profiling expert. Extract comprehensive table profiles including:
 
@@ -458,6 +492,7 @@ class EDAOrchestrator:
             },
             {
                 "task_id": "generate_insights",
+                "tools": ["calculator"],
                 "description": f"Analyze the table profile INCLUDING semantic type information and generate insights about data patterns, quality issues, and recommendations. User goal: {user_goal or 'general analysis'}",
                 "system_prompt": """You are a data insights expert. Analyze table profiles with semantic type information.
 
@@ -481,6 +516,7 @@ Return JSON with keys: key_findings (array), data_quality_issues (array of objec
             },
             {
                 "task_id": "generate_charts",
+                "tools": ["calculator"],
                 "description": f"Create visualization specifications for the table. Generate 2-3 appropriate charts based on the data types (use semantic type information) and user goal: {user_goal or 'general visualization'}",
                 "system_prompt": """You are a data visualization expert. Create chart specifications using semantic type information.
 
@@ -503,6 +539,7 @@ Return JSON with key: charts (array of objects with title, chart_type, sql, narr
             },
             {
                 "task_id": "generate_documentation",
+                "tools": ["calculator"],
                 "description": f"Generate comprehensive documentation for the table including summary, use cases, tags, and markdown documentation. Incorporate semantic type information.",
                 "system_prompt": """You are a technical documentation expert. Create clear documentation incorporating semantic type information.
 
@@ -537,6 +574,7 @@ Return JSON with keys: summary (2-3 sentences), use_cases (array), tags (array),
         tasks = [
             {
                 "task_id": "profile_table",
+                "tools": ["profile_table"],
                 "description": f"Profile the table '{table_asset.name}' with focus on time-series columns and semantic type inference. Table SQL: {table_asset.source_sql}",
                 "system_prompt": """You are a data profiling expert specializing in time-series data.
 Extract schema, statistics, and identify date/timestamp columns. The profile_table tool automatically includes:
@@ -551,6 +589,7 @@ Return JSON with schema, statistics, samples, metadata (including type inference
             },
             {
                 "task_id": "generate_charts",
+                "tools": ["calculator"],
                 "description": f"Create time-series visualizations showing trends, patterns, and temporal distributions using semantic type information. User goal: {user_goal or 'time-series analysis'}",
                 "system_prompt": """You are a time-series visualization expert. Create 3-4 charts
 focusing on temporal patterns, trends, and time-based distributions.
@@ -567,6 +606,7 @@ Return JSON with charts array.""",
             },
             {
                 "task_id": "generate_insights",
+                "tools": ["calculator"],
                 "description": f"Analyze temporal patterns, trends, seasonality, and anomalies in the time-series data using semantic type information.",
                 "system_prompt": """You are a time-series analysis expert. Identify trends, seasonality,
 anomalies, and temporal patterns.
@@ -583,6 +623,7 @@ Return JSON with key_findings, data_quality_issues, recommendations.""",
             },
             {
                 "task_id": "generate_documentation",
+                "tools": ["calculator"],
                 "description": f"Generate time-series focused documentation highlighting temporal insights and semantic types.",
                 "system_prompt": """You are a technical documentation expert specializing in time-series data.
 Create documentation emphasizing temporal patterns and trends.
@@ -613,6 +654,7 @@ Return JSON with summary, use_cases, tags (include "time-series"), markdown_doc.
         tasks = [
             {
                 "task_id": "profile_table",
+                "tools": ["profile_table"],
                 "description": f"Profile the table '{table_asset.name}' with focus on data quality metrics and semantic type inference. Table SQL: {table_asset.source_sql}",
                 "system_prompt": """You are a data quality profiling expert. Extract schema, statistics
 with emphasis on null counts, distinct values, and potential quality issues. The profile_table tool automatically includes:
@@ -631,6 +673,7 @@ Return JSON with schema, statistics, samples, metadata (including type inference
             },
             {
                 "task_id": "generate_insights",
+                "tools": ["calculator"],
                 "description": f"Perform comprehensive data quality analysis identifying issues, anomalies, and providing recommendations using semantic type information. User goal: {user_goal or 'data quality check'}",
                 "system_prompt": """You are a data quality expert. Identify quality issues including
 nulls, duplicates, outliers, inconsistencies, and data integrity problems.
@@ -653,6 +696,7 @@ Return JSON with key_findings, data_quality_issues (with severity), recommendati
             },
             {
                 "task_id": "generate_documentation",
+                "tools": ["calculator"],
                 "description": f"Generate a data quality report with findings, issues, and remediation recommendations incorporating semantic type information.",
                 "system_prompt": """You are a data quality documentation expert. Create a quality report
 highlighting issues, their impact, and remediation steps.
@@ -671,12 +715,100 @@ Return JSON with summary, use_cases (focus on quality improvement), tags (includ
 
         return tasks
 
+    def _get_task_templates(
+        self,
+        workflow_type: WorkflowType,
+        table_asset: TableAsset,
+        user_goal: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if workflow_type == "EDA_OVERVIEW":
+            return self._create_eda_overview_tasks(table_asset, user_goal)
+        if workflow_type == "EDA_TIME_SERIES":
+            return self._create_eda_time_series_tasks(table_asset, user_goal)
+        if workflow_type == "EDA_DATA_QUALITY":
+            return self._create_eda_data_quality_tasks(table_asset, user_goal)
+        raise ValueError(f"Unknown workflow type: {workflow_type}")
+
+    def build_tasks_from_graph(
+        self,
+        workflow_graph: dict[str, Any],
+        workflow_type: WorkflowType,
+        table_asset: TableAsset,
+        user_goal: str | None = None,
+    ) -> list[dict[str, Any]]:
+        nodes = workflow_graph.get("nodes") or []
+        edges = workflow_graph.get("edges") or []
+        if not nodes:
+            return []
+
+        templates = self._get_task_templates(workflow_type, table_asset, user_goal)
+        template_by_type = {task["task_id"]: task for task in templates}
+
+        tasks: list[dict[str, Any]] = []
+        node_type_by_id: dict[str, str] = {}
+        node_ids_by_type: dict[str, list[str]] = {}
+        node_ids_in_order: list[str] = []
+
+        for node in nodes:
+            node_id = node.get("id")
+            node_type = node.get("type")
+            if not node_id or not node_type:
+                continue
+            if node_type not in template_by_type:
+                continue
+            node_type_by_id[node_id] = node_type
+            node_ids_by_type.setdefault(node_type, []).append(node_id)
+            node_ids_in_order.append(node_id)
+
+            template = copy.deepcopy(template_by_type[node_type])
+            template["task_id"] = node_id
+            template["node_type"] = node_type
+            tasks.append(template)
+
+        if not tasks:
+            return []
+
+        if edges:
+            dependencies_by_id: dict[str, set[str]] = {
+                node_id: set() for node_id in node_ids_in_order
+            }
+            for edge in edges:
+                source_id = edge.get("sourceNodeID") or edge.get("source")
+                target_id = edge.get("targetNodeID") or edge.get("target")
+                if (
+                    source_id
+                    and target_id
+                    and source_id in node_type_by_id
+                    and target_id in node_type_by_id
+                    and source_id != target_id
+                ):
+                    dependencies_by_id.setdefault(target_id, set()).add(source_id)
+
+            for task in tasks:
+                task_id = task["task_id"]
+                task["dependencies"] = sorted(dependencies_by_id.get(task_id, set()))
+        else:
+            for task in tasks:
+                task_id = task["task_id"]
+                node_type = node_type_by_id.get(task_id)
+                template = template_by_type.get(node_type, {})
+                deps_by_type = template.get("dependencies", [])
+                mapped_deps: list[str] = []
+                for dep_type in deps_by_type:
+                    dep_nodes = node_ids_by_type.get(dep_type) or []
+                    if dep_nodes:
+                        mapped_deps.append(dep_nodes[0])
+                task["dependencies"] = mapped_deps
+
+        return tasks
+
     async def run_eda(
         self,
         table_asset: TableAsset,
         user_intent: str | None = None,
         workflow_type: WorkflowType | None = None,
         user_id: int | None = None,
+        tasks_override: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Run EDA on a table asset using Strands workflow tool.
 
@@ -693,25 +825,20 @@ Return JSON with summary, use_cases (focus on quality improvement), tags (includ
         if workflow_type is None:
             workflow_type = await self.router.route_workflow(table_asset, user_intent)
 
-        print(f"\n{'='*60}")
-        print(f"🔬 Starting EDA Workflow: {workflow_type}")
-        print(f"📊 Table: {table_asset.name}")
+        logger.info("\n%s", "=" * 60)
+        logger.info("🔬 Starting EDA Workflow: %s", workflow_type)
+        logger.info("📊 Table: %s", table_asset.name)
         if user_intent:
-            print(f"🎯 Goal: {user_intent}")
-        print(f"{'='*60}\n")
+            logger.info("🎯 Goal: %s", user_intent)
+        logger.info("%s\n", "=" * 60)
 
         # Create workflow ID
         workflow_id = f"eda_{table_asset.id}_{uuid.uuid4().hex[:8]}"
 
-        # Select tasks based on workflow type
-        if workflow_type == "EDA_OVERVIEW":
-            tasks = self._create_eda_overview_tasks(table_asset, user_intent)
-        elif workflow_type == "EDA_TIME_SERIES":
-            tasks = self._create_eda_time_series_tasks(table_asset, user_intent)
-        elif workflow_type == "EDA_DATA_QUALITY":
-            tasks = self._create_eda_data_quality_tasks(table_asset, user_intent)
+        if tasks_override is not None:
+            tasks = tasks_override
         else:
-            raise ValueError(f"Unknown workflow type: {workflow_type}")
+            tasks = self._get_task_templates(workflow_type, table_asset, user_intent)
 
         # Create database record if db session is available
         persistence = None
@@ -726,33 +853,43 @@ Return JSON with summary, use_cases (focus on quality improvement), tags (includ
                     user_id=user_id,
                     tasks_total=len(tasks),
                 )
-                print(f"[Persistence] ✓ Created database record for workflow")
+                logger.info("[Persistence] ✓ Created database record for workflow")
             except Exception as e:
-                print(f"[Persistence] Warning: Could not create database record: {e}")
+                logger.warning(
+                    "[Persistence] Warning: Could not create database record: %s",
+                    e,
+                )
 
         # Create workflow using Strands workflow tool
-        print(f"[Strands Workflow] Creating workflow '{workflow_id}' with {len(tasks)} tasks...")
+        logger.info(
+            "[Strands Workflow] Creating workflow '%s' with %s tasks...",
+            workflow_id,
+            len(tasks),
+        )
 
         try:
             # Directly call the workflow tool
-            create_result = self.coordinator.tool.workflow(
+            create_result = await asyncio.to_thread(
+                self.coordinator.tool.workflow,
                 action="create",
                 workflow_id=workflow_id,
                 tasks=tasks,
             )
-            print(f"[Strands Workflow] ✓ Workflow created")
+            logger.info("[Strands Workflow] ✓ Workflow created")
 
             # Start workflow execution
-            print(f"[Strands Workflow] Starting workflow execution...")
-            start_result = self.coordinator.tool.workflow(
+            logger.info("[Strands Workflow] Starting workflow execution...")
+            start_result = await asyncio.to_thread(
+                self.coordinator.tool.workflow,
                 action="start",
                 workflow_id=workflow_id,
             )
-            print(f"[Strands Workflow] ✓ Workflow started")
+            logger.info("[Strands Workflow] ✓ Workflow started")
 
             # Get workflow status and results
-            print(f"[Strands Workflow] Retrieving workflow results...")
-            status = self.coordinator.tool.workflow(
+            logger.info("[Strands Workflow] Retrieving workflow results...")
+            status = await asyncio.to_thread(
+                self.coordinator.tool.workflow,
                 action="status",
                 workflow_id=workflow_id,
             )
@@ -765,27 +902,55 @@ Return JSON with summary, use_cases (focus on quality improvement), tags (includ
                     with open(workflow_file, "r") as f:
                         workflow_data = json.load(f)
                 except Exception as e:
-                    print(f"[Warning] Could not read workflow file: {e}")
+                    logger.warning("[Warning] Could not read workflow file: %s", e)
 
-            print(f"\n{'='*60}")
-            print(f"✅ EDA Workflow Complete!")
-            print(f"{'='*60}\n")
+            workflow_state = workflow_data.get("status") if workflow_data else None
+            if workflow_state == "cancelled":
+                logger.info("\n%s", "=" * 60)
+                logger.info("🛑 EDA Workflow Cancelled")
+                logger.info("%s\n", "=" * 60)
+            else:
+                logger.info("\n%s", "=" * 60)
+                logger.info("✅ EDA Workflow Complete!")
+                logger.info("%s\n", "=" * 60)
 
             # Parse and structure results
-            artifacts = self._extract_artifacts_from_workflow_data(workflow_data) if workflow_data else {}
-            summary = self._generate_summary_from_workflow_data(workflow_data) if workflow_data else {}
+            artifacts = (
+                self._extract_artifacts_from_workflow_data(workflow_data)
+                if workflow_data
+                else {}
+            )
+            summary = (
+                self._generate_summary_from_workflow_data(workflow_data)
+                if workflow_data
+                else {}
+            )
 
             # Update database record with results
             if persistence:
                 try:
-                    await persistence.complete_execution(
-                        workflow_id=workflow_id,
-                        artifacts=artifacts,
-                        summary=summary,
-                    )
-                    print(f"[Persistence] ✓ Updated database record with results")
+                    if workflow_state == "cancelled":
+                        await persistence.update_execution(
+                            workflow_id=workflow_id,
+                            status="cancelled",
+                            progress=summary.get("progress"),
+                            tasks_completed=summary.get("tasks_completed"),
+                        )
+                        logger.info(
+                            "[Persistence] ✓ Marked workflow as cancelled in database"
+                        )
+                    else:
+                        await persistence.complete_execution(
+                            workflow_id=workflow_id,
+                            artifacts=artifacts,
+                            summary=summary,
+                        )
+                        logger.info("[Persistence] ✓ Updated database record with results")
                 except Exception as e:
-                    print(f"[Persistence] Warning: Could not update database record: {e}")
+                    logger.warning(
+                        "[Persistence] Warning: Could not update database record: %s",
+                        e,
+                    )
 
             results = {
                 "workflow": workflow_type,
@@ -793,6 +958,7 @@ Return JSON with summary, use_cases (focus on quality improvement), tags (includ
                 "table_asset_id": table_asset.id,
                 "table_name": table_asset.name,
                 "status": status,
+                "workflow_state": workflow_state,
                 "artifacts": artifacts,
                 "summary": summary,
             }
@@ -807,9 +973,12 @@ Return JSON with summary, use_cases (focus on quality improvement), tags (includ
                         workflow_id=workflow_id,
                         error_message=str(e),
                     )
-                    print(f"[Persistence] ✓ Marked workflow as failed in database")
+                    logger.info("[Persistence] ✓ Marked workflow as failed in database")
                 except Exception as persist_error:
-                    print(f"[Persistence] Warning: Could not mark workflow as failed: {persist_error}")
+                    logger.warning(
+                        "[Persistence] Warning: Could not mark workflow as failed: %s",
+                        persist_error,
+                    )
             raise
 
     def _extract_artifacts_from_workflow_data(self, workflow_data: dict[str, Any]) -> dict[str, Any]:

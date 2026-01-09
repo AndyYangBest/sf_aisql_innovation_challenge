@@ -3,14 +3,29 @@
  * EDA 节点渲染组件 - 支持状态动画和流式日志
  */
 
+import type { ComponentType, ReactNode } from 'react';
 import { WorkflowNodeProps, WorkflowNodeRenderer, useNodeRender } from '@flowgram.ai/free-layout-editor';
-import { Database, Sparkles, BarChart3, Lightbulb, FileText, Download, MessageSquare, CheckCircle2, XCircle, Loader2, AlertCircle } from 'lucide-react';
+import {
+  Database,
+  Sparkles,
+  BarChart3,
+  Lightbulb,
+  FileText,
+  Download,
+  MessageSquare,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  AlertCircle,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { EDANodeType, EDA_NODE_DEFINITIONS } from '@/types/eda-workflow';
 import { NodeStatus } from '@/api/eda';
 
 // Icon mapping
-const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
+const iconMap: Record<string, ComponentType<{ className?: string }>> = {
   Database,
   Sparkles,
   BarChart3,
@@ -46,13 +61,20 @@ const StatusIcon = ({ status }: { status: NodeStatus }) => {
 };
 
 // Progress bar component
-const ProgressBar = ({ progress }: { progress?: number }) => {
+const ProgressBar = ({ progress, status }: { progress?: number; status: NodeStatus }) => {
   if (progress === undefined || progress === 0) return null;
+
+  const barColor =
+    status === 'success'
+      ? 'bg-emerald-500'
+      : status === 'error'
+      ? 'bg-destructive'
+      : 'bg-amber-500';
 
   return (
     <div className="absolute bottom-0 left-0 right-0 h-1 bg-muted rounded-b-lg overflow-hidden">
       <div
-        className="h-full bg-amber-500 transition-all duration-300 ease-out"
+        className={cn('h-full transition-all duration-300 ease-out', barColor)}
         style={{ width: `${progress}%` }}
       />
     </div>
@@ -82,6 +104,7 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
     type,
     selected,
     activated,
+    readonly,
   } = useNodeRender(props.node);
 
   // Get node data
@@ -96,9 +119,21 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
   const iconName = definition?.icon ?? 'Database';
   const Icon = iconMap[iconName] ?? Database;
   const isComment = nodeType === 'comment';
+  const isExpanded = Boolean(nodeData?.expanded);
 
   // Determine if node should be dimmed (not yet executed)
   const isDimmed = status === 'skipped';
+  const canExpand = !isComment;
+
+  const setNodeValue = (key: string, value: unknown) => {
+    if (typeof form?.setValueIn === 'function') {
+      form.setValueIn(key, value);
+      return;
+    }
+    if (typeof node?.updateData === 'function') {
+      node.updateData({ [key]: value });
+    }
+  };
 
   const nodeClassName = cn(
     props.className,
@@ -114,6 +149,201 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
   const portErrorColor = props.portErrorColor ?? '#ef4444';
   const portBackgroundColor = props.portBackgroundColor ?? '#0f1419';
 
+  const renderDetailField = (label: string, input: ReactNode) => (
+    <div className="space-y-1">
+      <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">
+        {label}
+      </div>
+      {input}
+    </div>
+  );
+
+  const renderDetails = () => {
+    if (isComment) {
+      return (
+        <div className="mt-2 text-sm text-slate-800">
+          {form?.render()}
+        </div>
+      );
+    }
+
+    if (!isExpanded) {
+      return (
+        <div className="mt-2 text-xs text-slate-700">
+          {form?.render()}
+        </div>
+      );
+    }
+
+    switch (nodeType) {
+      case 'data_source':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Table Asset ID',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.table_asset_id ?? ''}
+                onChange={(event) => setNodeValue('table_asset_id', Number(event.target.value))}
+                disabled={readonly}
+              />
+            )}
+            {renderDetailField(
+              'Table Name',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.table_name ?? ''}
+                onChange={(event) => setNodeValue('table_name', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+          </div>
+        );
+      case 'profile_table':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Sample Size',
+              <input
+                type="number"
+                min={10}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.sample_size ?? 100}
+                onChange={(event) => setNodeValue('sample_size', Number(event.target.value))}
+                disabled={readonly}
+              />
+            )}
+            <label className="flex items-center gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+                checked={Boolean(nodeData.include_type_inference ?? true)}
+                onChange={(event) => setNodeValue('include_type_inference', event.target.checked)}
+                disabled={readonly}
+              />
+              Include semantic type inference
+            </label>
+          </div>
+        );
+      case 'generate_insights':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Focus',
+              <select
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.focus ?? 'general'}
+                onChange={(event) => setNodeValue('focus', event.target.value)}
+                disabled={readonly}
+              >
+                <option value="general">General</option>
+                <option value="quality">Data Quality</option>
+                <option value="patterns">Patterns</option>
+                <option value="temporal">Temporal</option>
+              </select>
+            )}
+            {renderDetailField(
+              'User Notes',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.user_notes ?? ''}
+                onChange={(event) => setNodeValue('user_notes', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+          </div>
+        );
+      case 'generate_charts':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Chart Count',
+              <input
+                type="number"
+                min={1}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.chart_count ?? 3}
+                onChange={(event) => setNodeValue('chart_count', Number(event.target.value))}
+                disabled={readonly}
+              />
+            )}
+            <label className="flex items-center gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+                checked={Boolean(nodeData.use_semantic_types ?? true)}
+                onChange={(event) => setNodeValue('use_semantic_types', event.target.checked)}
+                disabled={readonly}
+              />
+              Use semantic type hints
+            </label>
+          </div>
+        );
+      case 'generate_documentation':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            <label className="flex items-center gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+                checked={Boolean(nodeData.include_summary ?? true)}
+                onChange={(event) => setNodeValue('include_summary', event.target.checked)}
+                disabled={readonly}
+              />
+              Include summary
+            </label>
+            <label className="flex items-center gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+                checked={Boolean(nodeData.include_use_cases ?? true)}
+                onChange={(event) => setNodeValue('include_use_cases', event.target.checked)}
+                disabled={readonly}
+              />
+              Include use cases
+            </label>
+            <label className="flex items-center gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+                checked={Boolean(nodeData.include_recommendations ?? true)}
+                onChange={(event) => setNodeValue('include_recommendations', event.target.checked)}
+                disabled={readonly}
+              />
+              Include recommendations
+            </label>
+          </div>
+        );
+      case 'export':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Export Format',
+              <select
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.format ?? 'json'}
+                onChange={(event) => setNodeValue('format', event.target.value)}
+                disabled={readonly}
+              >
+                <option value="json">JSON</option>
+                <option value="markdown">Markdown</option>
+                <option value="pdf">PDF</option>
+              </select>
+            )}
+          </div>
+        );
+      default:
+        return (
+          <div className="mt-2 text-xs text-slate-700">
+            {definition?.description ?? 'Configure this step'}
+          </div>
+        );
+    }
+  };
+
+  const showProgressBar =
+    !isComment && progress !== undefined && status !== 'idle' && status !== 'skipped';
+
   return (
     <WorkflowNodeRenderer
       {...props}
@@ -124,7 +354,7 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
       portBackgroundColor={portBackgroundColor}
     >
       {/* Pulse animation for running state */}
-        <PulseRing show={status === 'running' && !isComment} />
+      <PulseRing show={status === 'running' && !isComment} />
 
       {/* Node content */}
       <div className="relative px-3 py-2.5">
@@ -163,14 +393,32 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
 
           {/* Status icon */}
           {!isComment && <StatusIcon status={status} />}
+          {canExpand && (
+            <button
+              className="ml-1 rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                setNodeValue('expanded', !isExpanded);
+              }}
+              aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
+            >
+              {isExpanded ? (
+                <ChevronUp className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5" />
+              )}
+            </button>
+          )}
         </div>
 
-        {/* Form content */}
-        {form && (
-          <div className={cn('mt-2', isComment ? 'text-sm text-slate-700' : 'text-xs text-slate-600')}>
-            {form.render()}
+        {!isComment && (
+          <div className="mt-2 text-[11px] text-slate-500">
+            {definition?.description}
           </div>
         )}
+
+        {renderDetails()}
 
         {/* Progress indicator for running state */}
         {status === 'running' && progress !== undefined && !isComment && (
@@ -188,7 +436,7 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
       </div>
 
       {/* Progress bar */}
-      {!isComment && <ProgressBar progress={progress} />}
+      {showProgressBar && <ProgressBar progress={progress} status={status} />}
     </WorkflowNodeRenderer>
   );
 };

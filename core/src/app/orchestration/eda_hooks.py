@@ -155,7 +155,7 @@ class EDAProgressHook(HookProvider):
         self.total_tasks = event.invocation_state.get("total_tasks", 0)
 
         if self.total_tasks > 0:
-            print(f"\n📊 Progress: 0/{self.total_tasks} tasks (0%)")
+            logger.info("📊 Progress: 0/%s tasks (0%%)", self.total_tasks)
 
     def update_current_task(self, event: BeforeToolCallEvent) -> None:
         """Update current task being executed."""
@@ -164,8 +164,13 @@ class EDAProgressHook(HookProvider):
 
         if self.total_tasks > 0:
             progress = (self.completed_tasks / self.total_tasks) * 100
-            print(f"📊 Progress: {self.completed_tasks}/{self.total_tasks} tasks ({progress:.0f}%)")
-            print(f"   ▶ Current: {task_id}")
+            logger.info(
+                "📊 Progress: %s/%s tasks (%.0f%%)",
+                self.completed_tasks,
+                self.total_tasks,
+                progress,
+            )
+            logger.info("   ▶ Current: %s", task_id)
 
     def increment_progress(self, event: AfterToolCallEvent) -> None:
         """Increment progress counter."""
@@ -174,8 +179,13 @@ class EDAProgressHook(HookProvider):
 
             if self.total_tasks > 0:
                 progress = (self.completed_tasks / self.total_tasks) * 100
-                print(f"   ✓ Completed: {self.current_task}")
-                print(f"📊 Progress: {self.completed_tasks}/{self.total_tasks} tasks ({progress:.0f}%)\n")
+                logger.info("   ✓ Completed: %s", self.current_task)
+                logger.info(
+                    "📊 Progress: %s/%s tasks (%.0f%%)",
+                    self.completed_tasks,
+                    self.total_tasks,
+                    progress,
+                )
 
 
 class EDAErrorHandlingHook(HookProvider):

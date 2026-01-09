@@ -16,7 +16,6 @@ interface WorkspaceTabsProps {
   onTabChange: (tab: WorkspaceTab) => void;
   tableAsset: TableAsset;
   tableResult?: TableResult;
-  onWorkflowRunComplete?: () => void;
   hideWorkflowTab?: boolean;
 }
 
@@ -32,7 +31,7 @@ const allTabs: { id: WorkspaceTab; label: string; icon: React.ElementType; color
   { id: "lineage", label: "Lineage", icon: GitBranch, color: "text-muted-foreground" },
 ];
 
-const WorkspaceTabs = ({ activeTab, onTabChange, tableAsset, tableResult, onWorkflowRunComplete, hideWorkflowTab = false }: WorkspaceTabsProps) => {
+const WorkspaceTabs = ({ activeTab, onTabChange, tableAsset, tableResult, hideWorkflowTab = false }: WorkspaceTabsProps) => {
   const tabs = hideWorkflowTab ? allTabs.filter(t => t.id !== "workflow") : allTabs;
   return (
     <div className="flex flex-1 h-full overflow-hidden">
@@ -62,7 +61,7 @@ const WorkspaceTabs = ({ activeTab, onTabChange, tableAsset, tableResult, onWork
         "flex-1 h-full",
         activeTab === "workflow" ? "overflow-hidden" : "overflow-y-auto p-6 scrollbar-thin overflow-x-hidden"
       )}>
-        {activeTab === "workflow" && <WorkflowTab tableId={tableAsset.id} onRunComplete={onWorkflowRunComplete} />}
+        {activeTab === "workflow" && <WorkflowTab tableId={tableAsset.id} />}
         {activeTab === "overview" && <OverviewTab tableAsset={tableAsset} tableResult={tableResult} />}
         {activeTab === "data" && <DataTab tableResult={tableResult} />}
         {activeTab === "profile" && <ProfileTab tableResult={tableResult} />}

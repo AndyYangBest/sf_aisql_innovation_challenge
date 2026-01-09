@@ -14,13 +14,15 @@ import {
   useClientContext,
   usePlaygroundTools,
   useService,
-  WorkflowJSON,
+  type WorkflowJSON,
 } from '@flowgram.ai/free-layout-editor';
 import { MinimapRender, createMinimapPlugin } from '@flowgram.ai/minimap-plugin';
 import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   LayoutGrid,
   MessageSquarePlus,
+  Plus,
   Redo2,
   Scan,
   Undo2,
@@ -30,15 +32,18 @@ import {
 import { createEDANodeRegistries } from './EDANodeRegistries';
 import { EDANodeRenderer } from './EDANodeRenderer';
 import { WorkflowNode, WorkflowEdge } from '@/hooks/useEDAWorkflow';
+import { EDA_NODE_DEFINITIONS, EDANodeType, type EDANodeDefinition } from '@/types/eda-workflow';
 import { cn } from '@/lib/utils';
 
 interface EDAWorkflowEditorProps {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  isRunning?: boolean;
+  onWorkflowDataChange?: (data: WorkflowJSON) => void;
   className?: string;
 }
 
-const EDAWorkflowToolbar = () => {
+const EDAWorkflowToolbar = ({ isRunning }: { isRunning?: boolean }) => {
   const { history, document, playground } = useClientContext();
   const dragService = useService(WorkflowDragService);
   const selectService = useService(WorkflowSelectService);
@@ -46,6 +51,7 @@ const EDAWorkflowToolbar = () => {
   const zoomPercent = Math.round(tools.zoom * 100);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const [addNodeOpen, setAddNodeOpen] = useState(false);
 
   useEffect(() => {
     const disposable = history.undoRedoService.onChange(() => {
@@ -86,6 +92,40 @@ const EDAWorkflowToolbar = () => {
     [document, playground, dragService, selectService]
   );
 
+  const handleAddNode = useCallback(
+    (type: EDANodeType) => {
+      const definition = EDA_NODE_DEFINITIONS[type];
+      const container = playground.node.getBoundingClientRect();
+      const position = playground.config.getPosFromMouseEvent({
+        clientX: container.left + container.width * 0.5,
+        clientY: container.top + container.height * 0.5,
+      });
+      const data = {
+        ...definition.defaultData,
+        title: definition.name,
+        status: 'idle',
+      };
+      const node = document.createWorkflowNodeByType(type, position, { data });
+      selectService.selectNode(node);
+      setAddNodeOpen(false);
+    },
+    [document, playground, selectService]
+  );
+
+  const nodeGroups = useMemo(() => {
+    const grouped: Record<'source' | 'analysis' | 'output', EDANodeDefinition[]> = {
+      source: [],
+      analysis: [],
+      output: [],
+    };
+
+    Object.values(EDA_NODE_DEFINITIONS).forEach((definition) => {
+      grouped[definition.category].push(definition);
+    });
+
+    return grouped;
+  }, []);
+
   const iconClassName = 'h-4 w-4 text-slate-900';
   const buttonClassName = 'h-8 w-8 text-slate-900 hover:text-slate-900';
 
@@ -100,15 +140,56 @@ const EDAWorkflowToolbar = () => {
         className={buttonClassName}
         onClick={handleAutoLayout}
         aria-label="Auto layout"
+        disabled={isRunning}
       >
         <LayoutGrid className={iconClassName} strokeWidth={2.5} />
       </Button>
+      <Popover open={addNodeOpen} onOpenChange={setAddNodeOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={buttonClassName}
+            aria-label="Add node"
+            disabled={isRunning}
+          >
+            <Plus className={iconClassName} strokeWidth={2.5} />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-72 p-3" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="text-xs font-semibold uppercase text-slate-500 tracking-wide mb-2">
+            Add Node
+          </div>
+          <div className="space-y-3">
+            {(['source', 'analysis', 'output'] as const).map((category) => (
+              <div key={category} className="space-y-1">
+                <div className="text-[11px] uppercase text-slate-400 tracking-wide">
+                  {category}
+                </div>
+                <div className="space-y-1">
+                  {nodeGroups[category].map((definition) => (
+                    <button
+                      key={definition.type}
+                      className="w-full rounded-md border border-slate-200 bg-white px-2 py-2 text-left text-xs text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                      onClick={() => handleAddNode(definition.type)}
+                    >
+                      <div className="font-medium text-slate-900">{definition.name}</div>
+                      <div className="text-[11px] text-slate-500">{definition.description}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
       <Button
         variant="ghost"
         size="icon"
         className={buttonClassName}
         onClick={handleAddComment}
         aria-label="Add comment"
+        disabled={isRunning}
       >
         <MessageSquarePlus className={iconClassName} strokeWidth={2.5} />
       </Button>
@@ -193,9 +274,14 @@ const EDAMinimap = () => (
 export const EDAWorkflowEditor = ({
   nodes,
   edges,
+  isRunning,
+  onWorkflowDataChange,
   className,
 }: EDAWorkflowEditorProps) => {
   const editorRef = useRef<FreeLayoutPluginContext | undefined>();
+  const [editorReady, setEditorReady] = useState(false);
+  const applyingRef = useRef(false);
+  const lastEditorJsonRef = useRef<string | null>(null);
 
   // Node registries
   const nodeRegistries = useMemo(() => createEDANodeRegistries(), []);
@@ -219,11 +305,40 @@ export const EDAWorkflowEditor = ({
     [nodes, edges]
   );
 
+  const runningNodeIds = useMemo(() => {
+    return new Set(nodes.filter((node) => node.data.status === 'running').map((node) => node.id));
+  }, [nodes]);
+
   const handleAllLayersRendered = () => {
+    setEditorReady(true);
     if (nodes.length > 0) {
       void editorRef.current?.tools?.fitView(false);
     }
   };
+
+  useEffect(() => {
+    if (!editorReady) {
+      return;
+    }
+    const ctx = editorRef.current;
+    if (!ctx) {
+      return;
+    }
+    const nextJson = JSON.stringify(workflowData);
+    if (lastEditorJsonRef.current === nextJson) {
+      return;
+    }
+
+    applyingRef.current = true;
+    if (typeof ctx.operation?.fromJSON === 'function') {
+      ctx.operation.fromJSON(workflowData);
+    } else if (typeof ctx.document?.fromJSON === 'function') {
+      ctx.document.fromJSON(workflowData);
+    }
+    setTimeout(() => {
+      applyingRef.current = false;
+    }, 0);
+  }, [editorReady, workflowData]);
 
   if (nodes.length === 0) {
     return (
@@ -240,6 +355,7 @@ export const EDAWorkflowEditor = ({
           key={`workflow-${nodes.length}`}
           ref={editorRef}
           initialData={workflowData}
+          readonly={isRunning}
           nodeRegistries={nodeRegistries}
           materials={{
             renderDefaultNode: EDANodeRenderer,
@@ -273,22 +389,41 @@ export const EDAWorkflowEditor = ({
             }),
           ]}
           playground={{ autoResize: true }}
+          onContentChange={(ctx) => {
+            if (isRunning || applyingRef.current) {
+              return;
+            }
+            if (onWorkflowDataChange) {
+              const json = ctx.document.toJSON() as WorkflowJSON;
+              lastEditorJsonRef.current = JSON.stringify(json);
+              onWorkflowDataChange(json);
+            }
+          }}
           onAllLayersRendered={handleAllLayersRendered}
           // Disable editing during workflow execution
-          canAddLine={() => false}
-          canDeleteLine={() => true}
-          canDeleteNode={() => true}
+          canAddLine={() => !isRunning}
+          canDeleteLine={() => !isRunning}
+          canDeleteNode={() => !isRunning}
           // Line colors
           lineColor={{
             default: '#4d53e8',
             drawing: '#5DD6E3',
             hovered: '#37d0ff',
             selected: '#37d0ff',
+            flowing: '#f59e0b',
             error: '#ef4444',
+          }}
+          isFlowingLine={(_, line) => {
+            const fromId = line.from?.id;
+            const toId = line.to?.id;
+            return (
+              (fromId ? runningNodeIds.has(fromId) : false) ||
+              (toId ? runningNodeIds.has(toId) : false)
+            );
           }}
         >
           <EditorRenderer className="w-full h-full" />
-          <EDAWorkflowToolbar />
+          <EDAWorkflowToolbar isRunning={isRunning} />
           <EDAMinimap />
         </FreeLayoutEditorProvider>
       </div>

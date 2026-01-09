@@ -39,6 +39,7 @@ const EDAWorkflowPage = () => {
     runWorkflow,
     stopWorkflow,
     clearWorkflow,
+    updateWorkflowFromEditor,
   } = useEDAWorkflow(
     tableAsset ? parseInt(tableAsset.id) : 0,
     tableAsset?.name || ''
@@ -208,6 +209,7 @@ const EDAWorkflowPage = () => {
             nodes={nodes}
             edges={edges}
             className="h-full"
+            onWorkflowDataChange={updateWorkflowFromEditor}
           />
         )}
       </div>

@@ -105,6 +105,15 @@ class SnowflakeSettings(BaseSettings):
         }
 
 
+class ModelProviderSettings(BaseSettings):
+    """Model provider configuration for Strands/OpenAI."""
+
+    OPENAI_API_KEY: SecretStr | None = None
+    OPENAI_MODEL_ID: str | None = None
+    STRANDS_MODEL_ID: str | None = None
+    STRANDS_MODEL_PROVIDER: str | None = None
+
+
 class FirstUserSettings(BaseSettings):
     ADMIN_NAME: str = "admin"
     ADMIN_EMAIL: str = "admin@admin.com"
@@ -192,6 +201,7 @@ class Settings(
     SQLiteSettings,
     PostgresSettings,
     SnowflakeSettings,
+    ModelProviderSettings,
     CryptSettings,
     FirstUserSettings,
     TestSettings,

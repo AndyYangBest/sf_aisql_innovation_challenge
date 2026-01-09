@@ -3,6 +3,7 @@
  * EDA 工作流相关的 API 操作
  */
 
+import type { WorkflowJSON } from '@flowgram.ai/free-layout-editor';
 import { ApiResponse } from './types';
 import { apiRequest } from './client';
 
@@ -105,7 +106,8 @@ export const edaApi = {
     request: EDARunRequest,
     onLog: (event: WorkflowLogEvent) => void,
     onComplete: (result: EDARunResponse) => void,
-    onError: (error: string) => void
+    onError: (error: string) => void,
+    options?: { workflowData?: WorkflowJSON }
   ): Promise<EventSource> {
     try {
       const params = new URLSearchParams({
@@ -114,19 +116,27 @@ export const edaApi = {
         ...(request.workflow_type && { workflow_type: request.workflow_type }),
       });
 
+      if (options?.workflowData) {
+        const json = JSON.stringify(options.workflowData);
+        const encoded = globalThis.btoa(unescape(encodeURIComponent(json)));
+        params.set('workflow_json', encoded);
+      }
+
       const eventSource = new EventSource(`/api/v1/eda/run-stream?${params}`);
       let hasCompleted = false;
       let hasErrored = false;
 
-      const handleLog = (raw: string | undefined) => {
+      const handleLog = (raw: string | undefined): WorkflowLogEvent | null => {
         if (!raw) {
-          return;
+          return null;
         }
         try {
           const event: WorkflowLogEvent = JSON.parse(raw);
           onLog(event);
+          return event;
         } catch {
           // Ignore malformed payloads.
+          return null;
         }
       };
 
@@ -144,24 +154,21 @@ export const edaApi = {
 
       eventSource.addEventListener('complete', (e) => {
         hasCompleted = true;
-        const result: EDARunResponse = JSON.parse((e as MessageEvent).data);
-        onComplete(result);
+        const raw = (e as MessageEvent).data;
+        const payload = handleLog(raw);
+        const result = (payload?.data ?? payload) as EDARunResponse | null;
+        if (result) {
+          onComplete(result);
+        }
         eventSource.close();
       });
 
       eventSource.addEventListener('workflow-error', (e) => {
         const raw = (e as MessageEvent).data;
-        if (!raw) {
-          return;
-        }
-        try {
-          const errorData = JSON.parse(raw);
-          hasErrored = true;
-          onError(errorData.message || 'Workflow execution failed');
-          eventSource.close();
-        } catch {
-          // Ignore non-JSON errors; onerror will handle connection issues.
-        }
+        const payload = handleLog(raw);
+        hasErrored = true;
+        onError(payload?.message || 'Workflow execution failed');
+        eventSource.close();
       });
 
       eventSource.onmessage = (e) => {
@@ -180,6 +187,23 @@ export const edaApi = {
       onError(error instanceof Error ? error.message : 'Unknown error');
       throw error;
     }
+  },
+
+  /**
+   * Cancel a running workflow
+   */
+  async cancelWorkflow(workflowId: string): Promise<ApiResponse<{ success: boolean }>> {
+    return apiRequest(async () => {
+      const response = await fetch(`/api/v1/eda/workflow/${workflowId}/cancel`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to cancel workflow');
+      }
+
+      return await response.json();
+    });
   },
 
   /**

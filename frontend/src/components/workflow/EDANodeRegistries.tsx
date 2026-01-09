@@ -36,7 +36,7 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
             </Field>
             <Field name="table_name">
               {({ field }) => (
-                <div className="text-xs text-slate-600">
+                <div className="text-xs text-slate-700">
                   {field.value || 'No table selected'}
                 </div>
               )}
@@ -67,14 +67,14 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
             </Field>
             <Field name="sample_size">
               {({ field }) => (
-                <div className="text-xs text-slate-600">
+                <div className="text-xs text-slate-700">
                   Sample: {field.value || 100} rows
                 </div>
               )}
             </Field>
             <Field name="include_type_inference">
               {({ field }) => (
-                <div className="text-xs text-slate-600">
+                <div className="text-xs text-slate-700">
                   {field.value ? '✓ Type inference enabled' : '✗ Type inference disabled'}
                 </div>
               )}
@@ -105,7 +105,7 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
             </Field>
             <Field name="focus">
               {({ field }) => (
-                <div className="text-xs text-slate-600">
+                <div className="text-xs text-slate-700">
                   Focus: {field.value || 'general'}
                 </div>
               )}
@@ -136,7 +136,7 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
             </Field>
             <Field name="chart_count">
               {({ field }) => (
-                <div className="text-xs text-slate-600">
+                <div className="text-xs text-slate-700">
                   Charts: {field.value || 3}
                 </div>
               )}
@@ -165,7 +165,7 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
                 </div>
               )}
             </Field>
-            <div className="text-xs text-slate-600">
+            <div className="text-xs text-slate-700">
               Complete documentation
             </div>
           </>
@@ -193,7 +193,7 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
             </Field>
             <Field name="format">
               {({ field }) => (
-                <div className="text-xs text-slate-600">
+                <div className="text-xs text-slate-700">
                   Format: {field.value || 'json'}
                 </div>
               )}

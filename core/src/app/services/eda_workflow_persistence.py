@@ -95,10 +95,16 @@ class EDAWorkflowPersistenceService:
         if status is not None:
             execution.status = status
             if status == "completed":
-                execution.completed_at = datetime.now(timezone.utc)
-                execution.duration_seconds = (
-                    execution.completed_at - execution.started_at
-                ).total_seconds()
+                started_at = execution.started_at
+                if started_at and started_at.tzinfo is not None:
+                    now = datetime.now(timezone.utc)
+                else:
+                    now = datetime.utcnow()
+                execution.completed_at = now
+                if started_at:
+                    if started_at.tzinfo is None and now.tzinfo is not None:
+                        started_at = started_at.replace(tzinfo=now.tzinfo)
+                    execution.duration_seconds = (now - started_at).total_seconds()
 
         if progress is not None:
             execution.progress = progress

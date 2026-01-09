@@ -5,14 +5,18 @@ using the Strands-based agent orchestration system.
 """
 
 from typing import Any, Literal
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, Integer
+import base64
 import json
 import asyncio
+import logging
+import re
 from datetime import datetime
+from pathlib import Path
 
 from ...core.db.database import get_async_db_session
 from ...models.table_asset import TableAsset
@@ -22,6 +26,7 @@ from ...orchestration.eda_workflows import (
     create_eda_orchestrator,
     WorkflowType,
 )
+from strands_tools import workflow as workflow_tool
 
 router = APIRouter(prefix="/eda", tags=["EDA Workflows"])
 
@@ -68,6 +73,15 @@ class TableAssetListResponse(BaseModel):
 
     table_assets: list[dict[str, Any]]
     total: int
+
+
+class WorkflowCancelResponse(BaseModel):
+    """Response for cancelling a workflow."""
+
+    success: bool
+    workflow_id: str
+    status: str
+    error: str | None = None
 
 
 # ============================================================================
@@ -175,8 +189,10 @@ async def run_eda_workflow(
 @router.get("/run-stream")
 async def run_eda_workflow_stream(
     table_asset_id: int,
+    request: Request,
     user_intent: str | None = None,
     workflow_type: WorkflowType | None = None,
+    workflow_json: str | None = None,
     db: AsyncSession = Depends(get_async_db_session),
     sf_service: SnowflakeService = Depends(get_snowflake_service),
     ai_sql_service: ModularAISQLService = Depends(get_ai_sql_service),
@@ -198,94 +214,388 @@ async def run_eda_workflow_stream(
         return f"event: {event_type}\ndata: {json.dumps(payload, default=str)}\n\n"
 
     async def event_generator():
-        resolved_workflow_type = workflow_type
-        try:
-            # Send initial log
-            yield _sse(
-                "log",
-                {
-                    "type": "log",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "message": "Starting EDA workflow...",
-                },
-            )
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        done_event = asyncio.Event()
+        result_container: dict[str, Any] = {}
+        loop = asyncio.get_running_loop()
+        workflow_id_event = asyncio.Event()
+        workflow_id_holder: dict[str, str | None] = {"id": None}
+        workflow_graph: dict[str, Any] | None = None
 
-            # Fetch table asset
-            result = await db.execute(
-                select(TableAsset).where(
-                    TableAsset.id == table_asset_id,
-                    TableAsset.is_deleted == False,
+        if workflow_json:
+            try:
+                decoded = base64.b64decode(workflow_json).decode("utf-8")
+                workflow_graph = json.loads(decoded)
+            except Exception:
+                workflow_graph = None
+
+        def _enqueue(event_type: str, payload: dict[str, Any]) -> None:
+            item = {"event": event_type, "payload": payload}
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:
+                queue.put_nowait(item)
+
+        class _SSELogHandler(logging.Handler):
+            def __init__(self) -> None:
+                super().__init__(logging.INFO)
+                self.setFormatter(logging.Formatter("%(message)s"))
+
+            def emit(self, record: logging.LogRecord) -> None:
+                try:
+                    message = self.format(record)
+                    event_type = "log"
+                    data: dict[str, Any] | None = None
+
+                    workflow_match = re.search(r"Creating workflow '([^']+)'", message)
+                    if workflow_match and not workflow_id_event.is_set():
+                        workflow_id = workflow_match.group(1)
+                        workflow_id_holder["id"] = workflow_id
+                        workflow_id_event.set()
+                        _enqueue(
+                            "status",
+                            {
+                                "type": "status",
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "message": f"Workflow ID: {workflow_id}",
+                                "data": {"workflow_id": workflow_id},
+                            },
+                        )
+
+                    start_match = re.search(r"Task Started: (\S+)", message)
+                    complete_match = re.search(r"Task Completed: (\S+)", message)
+                    succeeded_match = re.search(r"Task '([^']+)' completed", message)
+                    failed_match = re.search(r"Task Failed: (\S+)", message)
+                    failed_named_match = re.search(r"Task '([^']+)' failed", message)
+
+                    task_id = None
+                    state = None
+                    if start_match:
+                        task_id = start_match.group(1)
+                        state = "running"
+                    elif complete_match:
+                        task_id = complete_match.group(1)
+                        state = "success"
+                    elif succeeded_match:
+                        task_id = succeeded_match.group(1)
+                        state = "success"
+                    elif failed_match:
+                        task_id = failed_match.group(1)
+                        state = "error"
+                    elif failed_named_match:
+                        task_id = failed_named_match.group(1)
+                        state = "error"
+
+                    if task_id and state and task_id != "workflow":
+                        event_type = "status"
+                        data = {"task_id": task_id, "state": state}
+
+                    payload = {
+                        "type": event_type,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": message,
+                        "data": data,
+                    }
+                    _enqueue(event_type, payload)
+                except Exception:
+                    return
+
+        log_handler = _SSELogHandler()
+        stream_loggers = [
+            logging.getLogger("strands_tools.workflow"),
+            logging.getLogger("strands"),
+            logging.getLogger("strands.telemetry"),
+            logging.getLogger("strands.telemetry.metrics"),
+            logging.getLogger("httpx"),
+            logging.getLogger("snowflake.connector"),
+            logging.getLogger("snowflake.connector.connection"),
+            logging.getLogger("src.app.orchestration.eda_hooks"),
+            logging.getLogger("src.app.orchestration.eda_workflows"),
+        ]
+        for logger in stream_loggers:
+            logger.addHandler(log_handler)
+
+        async def poll_workflow_status() -> None:
+            await workflow_id_event.wait()
+            workflow_id = workflow_id_holder["id"]
+            if not workflow_id:
+                return
+
+            workflow_path = Path.home() / ".strands" / "workflows" / f"{workflow_id}.json"
+            last_task_states: dict[str, str] = {}
+            last_progress: int | None = None
+
+            while not done_event.is_set():
+                if await request.is_disconnected():
+                    return
+
+                if workflow_path.exists():
+                    try:
+                        workflow_data = json.loads(workflow_path.read_text())
+                    except Exception:
+                        await asyncio.sleep(0.5)
+                        continue
+
+                    tasks = workflow_data.get("tasks", [])
+                    task_results = workflow_data.get("task_results", {})
+                    status_by_id = {
+                        task_id: result.get("status", "pending")
+                        for task_id, result in task_results.items()
+                    }
+                    workflow_status = workflow_data.get("status", "created")
+
+                    for task in tasks:
+                        task_id = task.get("task_id")
+                        if not task_id:
+                            continue
+
+                        raw_status = status_by_id.get(task_id, "pending")
+                        if raw_status == "completed":
+                            state = "success"
+                        elif raw_status in ("error", "failed"):
+                            state = "error"
+                        elif raw_status in ("running", "in_progress"):
+                            state = "running"
+                        else:
+                            dependencies = task.get("dependencies") or []
+                            deps_complete = all(
+                                status_by_id.get(dep) == "completed" for dep in dependencies
+                            )
+                            if deps_complete and workflow_status == "running":
+                                state = "running"
+                            else:
+                                state = "idle"
+
+                        if state in ("running", "success", "error"):
+                            if last_task_states.get(task_id) != state:
+                                last_task_states[task_id] = state
+                                _enqueue(
+                                    "status",
+                                    {
+                                        "type": "status",
+                                        "timestamp": datetime.utcnow().isoformat(),
+                                        "message": f"Task {task_id} {state}",
+                                        "data": {"task_id": task_id, "state": state},
+                                    },
+                                )
+
+                    tasks_total = len([task for task in tasks if task.get("task_id")])
+                    tasks_completed = sum(
+                        1 for status in status_by_id.values() if status == "completed"
+                    )
+
+                    if tasks_total > 0:
+                        progress = int((tasks_completed / tasks_total) * 100)
+                        if progress != last_progress:
+                            last_progress = progress
+                            _enqueue(
+                                "progress",
+                                {
+                                    "type": "progress",
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "message": f"Progress: {progress}%",
+                                    "data": {
+                                        "progress": progress,
+                                        "tasks_completed": tasks_completed,
+                                        "tasks_total": tasks_total,
+                                    },
+                                },
+                            )
+
+                    if workflow_status in ("completed", "error", "cancelled"):
+                        break
+
+                await asyncio.sleep(0.5)
+
+        async def run_workflow() -> None:
+            resolved_workflow_type = workflow_type
+            try:
+                _enqueue(
+                    "log",
+                    {
+                        "type": "log",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": "Starting EDA workflow...",
+                    },
                 )
-            )
-            table_asset = result.scalar_one_or_none()
 
-            if not table_asset:
+                result = await db.execute(
+                    select(TableAsset).where(
+                        TableAsset.id == table_asset_id,
+                        TableAsset.is_deleted == False,
+                    )
+                )
+                table_asset = result.scalar_one_or_none()
+
+                if not table_asset:
+                    result_container["error"] = f"Table asset {table_asset_id} not found"
+                    return
+
+                _enqueue(
+                    "log",
+                    {
+                        "type": "log",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": f"Found table: {table_asset.name}",
+                    },
+                )
+
+                orchestrator = create_eda_orchestrator(
+                    sf_service,
+                    ai_sql_service,
+                    db=db,
+                )
+
+                _enqueue(
+                    "status",
+                    {
+                        "type": "status",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": "Orchestrator created",
+                    },
+                )
+
+                if resolved_workflow_type is None:
+                    resolved_workflow_type = await orchestrator.router.route_workflow(
+                        table_asset,
+                        user_intent,
+                    )
+                    _enqueue(
+                        "log",
+                        {
+                            "type": "log",
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "message": f"Auto-routed to workflow: {resolved_workflow_type}",
+                        },
+                    )
+
+                _enqueue(
+                    "status",
+                    {
+                        "type": "status",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": f"Starting {resolved_workflow_type} workflow",
+                    },
+                )
+
+                tasks_override: list[dict[str, Any]] | None = None
+                if workflow_graph:
+                    try:
+                        tasks_override = orchestrator.build_tasks_from_graph(
+                            workflow_graph,
+                            resolved_workflow_type,
+                            table_asset,
+                            user_intent,
+                        )
+                        if not tasks_override:
+                            _enqueue(
+                                "log",
+                                {
+                                    "type": "log",
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "message": "No runnable nodes found in workflow graph; using default workflow.",
+                                },
+                            )
+                            tasks_override = None
+                    except Exception as exc:
+                        _enqueue(
+                            "log",
+                            {
+                                "type": "log",
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "message": f"Failed to build workflow from graph: {exc}",
+                            },
+                        )
+                        tasks_override = None
+
+                results = await orchestrator.run_eda(
+                    table_asset=table_asset,
+                    user_intent=user_intent,
+                    workflow_type=resolved_workflow_type,
+                    tasks_override=tasks_override,
+                )
+                result_container["result"] = results
+            except asyncio.CancelledError:
+                result_container["error"] = "Workflow cancelled by client"
+                raise
+            except Exception as exc:
+                result_container["error"] = str(exc)
+            finally:
+                done_event.set()
+
+        workflow_task = asyncio.create_task(run_workflow())
+        poll_task = asyncio.create_task(poll_workflow_status())
+        def _consume_task_result(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                return
+        workflow_task.add_done_callback(_consume_task_result)
+        client_disconnected = False
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    client_disconnected = True
+                    result_container["error"] = "Workflow cancelled by client"
+                    workflow_id = workflow_id_holder.get("id")
+                    if workflow_id:
+                        await asyncio.to_thread(
+                            workflow_tool,
+                            action="cancel",
+                            workflow_id=workflow_id,
+                        )
+                    if not workflow_task.done():
+                        workflow_task.cancel()
+                    break
+                if done_event.is_set() and queue.empty():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                yield _sse(item["event"], item["payload"])
+
+            if client_disconnected:
+                return
+
+            if not workflow_task.done():
+                try:
+                    await workflow_task
+                except asyncio.CancelledError:
+                    pass
+            if not poll_task.done():
+                poll_task.cancel()
+                try:
+                    await poll_task
+                except asyncio.CancelledError:
+                    pass
+
+            if "error" in result_container:
                 yield _sse(
                     "workflow-error",
                     {
                         "type": "error",
                         "timestamp": datetime.utcnow().isoformat(),
-                        "message": f"Table asset {table_asset_id} not found",
+                        "message": result_container["error"],
                     },
                 )
                 return
 
-            yield _sse(
-                "log",
-                {
-                    "type": "log",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "message": f"Found table: {table_asset.name}",
-                },
-            )
-
-            # Create orchestrator with database session
-            orchestrator = create_eda_orchestrator(sf_service, ai_sql_service, db=db)
-
-            yield _sse(
-                "status",
-                {
-                    "type": "status",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "message": "Orchestrator created",
-                },
-            )
-
-            # Determine workflow type
-            if resolved_workflow_type is None:
-                resolved_workflow_type = await orchestrator.router.route_workflow(
-                    table_asset,
-                    user_intent,
-                )
-                yield _sse(
-                    "log",
-                    {
-                        "type": "log",
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "message": f"Auto-routed to workflow: {resolved_workflow_type}",
-                    },
-                )
-
-            yield _sse(
-                "status",
-                {
-                    "type": "status",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "message": f"Starting {resolved_workflow_type} workflow",
-                },
-            )
-
-            # Run workflow (this will take time)
-            # Note: In a real implementation, you'd want to run this in a background task
-            # and stream logs from the Strands hooks
-            results = await orchestrator.run_eda(
-                table_asset=table_asset,
-                user_intent=user_intent,
-                workflow_type=resolved_workflow_type,
-            )
-
-            # Send progress updates (simulated - in real implementation, hook into Strands progress)
-            summary = results.get("summary", {})
+            results = result_container.get("result", {})
+            if not isinstance(results, dict):
+                results = {}
+            payload_data = {
+                "success": True,
+                **results,
+            }
+            if results.get("workflow_state") == "cancelled":
+                payload_data["success"] = False
+                payload_data["error"] = "Workflow cancelled"
+            summary = payload_data.get("summary", {})
             tasks_completed = summary.get("tasks_completed", 0)
             tasks_total = summary.get("tasks_total", 0)
 
@@ -305,29 +615,24 @@ async def run_eda_workflow_stream(
                     },
                 )
 
-            # Send completion event
-            yield _sse(
-                "complete",
-                {
-                    "type": "complete",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "message": "Workflow completed successfully",
-                    "data": results,
-                },
-            )
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            yield _sse(
-                "workflow-error",
-                {
-                    "type": "error",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "message": str(e),
-                },
-            )
+                yield _sse(
+                    "complete",
+                    {
+                        "type": "complete",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": "Workflow completed successfully",
+                        "data": payload_data,
+                    },
+                )
         finally:
+            if not poll_task.done():
+                poll_task.cancel()
+                try:
+                    await poll_task
+                except asyncio.CancelledError:
+                    pass
+            for logger in stream_loggers:
+                logger.removeHandler(log_handler)
             await db.close()
 
     return StreamingResponse(
@@ -339,6 +644,49 @@ async def run_eda_workflow_stream(
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         },
     )
+
+
+@router.post("/workflow/{workflow_id}/cancel", response_model=WorkflowCancelResponse)
+async def cancel_workflow(
+    workflow_id: str,
+    db: AsyncSession = Depends(get_async_db_session),
+):
+    """Cancel a running workflow by ID."""
+    try:
+        result = await asyncio.to_thread(
+            workflow_tool,
+            action="cancel",
+            workflow_id=workflow_id,
+        )
+        status = result.get("status", "error")
+        error_message = None
+        if status != "success":
+            error_message = result.get("content", [{"text": "Failed to cancel"}])[0].get("text")
+
+        try:
+            from ...services.eda_workflow_persistence import EDAWorkflowPersistenceService
+
+            persistence = EDAWorkflowPersistenceService(db)
+            await persistence.update_execution(
+                workflow_id=workflow_id,
+                status="cancelled" if status == "success" else "failed",
+            )
+        except Exception:
+            pass
+
+        return WorkflowCancelResponse(
+            success=status == "success",
+            workflow_id=workflow_id,
+            status=status,
+            error=error_message,
+        )
+    except Exception as exc:
+        return WorkflowCancelResponse(
+            success=False,
+            workflow_id=workflow_id,
+            status="error",
+            error=str(exc),
+        )
 
 
 @router.get("/workflows", response_model=WorkflowListResponse)

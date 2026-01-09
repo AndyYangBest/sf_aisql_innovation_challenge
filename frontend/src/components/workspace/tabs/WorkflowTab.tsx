@@ -22,10 +22,9 @@ import {
 
 interface WorkflowTabProps {
   tableId: string;
-  onRunComplete?: () => void;
 }
 
-const WorkflowTab = ({ tableId, onRunComplete }: WorkflowTabProps) => {
+const WorkflowTab = ({ tableId }: WorkflowTabProps) => {
   const { tableAssets } = useTableStore();
   const tableAsset = tableAssets.find((t) => t.id === tableId);
   const [showLogs, setShowLogs] = useState(false);
@@ -40,6 +39,7 @@ const WorkflowTab = ({ tableId, onRunComplete }: WorkflowTabProps) => {
     runWorkflow,
     stopWorkflow,
     clearWorkflow,
+    updateWorkflowFromEditor,
   } = useEDAWorkflow(
     tableAsset ? parseInt(tableAsset.id) : 0,
     tableAsset?.name || ''
@@ -59,13 +59,6 @@ const WorkflowTab = ({ tableId, onRunComplete }: WorkflowTabProps) => {
       setShowLogs(true);
     }
   }, [isRunning]);
-
-  // Call onRunComplete when workflow finishes
-  useEffect(() => {
-    if (!isRunning && result) {
-      onRunComplete?.();
-    }
-  }, [isRunning, result, onRunComplete]);
 
   if (!tableAsset) {
     return (
@@ -215,7 +208,12 @@ const WorkflowTab = ({ tableId, onRunComplete }: WorkflowTabProps) => {
             </div>
           </div>
         ) : (
-          <EDAWorkflowEditor nodes={nodes} edges={edges} />
+          <EDAWorkflowEditor
+            nodes={nodes}
+            edges={edges}
+            isRunning={isRunning}
+            onWorkflowDataChange={updateWorkflowFromEditor}
+          />
         )}
       </div>
 
@@ -232,4 +230,3 @@ const WorkflowTab = ({ tableId, onRunComplete }: WorkflowTabProps) => {
 };
 
 export default WorkflowTab;
-
