@@ -235,3 +235,13 @@
   right: 0;
   cursor: se-resize;
 }
+
+/* Flowgram editor background layer border radius */
+.gedit-playground-container {
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.gedit-flow-background-layer {
+  border-radius: 0.5rem;
+}

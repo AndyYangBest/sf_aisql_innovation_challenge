@@ -4,6 +4,7 @@
  */
 
 import { WorkflowNodeRegistry, ValidateTrigger, Field } from '@flowgram.ai/free-layout-editor';
+import { Textarea } from '@/components/ui/textarea';
 import { EDANodeType, EDA_NODE_DEFINITIONS } from '@/types/eda-workflow';
 
 /**
@@ -168,6 +169,180 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
             <div className="text-xs text-slate-700">
               Complete documentation
             </div>
+          </>
+        ),
+      },
+    },
+
+    // Generate Visuals Node (column-level)
+    {
+      type: 'generate_visuals',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Generate Visuals'}
+                </div>
+              )}
+            </Field>
+            <Field name="chart_count">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Charts: {field.value || 2}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Summarize Text Node
+    {
+      type: 'summarize_text',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Summarize Text'}
+                </div>
+              )}
+            </Field>
+            <div className="text-xs text-slate-600">AI_SUMMARIZE_AGG</div>
+          </>
+        ),
+      },
+    },
+
+    // Row-level Extract Node
+    {
+      type: 'row_level_extract',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Row-level Extract'}
+                </div>
+              )}
+            </Field>
+            <Field name="instruction">
+              {({ field }) => (
+                <Textarea
+                  className="text-xs"
+                  placeholder="Extraction instruction"
+                  value={field.value || ''}
+                  onChange={(event) => field.onChange(event.target.value)}
+                />
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Describe Images Node
+    {
+      type: 'describe_images',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Describe Images'}
+                </div>
+              )}
+            </Field>
+            <div className="text-xs text-slate-600">AI_COMPLETE per row</div>
+          </>
+        ),
+      },
+    },
+
+    // Basic Stats Node
+    {
+      type: 'basic_stats',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Basic Stats'}
+                </div>
+              )}
+            </Field>
+            <div className="text-xs text-slate-600">Counts & nulls</div>
+          </>
+        ),
+      },
+    },
+
+    // Column Hint Node
+    {
+      type: 'column_hint',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Column Hint'}
+                </div>
+              )}
+            </Field>
+            <Field name="hint">
+              {({ field }) => (
+                <Textarea
+                  className="text-xs"
+                  placeholder="Optional semantic hint (e.g., user tier)"
+                  value={field.value || ''}
+                  onChange={(event) => field.onChange(event.target.value)}
+                />
+              )}
+            </Field>
           </>
         ),
       },

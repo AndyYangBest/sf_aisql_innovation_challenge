@@ -53,3 +53,5 @@ export { tablesApi, mockTableAssets, mockTableResults } from './tables';
 export { artifactsApi, mockArtifacts } from './artifacts';
 export { workflowsApi, simulateNodeExecution, getExecutionOrder } from './workflows';
 export { aiApi } from './ai';
+export { columnMetadataApi } from './columnMetadata';
+export { columnWorkflowsApi } from './columnWorkflows';

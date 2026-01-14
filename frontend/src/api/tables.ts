@@ -129,6 +129,34 @@ export const tablesApi = {
     });
   },
 
+  // Get table asset by id from database
+  async getTableAssetById(id: string): Promise<ApiResponse<TableAsset | null>> {
+    return apiRequest(async () => {
+      const response = await fetch(`/api/v1/table-assets/${id}`);
+      if (!response.ok) {
+        if (response.status === 404) {
+          return null;
+        }
+        throw new Error('Failed to fetch table asset');
+      }
+
+      const result = await response.json();
+      return {
+        id: result.id.toString(),
+        name: result.name,
+        sourceSql: result.source_sql,
+        database: result.database,
+        schema: result.schema,
+        createdAt: result.created_at,
+        updatedAt: result.updated_at,
+        tags: result.tags,
+        owner: result.owner,
+        aiSummary: result.ai_summary,
+        useCases: result.use_cases,
+      };
+    });
+  },
+
   // 获取表格结果数据
   async getResult(id: string): Promise<ApiResponse<TableResult | null>> {
     return apiRequest(async () => {

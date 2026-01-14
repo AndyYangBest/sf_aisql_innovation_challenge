@@ -39,7 +39,7 @@ const InsightsTab = ({ tableId }: InsightsTabProps) => {
           <div className="text-center">
             <Lightbulb className="h-12 w-12 mx-auto mb-3 opacity-50" />
             <p className="mb-2">No insights yet</p>
-            <p className="text-sm">Use "Generate Insights" in the AI Actions panel to discover key findings</p>
+            <p className="text-sm">Save insights from Workflow Outputs to add them to the report</p>
           </div>
         </div>
       ) : (

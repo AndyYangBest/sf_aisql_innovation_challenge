@@ -13,6 +13,9 @@ import {
   FileText,
   Download,
   MessageSquare,
+  Image,
+  Sigma,
+  PencilLine,
   CheckCircle2,
   XCircle,
   Loader2,
@@ -33,6 +36,9 @@ const iconMap: Record<string, ComponentType<{ className?: string }>> = {
   FileText,
   Download,
   MessageSquare,
+  Image,
+  Sigma,
+  PencilLine,
 };
 
 // Status styles

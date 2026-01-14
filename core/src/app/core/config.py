@@ -77,6 +77,7 @@ class SnowflakeSettings(BaseSettings):
     SNOWFLAKE_DATABASE: str = "AI_SQL_COMP"
     SNOWFLAKE_SCHEMA: str = "PUBLIC"
     SNOWFLAKE_ROLE: str = "ACCOUNTADMIN"
+    SNOWFLAKE_CORTEX_MODEL: str = "mistral-large2"
 
     # Optional: For Snowflake SQLAlchemy integration
     @computed_field  # type: ignore[prop-decorator]

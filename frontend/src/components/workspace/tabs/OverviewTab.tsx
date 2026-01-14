@@ -1,4 +1,4 @@
-import { Sparkles, ArrowRight, Tag, Lightbulb, BarChart3, FileText, Clock } from "lucide-react";
+import { Sparkles, Tag, Lightbulb, BarChart3, FileText, Clock } from "lucide-react";
 import { TableAsset, TableResult, InsightArtifact } from "@/types";
 import { useTableStore } from "@/store/tableStore";
 import { Badge } from "@/components/ui/badge";
@@ -9,23 +9,19 @@ interface OverviewTabProps {
 }
 
 const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
-  const { getArtifactsByTable } = useTableStore();
+  const { getArtifactsByTable, getReportStatus } = useTableStore();
   const artifacts = getArtifactsByTable(tableAsset.id);
+  const reportStatus = getReportStatus(tableAsset.id);
+  const hasReport = reportStatus?.hasReport ?? false;
 
   const insightCount = artifacts.filter((a) => a.type === "insight").length;
   const chartCount = artifacts.filter((a) => a.type === "chart").length;
   const pinnedInsights = artifacts.filter((a): a is InsightArtifact => a.type === "insight" && !!a.pinned);
 
-  const aiSummary = tableAsset.aiSummary || 
-    "This table captures quarterly sales transactions across product categories and regions. It's commonly used for revenue analysis, trend identification, and regional performance comparisons.";
+  const aiSummary = tableAsset.aiSummary || "No summary available yet.";
 
-  const useCases = tableAsset.useCases || ["Sales Analytics", "Revenue Tracking", "Quarterly Reporting"];
+  const useCases = tableAsset.useCases || [];
 
-  const recommendedAnalysis = [
-    { label: "Revenue trend over time", description: "Analyze how revenue changes across quarters" },
-    { label: "Top categories by growth", description: "Find which product categories are growing fastest" },
-    { label: "Regional performance", description: "Compare revenue across different regions" },
-  ];
 
   const formatDate = (date: string) =>
     new Date(date).toLocaleDateString("en-US", {
@@ -33,6 +29,18 @@ const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
       day: "numeric",
       year: "numeric",
     });
+
+  if (!hasReport) {
+    return (
+      <div className="flex items-center justify-center h-64 text-muted-foreground">
+        <div className="text-center">
+          <Sparkles className="h-12 w-12 mx-auto mb-3 opacity-50" />
+          <p className="mb-2">Report is empty</p>
+          <p className="text-sm">Run workflows and save outputs from the sidebar</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -50,44 +58,21 @@ const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
       </div>
 
       {/* Use Case Tags */}
-      <div>
-        <div className="flex items-center gap-2 mb-3">
-          <Tag className="w-4 h-4 text-muted-foreground" />
-          <span className="text-sm font-medium text-muted-foreground">Use Cases</span>
+      {useCases.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <Tag className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">Use Cases</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {useCases.map((tag) => (
+              <Badge key={tag} variant="secondary" className="px-3 py-1 text-sm">
+                {tag}
+              </Badge>
+            ))}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {useCases.map((tag) => (
-            <Badge key={tag} variant="secondary" className="px-3 py-1 text-sm">
-              {tag}
-            </Badge>
-          ))}
-        </div>
-      </div>
-
-      {/* Recommended Analysis */}
-      <div className="bg-secondary/30 border border-border rounded-lg p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <ArrowRight className="w-4 h-4 text-[hsl(var(--viz-cyan))]" />
-          <span className="text-sm font-medium">Recommended Analysis</span>
-        </div>
-        <div className="grid gap-2">
-          {recommendedAnalysis.map((analysis, i) => (
-            <button
-              key={i}
-              className="flex items-center gap-3 px-3 py-2.5 rounded-md bg-background hover:bg-muted border border-border/50 text-left transition-colors group"
-            >
-              <div className="w-6 h-6 rounded bg-[hsl(var(--viz-cyan))]/10 flex items-center justify-center flex-shrink-0">
-                <span className="text-xs font-medium text-[hsl(var(--viz-cyan))]">{i + 1}</span>
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-medium">{analysis.label}</p>
-                <p className="text-xs text-muted-foreground">{analysis.description}</p>
-              </div>
-              <ArrowRight className="w-4 h-4 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
-            </button>
-          ))}
-        </div>
-      </div>
+      )}
 
       {/* Quick Stats */}
       <div className="grid grid-cols-4 gap-3">

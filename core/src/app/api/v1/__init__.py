@@ -7,6 +7,8 @@ from .ai_sql import router as ai_sql_router
 from .table_assets import router as table_assets_router
 from .agent import router as agent_router
 from .eda import router as eda_router
+from .column_metadata import router as column_metadata_router
+from .column_workflows import router as column_workflows_router
 
 # Comment out routers with authentication dependencies for now
 # from .login import router as login_router
@@ -24,6 +26,8 @@ router.include_router(ai_sql_router)
 router.include_router(table_assets_router)
 router.include_router(agent_router)
 router.include_router(eda_router)
+router.include_router(column_metadata_router)
+router.include_router(column_workflows_router)
 
 # Comment out routers with authentication dependencies for now
 # router.include_router(login_router)

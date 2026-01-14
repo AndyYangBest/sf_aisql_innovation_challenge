@@ -15,6 +15,12 @@ export type EDANodeType =
   | 'generate_insights'
   | 'generate_charts'
   | 'generate_documentation'
+  | 'generate_visuals'
+  | 'summarize_text'
+  | 'row_level_extract'
+  | 'describe_images'
+  | 'basic_stats'
+  | 'column_hint'
   | 'export'
   | 'comment';
 
@@ -92,6 +98,69 @@ export const EDA_NODE_DEFINITIONS: Record<EDANodeType, EDANodeDefinition> = {
       include_summary: true,
       include_use_cases: true,
       include_recommendations: true,
+    },
+  },
+  generate_visuals: {
+    type: 'generate_visuals',
+    name: 'Generate Visuals',
+    description: 'Create column-specific visualizations',
+    icon: 'BarChart3',
+    category: 'analysis',
+    defaultData: {
+      title: 'Generate Visuals',
+      chart_count: 2,
+    },
+  },
+  summarize_text: {
+    type: 'summarize_text',
+    name: 'Summarize Text',
+    description: 'Summarize text column content',
+    icon: 'FileText',
+    category: 'analysis',
+    defaultData: {
+      title: 'Summarize Text',
+    },
+  },
+  row_level_extract: {
+    type: 'row_level_extract',
+    name: 'Row-level Extract',
+    description: 'AI_COMPLETE extraction per row',
+    icon: 'Sparkles',
+    category: 'analysis',
+    defaultData: {
+      title: 'Row-level Extract',
+      instruction: '',
+    },
+  },
+  describe_images: {
+    type: 'describe_images',
+    name: 'Describe Images',
+    description: 'Generate per-row image descriptions',
+    icon: 'Image',
+    category: 'analysis',
+    defaultData: {
+      title: 'Describe Images',
+    },
+  },
+  basic_stats: {
+    type: 'basic_stats',
+    name: 'Basic Stats',
+    description: 'Quick stats for ID/binary/spatial columns',
+    icon: 'Sigma',
+    category: 'analysis',
+    defaultData: {
+      title: 'Basic Stats',
+    },
+  },
+  column_hint: {
+    type: 'column_hint',
+    name: 'Column Hint',
+    description: 'Provide a short semantic hint',
+    icon: 'PencilLine',
+    category: 'analysis',
+    defaultData: {
+      title: 'Column Hint',
+      hint: '',
     },
   },
   export: {

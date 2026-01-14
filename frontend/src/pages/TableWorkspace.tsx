@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useTableStore } from "@/store/tableStore";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import AIActionsPanel from "@/components/workspace/AIActionsPanel";
 import WorkflowTab from "@/components/workspace/tabs/WorkflowTab";
 import WorkspaceHeader, { Collaborator, TokenUsage } from "@/components/workspace/WorkspaceHeader";
 import { useToast } from "@/hooks/use-toast";
+import { tablesApi } from "@/api/tables";
 
 // Mock 协作者数据 - 未来从后端获取
 const mockCollaborators: Collaborator[] = [
@@ -24,13 +25,63 @@ const mockTokenUsage: TokenUsage = {
 const TableWorkspace = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { tableAssets, getTableResult, updateTableAsset } = useTableStore();
+  const {
+    tableAssets,
+    getTableResult,
+    updateTableAsset,
+    addTableAsset,
+    loadReport,
+  } = useTableStore();
   const [activeTab, setActiveTab] = useState<"workflow" | "report">("workflow");
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
 
   const tableAsset = tableAssets.find((t) => t.id === id);
   const tableResult = id ? getTableResult(id) : undefined;
+  useEffect(() => {
+    if (!id || tableAsset) return;
+    setIsLoading(true);
+    tablesApi.getTableAssetById(id)
+      .then((response) => {
+        if (response.status === "success" && response.data) {
+          addTableAsset(response.data);
+        } else {
+          toast({
+            title: "Failed to load table",
+            description: response.error || "Could not fetch table asset",
+            variant: "destructive",
+          });
+        }
+      })
+      .catch(() => {
+        toast({
+          title: "Failed to load table",
+          description: "Could not connect to server",
+          variant: "destructive",
+        });
+      })
+      .finally(() => setIsLoading(false));
+  }, [addTableAsset, id, tableAsset, toast]);
+
+  useEffect(() => {
+    if (!id || !tableAsset || activeTab !== "report") return;
+    void loadReport(id).catch((error) => {
+      toast({
+        title: "Failed to load report",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    });
+  }, [activeTab, id, loadReport, tableAsset, toast]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center text-muted-foreground">Loading table...</div>
+      </div>
+    );
+  }
 
   if (!tableAsset) {
     return (
@@ -86,14 +137,16 @@ const TableWorkspace = () => {
           </div>
         </div>
 
-        <div className="flex-shrink-0 sticky top-0 h-full">
-          <AIActionsPanel
-            tableId={tableAsset.id}
-            activeTab={activeTab === "workflow" ? "workflow" : "overview"}
-            isOpen={aiPanelOpen}
-            onToggle={() => setAiPanelOpen(!aiPanelOpen)}
-          />
-        </div>
+        {activeTab === "report" && (
+          <div className="flex-shrink-0 sticky top-0 h-full">
+            <AIActionsPanel
+              tableId={tableAsset.id}
+              activeTab="overview"
+              isOpen={aiPanelOpen}
+              onToggle={() => setAiPanelOpen(!aiPanelOpen)}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

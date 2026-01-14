@@ -10,7 +10,7 @@ interface NotesTabProps {
 }
 
 const NotesTab = ({ tableId }: NotesTabProps) => {
-  const { getArtifactsByTable, addArtifact } = useTableStore();
+  const { getArtifactsByTable, updateReportNotes } = useTableStore();
   const artifacts = getArtifactsByTable(tableId);
   const docArtifacts = artifacts.filter((a) => a.type === "doc");
   const latestDoc = docArtifacts[docArtifacts.length - 1];
@@ -19,17 +19,18 @@ const NotesTab = ({ tableId }: NotesTabProps) => {
   const [content, setContent] = useState(latestDoc?.type === "doc" ? latestDoc.content.markdown : "");
   const { toast } = useToast();
 
-  const handleSave = () => {
-    if (content.trim()) {
-      addArtifact({
-        type: "doc",
-        id: `doc-${Date.now()}`,
-        tableId,
-        content: { markdown: content },
-        createdAt: new Date().toISOString(),
-      });
+  const handleSave = async () => {
+    const trimmed = content.trim();
+    try {
+      await updateReportNotes(tableId, trimmed);
       toast({ title: "Notes saved" });
       setIsEditing(false);
+    } catch (error) {
+      toast({
+        title: "Failed to save notes",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
     }
   };
 

@@ -16,6 +16,8 @@ interface WorkflowLogPanelProps {
   isRunning: boolean;
   onClose?: () => void;
   className?: string;
+  onExpandedChange?: (expanded: boolean) => void;
+  useFlexLayout?: boolean;
 }
 
 export const WorkflowLogPanel = ({
@@ -23,8 +25,16 @@ export const WorkflowLogPanel = ({
   isRunning,
   onClose,
   className,
+  onExpandedChange,
+  useFlexLayout = false,
 }: WorkflowLogPanelProps) => {
   const [isExpanded, setIsExpanded] = useState(true);
+
+  const handleToggleExpand = () => {
+    const newExpanded = !isExpanded;
+    setIsExpanded(newExpanded);
+    onExpandedChange?.(newExpanded);
+  };
   const [autoScroll, setAutoScroll] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -85,13 +95,19 @@ export const WorkflowLogPanel = ({
   return (
     <div
       className={cn(
-        'w-full shrink-0 bg-background border-t shadow-lg transition-all duration-300',
-        isExpanded ? 'h-80' : 'h-12',
+        'w-full bg-background border-t shadow-lg transition-all duration-300',
+        useFlexLayout
+          ? isExpanded
+            ? 'flex-[0.3] min-h-0 flex flex-col'
+            : 'h-12 shrink-0'
+          : isExpanded
+            ? 'h-80 shrink-0'
+            : 'h-12 shrink-0',
         className
       )}
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/50">
+      <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/50 shrink-0">
         <div className="flex items-center gap-2">
           <Terminal className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">Workflow Logs</span>
@@ -121,7 +137,7 @@ export const WorkflowLogPanel = ({
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setIsExpanded(!isExpanded)}
+            onClick={handleToggleExpand}
             className="h-7 w-7 p-0"
           >
             {isExpanded ? (
@@ -147,7 +163,7 @@ export const WorkflowLogPanel = ({
 
       {/* Log content */}
       {isExpanded && (
-        <ScrollArea className="h-[calc(100%-3rem)]" ref={scrollRef}>
+        <ScrollArea className={cn(useFlexLayout ? 'flex-1 min-h-0 overflow-hidden' : 'h-[calc(100%-3rem)]')} ref={scrollRef}>
           <div className="p-4 space-y-1 font-mono text-xs">
             {logs.length === 0 ? (
               <div className="text-muted-foreground text-center py-8">

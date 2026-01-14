@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 from typing import Any
+import importlib.util
 import json
 
 import snowflake.connector
@@ -38,6 +39,9 @@ get_async_db_session = async_get_db
 # Snowflake Connection for Data Analysis
 # ============================================================================
 
+_PANDAS_FETCH_ENABLED = True
+
+
 class SnowflakeConnection:
     """Snowflake connection manager for AI SQL and data analysis."""
 
@@ -65,7 +69,11 @@ class SnowflakeConnection:
             # Older/unsupported params—safe to ignore
             pass
 
+        executed_query = query
+
         def _run(q: str):
+            nonlocal executed_query
+            executed_query = q
             cursor.execute(q)
 
         try:
@@ -105,6 +113,13 @@ class SnowflakeConnection:
             # Use fetch_pandas_all() to get data as DataFrame
             # This handles large numbers and timestamps better
             try:
+                global _PANDAS_FETCH_ENABLED
+                if not _PANDAS_FETCH_ENABLED:
+                    if importlib.util.find_spec("pandas") is None:
+                        raise ImportError("pandas fetch disabled")
+                    _PANDAS_FETCH_ENABLED = True
+                if importlib.util.find_spec("pandas") is None:
+                    raise ImportError("pandas not installed")
                 import pandas as pd
                 df = cursor.fetch_pandas_all()
 
@@ -149,7 +164,11 @@ class SnowflakeConnection:
 
             except (ImportError, Exception) as e:
                 # Fallback if pandas is not available or other error occurs
-                print(f"Pandas fetch failed: {e}, using fallback method")
+                message = str(e)
+                if "Optional dependency" in message and "pandas" in message:
+                    _PANDAS_FETCH_ENABLED = False
+                else:
+                    print(f"Pandas fetch failed: {e}, using fallback method")
 
                 # Get column names
                 columns = [col[0] for col in cursor.description] if cursor.description else []
@@ -159,8 +178,22 @@ class SnowflakeConnection:
                     rows = cursor.fetchall()
                 except Exception as fetch_error:
                     print(f"Fetchall failed: {fetch_error}")
-                    # If even fetchall fails, return empty
-                    return []
+                    # Re-run as JSON to avoid type conversion errors.
+                    fallback_base = executed_query.rstrip().rstrip(";")
+                    if "OBJECT_CONSTRUCT" not in fallback_base.upper():
+                        fallback_query = (
+                            "SELECT TO_JSON(OBJECT_CONSTRUCT(*)) AS ROW_JSON "
+                            f"FROM ({fallback_base})"
+                        )
+                    else:
+                        fallback_query = fallback_base
+                    try:
+                        cursor.execute(fallback_query)
+                        rows = cursor.fetchall()
+                        return [json.loads(r[0]) if r and r[0] else {} for r in rows]
+                    except Exception:
+                        # If even JSON fallback fails, return empty
+                        return []
 
                 results = []
                 for row in rows:

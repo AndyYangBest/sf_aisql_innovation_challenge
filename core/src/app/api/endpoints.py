@@ -171,6 +171,56 @@ AI_SQL_ENDPOINTS = {
 }
 
 # ============================================================================
+# Column Metadata Endpoints
+# ============================================================================
+
+COLUMN_METADATA_ENDPOINTS = {
+    "get": APIEndpoint(
+        path="/api/v1/column-metadata/{table_asset_id}",
+        method=APIMethod.GET,
+        description="Fetch cached column metadata for a table asset",
+        tags=["column-metadata", "cache"],
+    ),
+    "initialize": APIEndpoint(
+        path="/api/v1/column-metadata/{table_asset_id}/initialize",
+        method=APIMethod.POST,
+        description="Initialize column metadata with sampling and inference",
+        tags=["column-metadata", "init"],
+    ),
+    "override": APIEndpoint(
+        path="/api/v1/column-metadata/{table_asset_id}/override",
+        method=APIMethod.PUT,
+        description="Override column metadata with user-provided hints",
+        tags=["column-metadata", "override"],
+    ),
+    "table_override": APIEndpoint(
+        path="/api/v1/column-metadata/{table_asset_id}/table-override",
+        method=APIMethod.PUT,
+        description="Override table metadata with user-provided hints",
+        tags=["column-metadata", "override"],
+    ),
+}
+
+# ============================================================================
+# Column Workflow Endpoints
+# ============================================================================
+
+COLUMN_WORKFLOW_ENDPOINTS = {
+    "estimate": APIEndpoint(
+        path="/api/v1/column-workflows/{table_asset_id}/{column_name}/estimate",
+        method=APIMethod.POST,
+        description="Estimate token usage for a column workflow",
+        tags=["column-workflows", "estimate"],
+    ),
+    "run": APIEndpoint(
+        path="/api/v1/column-workflows/{table_asset_id}/{column_name}/run",
+        method=APIMethod.POST,
+        description="Run a column workflow using Strands",
+        tags=["column-workflows", "run"],
+    ),
+}
+
+# ============================================================================
 # Health & System Endpoints
 # ============================================================================
 
@@ -191,6 +241,8 @@ ALL_ENDPOINTS = {
     "table_assets": TABLE_ASSETS_ENDPOINTS,
     "tables": TABLES_ENDPOINTS,
     "ai_sql": AI_SQL_ENDPOINTS,
+    "column_metadata": COLUMN_METADATA_ENDPOINTS,
+    "column_workflows": COLUMN_WORKFLOW_ENDPOINTS,
     "system": SYSTEM_ENDPOINTS,
 }
 

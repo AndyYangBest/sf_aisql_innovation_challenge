@@ -9,7 +9,7 @@ import {
   EditorRenderer,
   FreeLayoutPluginContext,
   WorkflowDragService,
-  WorkflowSelectService,
+  SelectionService,
   delay,
   useClientContext,
   usePlaygroundTools,
@@ -28,6 +28,7 @@ import {
   Undo2,
   ZoomIn,
   ZoomOut,
+  Play,
 } from 'lucide-react';
 import { createEDANodeRegistries } from './EDANodeRegistries';
 import { EDANodeRenderer } from './EDANodeRenderer';
@@ -40,13 +41,30 @@ interface EDAWorkflowEditorProps {
   edges: WorkflowEdge[];
   isRunning?: boolean;
   onWorkflowDataChange?: (data: WorkflowJSON) => void;
+  onSelectionChange?: (nodeIds: string[]) => void;
+  onRun?: () => void;
+  runLabel?: string;
+  runDisabled?: boolean;
   className?: string;
 }
 
-const EDAWorkflowToolbar = ({ isRunning }: { isRunning?: boolean }) => {
+const EDAWorkflowToolbar = ({
+  isRunning,
+  onRun,
+  runLabel,
+  runDisabled,
+  onPlaceComment,
+  isPlacingComment,
+}: {
+  isRunning?: boolean;
+  onRun?: () => void;
+  runLabel?: string;
+  runDisabled?: boolean;
+  onPlaceComment?: () => void;
+  isPlacingComment?: boolean;
+}) => {
   const { history, document, playground } = useClientContext();
-  const dragService = useService(WorkflowDragService);
-  const selectService = useService(WorkflowSelectService);
+  const selectService = useService(SelectionService);
   const tools = usePlaygroundTools();
   const zoomPercent = Math.round(tools.zoom * 100);
   const [canUndo, setCanUndo] = useState(false);
@@ -74,22 +92,12 @@ const EDAWorkflowToolbar = ({ isRunning }: { isRunning?: boolean }) => {
   }, [tools]);
 
   const handleAddComment = useCallback(
-    async (event: ReactMouseEvent<HTMLButtonElement>) => {
-      const nativeEvent = event.nativeEvent as MouseEvent;
-      const position = playground.config.getPosFromMouseEvent(nativeEvent);
-      const node = document.createWorkflowNodeByType('comment', position, {
-        data: {
-          title: 'Comment',
-          note: '',
-        },
-      });
-      await delay(16);
-      selectService.selectNode(node);
-      if (nativeEvent.detail !== 0) {
-        dragService.startDragSelectedNodes(nativeEvent);
-      }
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onPlaceComment?.();
     },
-    [document, playground, dragService, selectService]
+    [onPlaceComment]
   );
 
   const handleAddNode = useCallback(
@@ -106,7 +114,9 @@ const EDAWorkflowToolbar = ({ isRunning }: { isRunning?: boolean }) => {
         status: 'idle',
       };
       const node = document.createWorkflowNodeByType(type, position, { data });
-      selectService.selectNode(node);
+      if (selectService) {
+        selectService.selection = [node];
+      }
       setAddNodeOpen(false);
     },
     [document, playground, selectService]
@@ -144,6 +154,18 @@ const EDAWorkflowToolbar = ({ isRunning }: { isRunning?: boolean }) => {
       >
         <LayoutGrid className={iconClassName} strokeWidth={2.5} />
       </Button>
+      {onRun && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={buttonClassName}
+          onClick={onRun}
+          aria-label={runLabel || 'Run workflow'}
+          disabled={runDisabled || isRunning}
+        >
+          <Play className={iconClassName} strokeWidth={2.5} />
+        </Button>
+      )}
       <Popover open={addNodeOpen} onOpenChange={setAddNodeOpen}>
         <PopoverTrigger asChild>
           <Button
@@ -187,11 +209,14 @@ const EDAWorkflowToolbar = ({ isRunning }: { isRunning?: boolean }) => {
         variant="ghost"
         size="icon"
         className={buttonClassName}
-        onClick={handleAddComment}
+        onMouseDown={handleAddComment}
         aria-label="Add comment"
         disabled={isRunning}
       >
-        <MessageSquarePlus className={iconClassName} strokeWidth={2.5} />
+        <MessageSquarePlus
+          className={cn(iconClassName, isPlacingComment && 'text-blue-600')}
+          strokeWidth={2.5}
+        />
       </Button>
       <div className="h-5 w-px bg-slate-200 mx-1" aria-hidden="true" />
       <Button
@@ -276,10 +301,15 @@ export const EDAWorkflowEditor = ({
   edges,
   isRunning,
   onWorkflowDataChange,
+  onSelectionChange,
+  onRun,
+  runLabel,
+  runDisabled,
   className,
 }: EDAWorkflowEditorProps) => {
   const editorRef = useRef<FreeLayoutPluginContext | undefined>();
   const [editorReady, setEditorReady] = useState(false);
+  const [placingComment, setPlacingComment] = useState(false);
   const applyingRef = useRef(false);
   const lastEditorJsonRef = useRef<string | null>(null);
 
@@ -352,7 +382,6 @@ export const EDAWorkflowEditor = ({
     <div className={cn('flex flex-col h-full bg-slate-50', className)}>
       <div className="relative flex-1 min-h-0">
         <FreeLayoutEditorProvider
-          key={`workflow-${nodes.length}`}
           ref={editorRef}
           initialData={workflowData}
           readonly={isRunning}
@@ -423,10 +452,93 @@ export const EDAWorkflowEditor = ({
           }}
         >
           <EditorRenderer className="w-full h-full" />
-          <EDAWorkflowToolbar isRunning={isRunning} />
+          <CommentPlacementLayer
+            active={placingComment}
+            onPlaced={() => setPlacingComment(false)}
+          />
+          {onSelectionChange && (
+            <SelectionWatcher onSelectionChange={onSelectionChange} />
+          )}
+          <EDAWorkflowToolbar
+            isRunning={isRunning}
+            onRun={onRun}
+            runLabel={runLabel}
+            runDisabled={runDisabled}
+            onPlaceComment={() => setPlacingComment((prev) => !prev)}
+            isPlacingComment={placingComment}
+          />
           <EDAMinimap />
         </FreeLayoutEditorProvider>
       </div>
     </div>
   );
+};
+
+const CommentPlacementLayer = ({
+  active,
+  onPlaced,
+}: {
+  active: boolean;
+  onPlaced: () => void;
+}) => {
+  const { document, playground } = useClientContext();
+  const dragService = useService(WorkflowDragService);
+  const selectService = useService(SelectionService);
+
+  const handleMouseDown = useCallback(
+    async (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (!active) return;
+      const nativeEvent = event.nativeEvent as MouseEvent;
+      if (nativeEvent.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const position = playground.config.getPosFromMouseEvent(nativeEvent);
+      const node = document.createWorkflowNodeByType('comment', position, {
+        data: {
+          title: 'Comment',
+          note: '',
+        },
+      });
+      await delay(16);
+      if (selectService) {
+        selectService.selection = [node];
+      }
+      dragService.startDragSelectedNodes(nativeEvent);
+      onPlaced();
+    },
+    [active, document, dragService, onPlaced, playground, selectService]
+  );
+
+  if (!active) return null;
+
+  return (
+    <div
+      className="absolute inset-0 z-30 cursor-crosshair"
+      onMouseDown={handleMouseDown}
+    />
+  );
+};
+
+const SelectionWatcher = ({ onSelectionChange }: { onSelectionChange: (nodeIds: string[]) => void }) => {
+  const selectService = useService(SelectionService);
+
+  useEffect(() => {
+    if (!selectService) {
+      return;
+    }
+    const emitSelection = () => {
+      const selectedNodes = selectService.selection || [];
+      onSelectionChange(selectedNodes.map((node) => node.id));
+    };
+
+    emitSelection();
+    const disposable = selectService.onSelectionChanged?.(emitSelection);
+    return () => {
+      disposable?.dispose?.();
+    };
+  }, [selectService, onSelectionChange]);
+
+  return null;
 };

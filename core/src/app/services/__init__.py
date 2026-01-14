@@ -4,10 +4,12 @@ from .chart_service import ChartService
 from .eda_service import EDAService
 from .modular_ai_sql_service import ModularAISQLService
 from .snowflake_service import SnowflakeService
+from .column_metadata_service import ColumnMetadataService
 
 __all__ = [
     "SnowflakeService",
     "ModularAISQLService",
     "EDAService",
     "ChartService",
+    "ColumnMetadataService",
 ]

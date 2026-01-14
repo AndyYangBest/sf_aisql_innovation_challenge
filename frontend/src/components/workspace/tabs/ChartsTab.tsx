@@ -173,7 +173,7 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
           <div className="text-center">
             <BarChart3 className="h-12 w-12 mx-auto mb-3 opacity-50" />
             <p className="mb-2">No charts yet</p>
-            <p className="text-sm">Use "Recommend Charts" in AI Actions to generate visualizations</p>
+            <p className="text-sm">Save charts from Workflow Outputs to add them to the report</p>
           </div>
         </div>
       ) : (
