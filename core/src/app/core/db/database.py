@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 import importlib.util
 import json
+import logging
 
 import snowflake.connector
 from snowflake.connector.errors import ProgrammingError
@@ -40,6 +41,7 @@ get_async_db_session = async_get_db
 # ============================================================================
 
 _PANDAS_FETCH_ENABLED = True
+logger = logging.getLogger(__name__)
 
 
 class SnowflakeConnection:
@@ -168,7 +170,7 @@ class SnowflakeConnection:
                 if "Optional dependency" in message and "pandas" in message:
                     _PANDAS_FETCH_ENABLED = False
                 else:
-                    print(f"Pandas fetch failed: {e}, using fallback method")
+                    logger.debug("Pandas fetch failed, using fallback method: %s", e)
 
                 # Get column names
                 columns = [col[0] for col in cursor.description] if cursor.description else []
@@ -177,7 +179,7 @@ class SnowflakeConnection:
                 try:
                     rows = cursor.fetchall()
                 except Exception as fetch_error:
-                    print(f"Fetchall failed: {fetch_error}")
+                    logger.debug("Fetchall failed, retrying as JSON: %s", fetch_error)
                     # Re-run as JSON to avoid type conversion errors.
                     fallback_base = executed_query.rstrip().rstrip(";")
                     if "OBJECT_CONSTRUCT" not in fallback_base.upper():

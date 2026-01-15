@@ -134,7 +134,7 @@ const TableWorkspace = () => {
       />
 
       <div className="flex-1 flex overflow-hidden">
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden min-w-0">
           <div className={activeTab === "workflow" ? "h-full" : "hidden"} aria-hidden={activeTab !== "workflow"}>
             <WorkflowTab tableId={tableAsset.id} />
           </div>

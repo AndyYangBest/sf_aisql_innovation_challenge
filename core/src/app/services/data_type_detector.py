@@ -1,6 +1,7 @@
 """Data type detection and inference service for column analysis."""
 
 import re
+import math
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -211,8 +212,42 @@ class DataTypeDetector:
         analysis["geo_pattern_ratio"] = geo_matches / len(samples)
 
         # Numeric analysis
-        if sql_type in ["NUMBER", "FLOAT", "INTEGER", "DECIMAL"]:
-            numeric_samples = [float(v) for v in samples if v is not None]
+        numeric_samples = []
+        for value in samples:
+            if value is None or isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                num = float(value)
+                if math.isfinite(num):
+                    numeric_samples.append(num)
+                continue
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw:
+                    continue
+                if not re.match(r"^[\d\s\-\+\(\)\.,%$eE]+$", raw):
+                    continue
+                cleaned = raw.replace(",", "")
+                is_negative_paren = cleaned.startswith("(") and cleaned.endswith(")")
+                cleaned = cleaned.strip("()").replace("$", "").replace("%", "")
+                try:
+                    num = float(cleaned)
+                    if is_negative_paren:
+                        num = -num
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(num):
+                    numeric_samples.append(num)
+                continue
+            try:
+                num = float(value)
+                if math.isfinite(num):
+                    numeric_samples.append(num)
+            except (TypeError, ValueError):
+                continue
+        analysis["numeric_ratio"] = len(numeric_samples) / len(samples)
+
+        if numeric_samples and sql_type in ["NUMBER", "FLOAT", "INTEGER", "DECIMAL", "NUMERIC", "DOUBLE", "VARIANT"]:
             if numeric_samples:
                 analysis["all_integers"] = all(
                     float(v).is_integer() for v in numeric_samples
@@ -275,14 +310,14 @@ class DataTypeDetector:
         if unique_count == 2:
             return DataTypeCategory.BINARY
 
-        # Priority 5: Categorical
-        if cardinality < 0.05 or unique_count < 20:
-            if name_hints.get("is_categorical"):
-                return DataTypeCategory.ORDINAL_CATEGORICAL
-            return DataTypeCategory.NOMINAL_CATEGORICAL
-
-        # Priority 6: Numeric types
-        if sql_type in ["NUMBER", "FLOAT", "INTEGER", "DECIMAL"]:
+        # Priority 5: Numeric types
+        numeric_ratio = value_analysis.get("numeric_ratio", 0)
+        numeric_hint = name_hints.get("is_count") or name_hints.get("is_ratio")
+        if (
+            sql_type in ["NUMBER", "FLOAT", "INTEGER", "DECIMAL", "NUMERIC", "DOUBLE"]
+            or numeric_ratio >= 0.6
+            or (numeric_ratio >= 0.4 and numeric_hint)
+        ):
             # Ratio/Percentage
             if name_hints.get("is_ratio") or value_analysis.get("in_0_1_range"):
                 return DataTypeCategory.RATIO_PERCENTAGE
@@ -295,6 +330,12 @@ class DataTypeDetector:
                 return DataTypeCategory.DISCRETE_NUMERIC
 
             return DataTypeCategory.CONTINUOUS_NUMERIC
+
+        # Priority 6: Categorical
+        if cardinality < 0.05 or unique_count < 20:
+            if name_hints.get("is_categorical"):
+                return DataTypeCategory.ORDINAL_CATEGORICAL
+            return DataTypeCategory.NOMINAL_CATEGORICAL
 
         # Priority 7: Text types
         if sql_type in ["VARCHAR", "TEXT", "STRING"]:

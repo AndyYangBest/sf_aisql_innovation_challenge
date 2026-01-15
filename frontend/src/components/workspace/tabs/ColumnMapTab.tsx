@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import {
   ReactFlow,
   Background,
@@ -13,12 +13,13 @@ import {
   ConnectionMode,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { TableResult, ColumnInfo } from "@/types";
+import { TableResult, ColumnInfo, ChartArtifact } from "@/types";
 import { useTableStore } from "@/store/tableStore";
 import { cn } from "@/lib/utils";
 import { Hash, Type, Calendar, ToggleLeft, Key, TrendingUp, Layers, Link2, Network } from "lucide-react";
 
 interface ColumnMapTabProps {
+  tableId: string;
   tableResult?: TableResult;
 }
 
@@ -90,60 +91,47 @@ const ColumnNode = ({ data }: { data: { column: ColumnInfo; stats: any; isSelect
 
 const nodeTypes = { columnNode: ColumnNode };
 
-// Calculate co-occurrence relationships between columns
-const calculateCooccurrence = (columns: ColumnInfo[], rows: Record<string, any>[]) => {
-  const edges: Edge[] = [];
-  
-  // Simple co-occurrence: columns that are often non-null together
-  for (let i = 0; i < columns.length; i++) {
-    for (let j = i + 1; j < columns.length; j++) {
-      const colA = columns[i].name;
-      const colB = columns[j].name;
-      
-      // Check if they're related by role
-      const roleA = columns[i].role;
-      const roleB = columns[j].role;
-      
-      let strength = 0;
-      
-      // Metrics and dimensions often go together
-      if ((roleA === "metric" && roleB === "dimension") || (roleA === "dimension" && roleB === "metric")) {
-        strength = 0.8;
-      }
-      // Time and metrics often go together
-      else if ((roleA === "time" && roleB === "metric") || (roleA === "metric" && roleB === "time")) {
-        strength = 0.9;
-      }
-      // IDs and dimensions often go together
-      else if ((roleA === "id" && roleB === "dimension") || (roleA === "dimension" && roleB === "id")) {
-        strength = 0.5;
-      }
-      // Random weaker connections
-      else if (Math.random() > 0.6) {
-        strength = 0.3;
-      }
-      
-      if (strength > 0) {
-        edges.push({
-          id: `${colA}-${colB}`,
-          source: colA,
-          target: colB,
-          animated: strength > 0.7,
-          style: { 
-            strokeWidth: Math.max(1, strength * 3),
-            stroke: `hsl(var(--primary) / ${strength * 0.6})`,
-          },
-          type: "default",
-        });
-      }
+const buildChartEdges = (columns: ColumnInfo[], charts: ChartArtifact[]): Edge[] => {
+  const columnSet = new Set(columns.map((column) => column.name));
+  const edgeCounts = new Map<string, { source: string; target: string; count: number }>();
+
+  charts.forEach((chart) => {
+    const sourceColumns = Array.isArray(chart.content.sourceColumns) ? chart.content.sourceColumns : [];
+    const uniqueColumns = Array.from(new Set(sourceColumns.filter((column) => columnSet.has(column))));
+    if (uniqueColumns.length !== 2) return;
+    const [source, target] = uniqueColumns;
+    const key = source < target ? `${source}__${target}` : `${target}__${source}`;
+    const existing = edgeCounts.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      edgeCounts.set(key, { source, target, count: 1 });
     }
-  }
-  
-  return edges;
+  });
+
+  return Array.from(edgeCounts.values()).map((edge) => {
+    const strength = Math.min(1, 0.4 + edge.count * 0.2);
+    return {
+      id: `edge_${edge.source}_${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      animated: edge.count > 1,
+      style: {
+        strokeWidth: Math.max(1, strength * 3),
+        stroke: `hsl(var(--primary) / ${strength * 0.6})`,
+      },
+      type: "default",
+    };
+  });
 };
 
-const ColumnMapTab = ({ tableResult }: ColumnMapTabProps) => {
+const ColumnMapTab = ({ tableId, tableResult }: ColumnMapTabProps) => {
   const { selectedColumn, setSelectedColumn } = useTableStore();
+  const getArtifactsByTable = useTableStore((state) => state.getArtifactsByTable);
+  const chartArtifacts = useMemo(() => {
+    if (!tableId) return [];
+    return getArtifactsByTable(tableId).filter((artifact) => artifact.type === "chart") as ChartArtifact[];
+  }, [getArtifactsByTable, tableId]);
 
   // Calculate stats for each column
   const getColumnStats = useCallback((colName: string) => {
@@ -187,11 +175,19 @@ const ColumnMapTab = ({ tableResult }: ColumnMapTabProps) => {
   // Create edges from co-occurrence
   const initialEdges: Edge[] = useMemo(() => {
     if (!tableResult) return [];
-    return calculateCooccurrence(tableResult.columns, tableResult.rows);
-  }, [tableResult]);
+    return buildChartEdges(tableResult.columns, chartArtifacts);
+  }, [chartArtifacts, tableResult]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+
+  useEffect(() => {
+    setNodes(initialNodes);
+  }, [initialNodes, setNodes]);
+
+  useEffect(() => {
+    setEdges(initialEdges);
+  }, [initialEdges, setEdges]);
 
   if (!tableResult) {
     return (

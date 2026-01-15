@@ -162,7 +162,7 @@ const ScrollableWorkspace = ({
       {/* Main Scrollable Content */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto p-6 scrollbar-thin scroll-smooth"
+        className="flex-1 overflow-y-auto p-6 scrollbar-thin scroll-smooth min-w-0"
       >
         <div className="space-y-12">
           {/* Overview Section */}
@@ -213,11 +213,7 @@ const ScrollableWorkspace = ({
             id="columnmap"
             className="pt-6 border-t border-border"
           >
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Network className="h-5 w-5 text-[hsl(var(--viz-purple))]" />
-              Column Map
-            </h2>
-            <ColumnMapTab tableResult={tableResult} />
+            <ColumnMapTab tableId={tableAsset.id} tableResult={tableResult} />
           </div>
 
           {/* Charts Section */}

@@ -236,6 +236,19 @@
   cursor: se-resize;
 }
 
+/* Ensure AIActionsPanel content doesn't overflow */
+.w-72 [data-radix-scroll-area-viewport] {
+  max-width: 100% !important;
+  width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+.w-72 [data-radix-scroll-area-viewport] > * {
+  max-width: 100% !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
 /* Flowgram editor background layer border radius */
 .gedit-playground-container {
   border-radius: inherit;

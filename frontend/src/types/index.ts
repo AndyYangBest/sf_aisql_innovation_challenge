@@ -54,6 +54,9 @@ export type ChartArtifact = {
     title: string;
     xKey: string;
     yKey: string;
+    xTitle?: string;
+    yTitle?: string;
+    yScale?: "linear" | "log";
     data: any[];
     narrative: string[];
     sourceColumns: string[];

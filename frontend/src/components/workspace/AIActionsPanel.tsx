@@ -44,8 +44,21 @@ type FeatureOutput = {
 };
 
 const normalizeChartType = (value?: string): ChartArtifact["content"]["chartType"] => {
-  if (value === "line" || value === "bar" || value === "pie" || value === "area") {
-    return value;
+  if (!value) {
+    return "bar";
+  }
+  const normalized = value.toLowerCase().replace(/[^a-z]/g, "");
+  if (normalized.includes("pie") || normalized.includes("donut")) {
+    return "pie";
+  }
+  if (normalized.includes("line")) {
+    return "line";
+  }
+  if (normalized.includes("area")) {
+    return "area";
+  }
+  if (normalized.includes("bar") || normalized.includes("hist")) {
+    return "bar";
   }
   return "bar";
 };
@@ -72,10 +85,13 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
         id: visual.id || `chart_${tableId}_${column.column_name}_${idx}`,
         tableId,
         content: {
-          chartType: normalizeChartType(visual.chartType),
+          chartType: normalizeChartType(visual.chartType || visual.chart_type),
           title: visual.title || `${column.column_name} chart`,
           xKey: visual.xKey || visual.x_key || "x",
           yKey: visual.yKey || visual.y_key || "y",
+          xTitle: visual.xTitle || visual.x_title || visual.xKey || visual.x_key,
+          yTitle: visual.yTitle || visual.y_title || visual.yKey || visual.y_key,
+          yScale: visual.yScale || visual.y_scale,
           data: Array.isArray(visual.data) ? visual.data : [],
           narrative: Array.isArray(visual.narrative) ? visual.narrative : [],
           sourceColumns: Array.isArray(visual.sourceColumns)
@@ -244,10 +260,10 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
   };
 
   const PanelBody = () => (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
-        <span>{outputGroups.length} columns with outputs</span>
-        <span>
+    <div className="flex flex-col gap-4 min-w-0 max-w-full">
+      <div className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground min-w-0 max-w-full gap-2">
+        <span className="truncate">{outputGroups.length} columns with outputs</span>
+        <span className="shrink-0">
           {outputGroups.reduce((sum, group) => sum + group.charts.length + group.insights.length, 0)} items
         </span>
       </div>
@@ -259,27 +275,27 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
       )}
 
       {!isLoading && error && (
-        <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive max-w-full">
           {error}
         </div>
       )}
 
       {!isLoading && !error && outputGroups.length === 0 && (
-        <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+        <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground max-w-full">
           No workflow outputs yet. Run column workflows to generate visuals and insights.
         </div>
       )}
 
       {!isLoading && !error && outputGroups.length > 0 && (
-        <div className="space-y-3">
+        <div className="space-y-3 max-w-full">
           {outputGroups.map((group) => {
             const pendingCount = [...group.charts, ...group.insights].filter((item) => !savedIds.has(item.id)).length;
             return (
-              <div key={group.columnName} className="rounded-lg border border-border bg-card/50 p-3 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-medium">{group.columnName}</div>
-                    <div className="text-[11px] text-muted-foreground">
+              <div key={group.columnName} className="rounded-lg border border-border bg-card/50 p-3 space-y-3 min-w-0 max-w-full">
+                <div className="flex items-center justify-between gap-2 min-w-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium truncate">{group.columnName}</div>
+                    <div className="text-[11px] text-muted-foreground truncate">
                       {group.charts.length} charts · {group.insights.length} insights · {group.features.length} features
                     </div>
                   </div>
@@ -294,19 +310,19 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                 </div>
 
                 {group.charts.length > 0 && (
-                  <div className="space-y-2">
+                  <div className="space-y-2 max-w-full">
                     {group.charts.map((chart) => {
                       const isSaved = savedIds.has(chart.id);
                       return (
                         <div
                           key={chart.id}
                           className={cn(
-                            "rounded-md border border-border/60 px-2.5 py-2 text-xs",
+                            "rounded-md border border-border/60 px-2.5 py-2 text-xs min-w-0 max-w-full",
                             isSaved && "bg-secondary/30"
                           )}
                         >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
+                          <div className="flex items-start justify-between gap-2 min-w-0">
+                            <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5 text-foreground">
                                 <BarChart3 className="h-3.5 w-3.5 text-[hsl(var(--viz-cyan))]" />
                                 <span className="truncate">{chart.content.title}</span>
@@ -334,19 +350,19 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                 )}
 
                 {group.insights.length > 0 && (
-                  <div className="space-y-2">
+                  <div className="space-y-2 max-w-full">
                     {group.insights.map((insight) => {
                       const isSaved = savedIds.has(insight.id);
                       return (
                         <div
                           key={insight.id}
                           className={cn(
-                            "rounded-md border border-border/60 px-2.5 py-2 text-xs",
+                            "rounded-md border border-border/60 px-2.5 py-2 text-xs min-w-0 max-w-full",
                             isSaved && "bg-secondary/30"
                           )}
                         >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
+                          <div className="flex items-start justify-between gap-2 min-w-0">
+                            <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5 text-foreground">
                                 <Lightbulb className="h-3.5 w-3.5 text-[hsl(var(--viz-yellow))]" />
                                 <span className="truncate">{insight.content.title}</span>
@@ -379,7 +395,7 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                 )}
 
                 {group.features.length > 0 && (
-                  <div className="space-y-2">
+                  <div className="space-y-2 max-w-full">
                     {group.features.map((feature) => {
                       const featureArtifact = featureToArtifact(feature, tableId);
                       const isSaved = savedIds.has(featureArtifact.id);
@@ -387,12 +403,12 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                         <div
                           key={feature.id}
                           className={cn(
-                            "rounded-md border border-border/60 px-2.5 py-2 text-xs",
+                            "rounded-md border border-border/60 px-2.5 py-2 text-xs min-w-0 max-w-full",
                             isSaved && "bg-secondary/30"
                           )}
                         >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
+                          <div className="flex items-start justify-between gap-2 min-w-0">
+                            <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5 text-foreground">
                                 <Sparkles className="h-3.5 w-3.5 text-[hsl(var(--viz-green))]" />
                                 <span className="truncate">{feature.outputColumn}</span>
@@ -469,8 +485,10 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
         </div>
       </div>
 
-      <ScrollArea className="flex-1 p-3">
-        <PanelBody />
+      <ScrollArea className="flex-1 min-w-0 overflow-x-hidden">
+        <div className="p-3 min-w-0" style={{ width: 'calc(18rem - 0.25rem)', maxWidth: 'calc(18rem - 0.25rem)' }}>
+          <PanelBody />
+        </div>
       </ScrollArea>
     </div>
   );

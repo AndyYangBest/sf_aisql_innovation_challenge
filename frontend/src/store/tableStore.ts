@@ -166,6 +166,11 @@ export const useTableStore = create<TableStore>()(
           })),
 
         loadTableResult: async (id) => {
+          set((state) => {
+            const next = { ...state.tableResults };
+            delete next[id];
+            return { tableResults: next };
+          });
           const response = await tablesApi.getResult(id);
           if (response.status === "success" && response.data) {
             set((state) => ({

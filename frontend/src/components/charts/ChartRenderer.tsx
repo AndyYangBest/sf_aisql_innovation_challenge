@@ -24,10 +24,37 @@ interface ChartRendererProps {
 
 const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
   const { chartType, data, xKey, yKey } = spec;
+  const formatAxisTitle = (value: string) =>
+    value
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+
+  const xTitle = spec.xTitle || formatAxisTitle(xKey);
+  const yTitle = spec.yTitle || formatAxisTitle(yKey);
+
+  const numericValues = data
+    .map((row) => {
+      const raw = row?.[yKey];
+      if (raw === null || raw === undefined || typeof raw === "boolean") {
+        return null;
+      }
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    })
+    .filter((value): value is number => value !== null);
+  const minValue = numericValues.length ? Math.min(...numericValues) : null;
+  const maxValue = numericValues.length ? Math.max(...numericValues) : null;
+  const shouldUseLog =
+    spec.yScale === "log" ||
+    (spec.yScale !== "linear" &&
+      minValue !== null &&
+      maxValue !== null &&
+      minValue > 0 &&
+      maxValue / minValue >= 1000);
 
   const commonProps = {
     data,
-    margin: { top: 10, right: 10, left: 0, bottom: 0 },
+    margin: { top: 12, right: 12, left: 18, bottom: 28 },
   };
 
   const axisStyle = {
@@ -44,15 +71,41 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
     boxShadow: "0 10px 40px rgba(0, 0, 0, 0.5)",
   };
 
+  const axisLabelStyle = {
+    fill: "#94a3b8",
+    fontSize: 10,
+  };
+
+  const yAxisProps =
+    shouldUseLog && minValue !== null
+      ? { scale: "log" as const, domain: [Math.max(minValue, 1e-6), "auto"] as const }
+      : {};
+
   switch (chartType) {
     case "bar":
       return (
         <ResponsiveContainer width="100%" height="100%">
           <BarChart {...commonProps}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-            {showAxes && <XAxis dataKey={xKey} tick={axisStyle} axisLine={false} tickLine={false} />}
-            {showAxes && <YAxis tick={axisStyle} axisLine={false} tickLine={false} />}
-             <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
+            {showAxes && (
+              <XAxis
+                dataKey={xKey}
+                tick={axisStyle}
+                axisLine={false}
+                tickLine={false}
+                label={{ value: xTitle, position: "insideBottom", offset: -12, ...axisLabelStyle }}
+              />
+            )}
+            {showAxes && (
+              <YAxis
+                tick={axisStyle}
+                axisLine={false}
+                tickLine={false}
+                {...yAxisProps}
+                label={{ value: yTitle, angle: -90, position: "insideLeft", ...axisLabelStyle }}
+              />
+            )}
+            <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
             <Bar dataKey={yKey} fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]}>
               {data.map((_, index) => (
                 <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
@@ -67,9 +120,25 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart {...commonProps}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-            {showAxes && <XAxis dataKey={xKey} tick={axisStyle} axisLine={false} tickLine={false} />}
-            {showAxes && <YAxis tick={axisStyle} axisLine={false} tickLine={false} />}
-             <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
+            {showAxes && (
+              <XAxis
+                dataKey={xKey}
+                tick={axisStyle}
+                axisLine={false}
+                tickLine={false}
+                label={{ value: xTitle, position: "insideBottom", offset: -12, ...axisLabelStyle }}
+              />
+            )}
+            {showAxes && (
+              <YAxis
+                tick={axisStyle}
+                axisLine={false}
+                tickLine={false}
+                {...yAxisProps}
+                label={{ value: yTitle, angle: -90, position: "insideLeft", ...axisLabelStyle }}
+              />
+            )}
+            <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
             <Line
               type="monotone"
               dataKey={yKey}
@@ -93,9 +162,25 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-            {showAxes && <XAxis dataKey={xKey} tick={axisStyle} axisLine={false} tickLine={false} />}
-            {showAxes && <YAxis tick={axisStyle} axisLine={false} tickLine={false} />}
-             <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
+            {showAxes && (
+              <XAxis
+                dataKey={xKey}
+                tick={axisStyle}
+                axisLine={false}
+                tickLine={false}
+                label={{ value: xTitle, position: "insideBottom", offset: -12, ...axisLabelStyle }}
+              />
+            )}
+            {showAxes && (
+              <YAxis
+                tick={axisStyle}
+                axisLine={false}
+                tickLine={false}
+                {...yAxisProps}
+                label={{ value: yTitle, angle: -90, position: "insideLeft", ...axisLabelStyle }}
+              />
+            )}
+            <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
             <Area
               type="monotone"
               dataKey={yKey}
@@ -107,12 +192,17 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
         </ResponsiveContainer>
       );
 
-    case "pie":
+    case "pie": {
+      const pieData = data.filter((row) => {
+        const value = Number(row?.[yKey]);
+        return Number.isFinite(value) && value > 0;
+      });
+      const resolvedData = pieData.length > 0 ? pieData : data;
       return (
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
-              data={data}
+              data={resolvedData}
               cx="50%"
               cy="50%"
               innerRadius="40%"
@@ -120,10 +210,16 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
               dataKey={yKey}
               nameKey={xKey}
               paddingAngle={2}
-              label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+              label={({ name, percent, payload }) => {
+                const labelName = name ?? payload?.[xKey] ?? "Category";
+                if (!Number.isFinite(percent)) {
+                  return String(labelName);
+                }
+                return `${labelName} ${(percent * 100).toFixed(0)}%`;
+              }}
               labelLine={false}
             >
-              {data.map((_, index) => (
+              {resolvedData.map((_, index) => (
                 <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
               ))}
             </Pie>
@@ -131,6 +227,7 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
           </PieChart>
         </ResponsiveContainer>
       );
+    }
 
     default:
       return null;

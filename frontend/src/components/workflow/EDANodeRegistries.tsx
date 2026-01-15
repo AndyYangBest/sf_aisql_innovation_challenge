@@ -194,12 +194,78 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
                 </div>
               )}
             </Field>
-            <Field name="chart_count">
+            <Field name="chart_type">
               {({ field }) => (
-                <div className="text-xs text-slate-700">
-                  Charts: {field.value || 2}
+                <div className="text-[11px] text-slate-700 uppercase tracking-wide">
+                  {field.value ? `${field.value} chart` : 'Chart'}
                 </div>
               )}
+            </Field>
+            <Field name="x_column">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  X: {field.value || 'auto'}
+                </div>
+              )}
+            </Field>
+            <Field name="y_column">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Y: {field.value || 'auto'}
+                </div>
+              )}
+            </Field>
+            <Field name="expanded">
+              {({ field: expandedField }) =>
+                expandedField.value ? (
+                  <div className="mt-2 space-y-2">
+                    <Field name="column_name">
+                      {({ field }) => (
+                        <Input
+                          className="text-xs"
+                          placeholder="Attach to column"
+                          value={field.value || ''}
+                          onChange={(event) => field.onChange(event.target.value)}
+                        />
+                      )}
+                    </Field>
+                    <Field name="chart_type">
+                      {({ field }) => (
+                        <select
+                          className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900"
+                          value={field.value || 'bar'}
+                          onChange={(event) => field.onChange(event.target.value)}
+                        >
+                          <option value="bar">bar</option>
+                          <option value="line">line</option>
+                          <option value="area">area</option>
+                          <option value="pie">pie</option>
+                        </select>
+                      )}
+                    </Field>
+                    <Field name="x_column">
+                      {({ field }) => (
+                        <Input
+                          className="text-xs"
+                          placeholder="X column"
+                          value={field.value || ''}
+                          onChange={(event) => field.onChange(event.target.value)}
+                        />
+                      )}
+                    </Field>
+                    <Field name="y_column">
+                      {({ field }) => (
+                        <Input
+                          className="text-xs"
+                          placeholder="Y column or count"
+                          value={field.value || ''}
+                          onChange={(event) => field.onChange(event.target.value)}
+                        />
+                      )}
+                    </Field>
+                  </div>
+                ) : null
+              }
             </Field>
           </>
         ),

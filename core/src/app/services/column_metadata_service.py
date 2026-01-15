@@ -563,7 +563,7 @@ class ColumnMetadataService:
 
     async def _estimate_tokens_for_prompt(self, prompt: str, model: str | None = None) -> int:
         safe_prompt = self._sanitize_literal(prompt)
-        model_id = model or self.model_id
+        model_id = (model or self.model_id or "mistral-large2").lower()
         unsupported_models = {
             "claude-4-opus",
             "claude-4-sonnet",

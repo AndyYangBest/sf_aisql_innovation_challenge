@@ -64,10 +64,12 @@ class ColumnWorkflowTools:
         col = self._quote_ident(column_name)
 
         is_temporal = ctx.column_meta.semantic_type == "temporal"
+        used_time_columns: set[str] = set()
         time_expr = None
         analysis_errors: list[dict[str, Any]] = []
         if is_temporal:
             time_expr = self._resolve_temporal_expr(ctx, col)
+            used_time_columns.add(column_name)
             stats_query = f"""
             WITH base AS (
                 {ctx.analysis_query}
@@ -108,6 +110,27 @@ class ColumnWorkflowTools:
         else:
             stats["avg_value"] = raw_stats.get("AVG_VALUE")
             stats["stddev_value"] = raw_stats.get("STDDEV_VALUE")
+
+        visual_plan = self._extract_visual_plan(ctx)
+        custom_visuals, custom_errors = await self._build_custom_visuals(ctx, visual_plan)
+        if custom_visuals is not None:
+            if custom_errors:
+                analysis_errors.extend(custom_errors)
+            analysis = {
+                "visuals": custom_visuals,
+                "stats": stats,
+                "queries": {
+                    "stats_query": stats_query.strip(),
+                },
+            }
+            if analysis_errors:
+                analysis["errors"] = analysis_errors
+            await self._update_column_analysis(ctx, analysis)
+            return {
+                "column": column_name,
+                "visuals": custom_visuals,
+                "stats": stats,
+            }
 
         visuals: list[dict[str, Any]] = []
         histogram_data: list[dict[str, Any]] = []
@@ -153,6 +176,8 @@ class ColumnWorkflowTools:
                         f"Min: {stats.get('min_value')}, Max: {stats.get('max_value')}",
                     ],
                     source_columns=[column_name],
+                    x_title=f"{column_name} (bin)",
+                    y_title="Count",
                 )
             )
 
@@ -162,6 +187,7 @@ class ColumnWorkflowTools:
             time_col = time_expr or col
         elif ctx.time_column:
             time_col = f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({self._quote_ident(ctx.time_column)}))"
+            used_time_columns.add(ctx.time_column)
         if time_col:
             time_bucket_expr = f"DATE_TRUNC('day', {time_col})"
             time_query = f"""
@@ -195,6 +221,8 @@ class ColumnWorkflowTools:
                     for row in time_rows
                 ]
             if time_data:
+                time_title = column_name if is_temporal else (ctx.time_column or "time")
+                y_title = "Count" if is_temporal else f"Average {column_name}"
                 visuals.append(
                     self._build_chart_spec(
                         chart_type="line",
@@ -207,6 +235,8 @@ class ColumnWorkflowTools:
                             "Look for seasonality or breaks in trend",
                         ],
                         source_columns=[column_name] if is_temporal else [ctx.time_column, column_name],
+                        x_title=time_title,
+                        y_title=y_title,
                     )
                 )
             elif is_temporal:
@@ -244,12 +274,63 @@ class ColumnWorkflowTools:
                                 "Review data quality for temporal parsing",
                             ],
                             source_columns=[column_name],
+                            x_title=column_name,
+                            y_title="Count",
                         )
                     )
                     analysis_errors.append({
                         "step": "temporal_parse_fallback",
                         "detail": "No valid timestamps parsed; used raw value distribution.",
                     })
+
+        if not is_temporal:
+            temporal_columns = await self._list_temporal_columns(ctx.table_asset_id)
+            for temporal_column in temporal_columns:
+                if temporal_column in used_time_columns or temporal_column == column_name:
+                    continue
+                temporal_expr = f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({self._quote_ident(temporal_column)}))"
+                time_bucket_expr = f"DATE_TRUNC('day', {temporal_expr})"
+                extra_time_query = f"""
+                WITH base AS (
+                    {ctx.analysis_query}
+                )
+                SELECT
+                    TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+                    AVG({col}) AS avg_value
+                FROM base
+                WHERE {temporal_expr} IS NOT NULL
+                AND {col} IS NOT NULL
+                GROUP BY {time_bucket_expr}
+                ORDER BY time_bucket
+                LIMIT 500
+                """
+                try:
+                    extra_rows = await self.sf.execute_query(extra_time_query)
+                except Exception as exc:
+                    logger.warning("Extra time series query failed for %s: %s", column_name, exc)
+                    analysis_errors.append({"step": "extra_time_query", "error": str(exc)})
+                    extra_rows = []
+                extra_data = [
+                    {"time_bucket": row.get("TIME_BUCKET"), "avg_value": self._coerce_float(row.get("AVG_VALUE"))}
+                    for row in extra_rows
+                ]
+                if extra_data:
+                    visuals.append(
+                        self._build_chart_spec(
+                            chart_type="line",
+                            title=f"{column_name} by {temporal_column}",
+                            x_key="time_bucket",
+                            y_key="avg_value",
+                            data=extra_data,
+                            narrative=[
+                                "Daily trend based on average values",
+                                f"Grouped by {temporal_column}",
+                            ],
+                            source_columns=[temporal_column, column_name],
+                            x_title=temporal_column,
+                            y_title=f"Average {column_name}",
+                        )
+                    )
 
         analysis = {
             "visuals": visuals,
@@ -280,6 +361,21 @@ class ColumnWorkflowTools:
         ctx = await self._load_context(table_asset_id, column_name)
         col = self._quote_ident(column_name)
         analysis_errors: list[dict[str, Any]] = []
+
+        visual_plan = self._extract_visual_plan(ctx)
+        custom_visuals, custom_errors = await self._build_custom_visuals(ctx, visual_plan)
+        if custom_visuals is not None:
+            if custom_errors:
+                analysis_errors.extend(custom_errors)
+            analysis = {
+                "visuals": custom_visuals,
+                "stats": {},
+                "queries": {},
+            }
+            if analysis_errors:
+                analysis["errors"] = analysis_errors
+            await self._update_column_analysis(ctx, analysis)
+            return {"column": column_name, "visuals": custom_visuals, "total_count": 0}
 
         total_query = f"""
         WITH base AS (
@@ -334,6 +430,8 @@ class ColumnWorkflowTools:
                     f"Total non-null rows: {total_count}",
                 ],
                 source_columns=[column_name],
+                x_title=column_name,
+                y_title="Count",
             )
         ]
 
@@ -347,8 +445,110 @@ class ColumnWorkflowTools:
                 data=top_rows,
                     narrative=["Pie chart only when categories are limited"],
                     source_columns=[column_name],
+                    x_title=column_name,
+                    y_title="Count",
                 )
             )
+
+        temporal_columns = await self._list_temporal_columns(ctx.table_asset_id)
+        for temporal_column in temporal_columns:
+            temporal_expr = f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({self._quote_ident(temporal_column)}))"
+            time_bucket_expr = f"DATE_TRUNC('day', {temporal_expr})"
+            time_query = f"""
+            WITH base AS (
+                {ctx.analysis_query}
+            )
+            SELECT
+                TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+                COUNT(*) AS count
+            FROM base
+            WHERE {temporal_expr} IS NOT NULL
+            AND {col} IS NOT NULL
+            GROUP BY {time_bucket_expr}
+            ORDER BY time_bucket
+            LIMIT 500
+            """
+            try:
+                time_rows = await self.sf.execute_query(time_query)
+            except Exception as exc:
+                logger.warning("Categorical time series query failed for %s: %s", column_name, exc)
+                analysis_errors.append({"step": "categorical_time_query", "error": str(exc)})
+                time_rows = []
+            time_data = [
+                {"time_bucket": row.get("TIME_BUCKET"), "count": self._coerce_int(row.get("COUNT"))}
+                for row in time_rows
+            ]
+            if time_data:
+                    visuals.append(
+                        self._build_chart_spec(
+                            chart_type="line",
+                            title=f"{column_name} count by {temporal_column}",
+                            x_key="time_bucket",
+                            y_key="count",
+                            data=time_data,
+                            narrative=[
+                                "Daily trend based on counts",
+                                f"Grouped by {temporal_column}",
+                            ],
+                            source_columns=[temporal_column, column_name],
+                            x_title=temporal_column,
+                            y_title="Count",
+                        )
+                    )
+
+        numeric_columns = [
+            name for name in await self._list_numeric_columns(ctx.table_asset_id)
+            if name != column_name
+        ][:2]
+        for numeric_column in numeric_columns:
+            num_col = self._quote_ident(numeric_column)
+            numeric_query = f"""
+            WITH base AS (
+                {ctx.analysis_query}
+            ), top AS (
+                SELECT {col} AS category
+                FROM base
+                WHERE {col} IS NOT NULL
+                GROUP BY category
+                ORDER BY COUNT(*) DESC
+                LIMIT 8
+            )
+            SELECT
+                base.{col} AS category,
+                AVG(base.{num_col}) AS avg_value
+            FROM base
+            JOIN top ON base.{col} = top.category
+            WHERE base.{num_col} IS NOT NULL
+            GROUP BY base.{col}
+            ORDER BY avg_value DESC
+            """
+            try:
+                numeric_rows = await self.sf.execute_query(numeric_query)
+            except Exception as exc:
+                logger.warning("Categorical numeric query failed for %s: %s", column_name, exc)
+                analysis_errors.append({"step": "categorical_numeric_query", "error": str(exc)})
+                numeric_rows = []
+            numeric_data = [
+                {"category": row.get("CATEGORY"), "avg_value": self._coerce_float(row.get("AVG_VALUE"))}
+                for row in numeric_rows
+            ]
+            if numeric_data:
+                visuals.append(
+                    self._build_chart_spec(
+                        chart_type="bar",
+                        title=f"{numeric_column} by {column_name}",
+                        x_key="category",
+                        y_key="avg_value",
+                        data=numeric_data,
+                        narrative=[
+                            f"Average {numeric_column} across top categories",
+                            "Use to compare category-level magnitude",
+                        ],
+                        source_columns=[column_name, numeric_column],
+                        x_title=column_name,
+                        y_title=f"Average {numeric_column}",
+                    )
+                )
 
         analysis = {
             "visuals": visuals,
@@ -733,40 +933,319 @@ class ColumnWorkflowTools:
         await self.db.commit()
         await self.db.refresh(ctx.column_meta)
 
+    def _get_workflow_nodes(self, column_meta: ColumnMetadata) -> list[dict[str, Any]] | None:
+        overrides = column_meta.overrides
+        if not isinstance(overrides, dict):
+            return None
+        graph = overrides.get("workflow_graph")
+        if not isinstance(graph, dict):
+            return None
+        nodes = graph.get("nodes")
+        if not isinstance(nodes, list):
+            return None
+        return [node for node in nodes if isinstance(node, dict)]
+
+    def _get_workflow_node_types(self, column_meta: ColumnMetadata) -> set[str] | None:
+        nodes = self._get_workflow_nodes(column_meta)
+        if nodes is None:
+            return None
+        return {str(node.get("type")) for node in nodes if node.get("type")}
+
+    def _normalize_chart_type(self, value: Any) -> str:
+        raw = str(value or "").lower()
+        if "pie" in raw or "donut" in raw:
+            return "pie"
+        if "line" in raw:
+            return "line"
+        if "area" in raw:
+            return "area"
+        if "bar" in raw or "hist" in raw:
+            return "bar"
+        return "bar"
+
+    def _extract_visual_plan(self, ctx: ColumnContext) -> list[dict[str, Any]] | None:
+        nodes = self._get_workflow_nodes(ctx.column_meta)
+        if nodes is None:
+            return None
+        plan: list[dict[str, Any]] = []
+        for node in nodes:
+            if node.get("type") != "generate_visuals":
+                continue
+            data = node.get("data") or {}
+            if isinstance(data, dict):
+                node_column = data.get("column_name")
+                if node_column and node_column != ctx.column_name:
+                    continue
+                plan.append(
+                    {
+                        "node_id": node.get("id"),
+                        "chart_type": data.get("chart_type") or data.get("chartType"),
+                        "x_column": data.get("x_column") or data.get("xColumn"),
+                        "y_column": data.get("y_column") or data.get("yColumn"),
+                    }
+                )
+        return plan
+
+    async def _get_semantic_type_map(self, table_asset_id: int) -> dict[str, str]:
+        result = await self.db.execute(
+            select(ColumnMetadata.column_name, ColumnMetadata.semantic_type).where(
+                ColumnMetadata.table_asset_id == table_asset_id
+            )
+        )
+        rows = result.all()
+        type_map: dict[str, str] = {}
+        for row in rows:
+            if not row or not row[0]:
+                continue
+            type_map[str(row[0])] = str(row[1] or "unknown")
+        return type_map
+
+    async def _build_custom_visuals(
+        self,
+        ctx: ColumnContext,
+        visual_plan: list[dict[str, Any]] | None,
+    ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+        if visual_plan is None:
+            return None, []
+        if not visual_plan:
+            return [], []
+        type_map = await self._get_semantic_type_map(ctx.table_asset_id)
+        visuals: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for item in visual_plan:
+            chart_type = self._normalize_chart_type(item.get("chart_type"))
+            x_column = str(item.get("x_column") or "").strip() or ctx.column_name
+            y_column_raw = str(item.get("y_column") or "").strip()
+            y_column = y_column_raw or ("count" if chart_type in {"bar", "pie"} else ctx.column_name)
+            if not x_column:
+                errors.append({"step": "visual_plan", "error": "Missing x_column"})
+                continue
+            x_semantic = type_map.get(x_column, "unknown")
+            y_semantic = type_map.get(y_column, "unknown") if y_column != "count" else "count"
+            if x_semantic == "temporal":
+                visual = await self._build_time_visual(
+                    ctx, chart_type, x_column, y_column, y_semantic
+                )
+            else:
+                visual = await self._build_category_visual(
+                    ctx, chart_type, x_column, y_column, y_semantic
+                )
+            if visual:
+                visuals.append(visual)
+        return visuals, errors
+
+    async def _build_time_visual(
+        self,
+        ctx: ColumnContext,
+        chart_type: str,
+        x_column: str,
+        y_column: str,
+        y_semantic: str,
+    ) -> dict[str, Any] | None:
+        x_ident = self._quote_ident(x_column)
+        time_expr = self._resolve_temporal_expr(ctx, x_ident)
+        time_bucket_expr = f"DATE_TRUNC('day', {time_expr})"
+
+        use_count = y_column == "count" or y_semantic != "numeric"
+        y_key = "count" if use_count else "avg_value"
+        y_title = "Count" if use_count else f"Average {y_column}"
+        agg_expr = "COUNT(*)" if use_count else f"AVG({self._quote_ident(y_column)})"
+
+        query = f"""
+        WITH base AS (
+            {ctx.analysis_query}
+        )
+        SELECT
+            TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+            {agg_expr} AS {y_key}
+        FROM base
+        WHERE {time_expr} IS NOT NULL
+        {"" if use_count else f"AND {self._quote_ident(y_column)} IS NOT NULL"}
+        GROUP BY {time_bucket_expr}
+        ORDER BY time_bucket
+        LIMIT 500
+        """
+        try:
+            rows = await self.sf.execute_query(query)
+        except Exception as exc:
+            logger.warning("Custom time series query failed for %s: %s", x_column, exc)
+            return None
+        data = [
+            {"time_bucket": row.get("TIME_BUCKET"), y_key: row.get(y_key.upper())}
+            for row in rows
+        ]
+        if not data:
+            return None
+
+        source_columns = [x_column]
+        if not use_count and y_column:
+            source_columns.append(y_column)
+        return self._build_chart_spec(
+            chart_type=chart_type,
+            title=f"{y_title} by {x_column}",
+            x_key="time_bucket",
+            y_key=y_key,
+            data=data,
+            narrative=[
+                "Daily trend based on counts" if use_count else f"Daily trend of average {y_column}",
+                f"Grouped by {x_column}",
+            ],
+            source_columns=source_columns,
+            x_title=x_column,
+            y_title=y_title,
+        )
+
+    async def _build_category_visual(
+        self,
+        ctx: ColumnContext,
+        chart_type: str,
+        x_column: str,
+        y_column: str,
+        y_semantic: str,
+    ) -> dict[str, Any] | None:
+        x_ident = self._quote_ident(x_column)
+        use_count = y_column == "count" or y_semantic != "numeric"
+
+        if use_count:
+            total_query = f"""
+            WITH base AS (
+                {ctx.analysis_query}
+            )
+            SELECT COUNT(*) AS total_count
+            FROM base
+            WHERE {x_ident} IS NOT NULL
+            """
+            top_query = f"""
+            WITH base AS (
+                {ctx.analysis_query}
+            )
+            SELECT {x_ident} AS category, COUNT(*) AS count
+            FROM base
+            WHERE {x_ident} IS NOT NULL
+            GROUP BY category
+            ORDER BY count DESC
+            LIMIT 8
+            """
+            try:
+                total_rows = await self.sf.execute_query(total_query)
+                top_rows_raw = await self.sf.execute_query(top_query)
+            except Exception as exc:
+                logger.warning("Custom category count query failed for %s: %s", x_column, exc)
+                return None
+            total_count = self._coerce_int(total_rows[0]["TOTAL_COUNT"]) if total_rows else 0
+            top_rows = [
+                {"category": row.get("CATEGORY"), "count": self._coerce_int(row.get("COUNT"))}
+                for row in top_rows_raw
+            ]
+            top_sum = sum(row.get("count", 0) for row in top_rows)
+            if total_count > top_sum:
+                top_rows.append({"category": "Other", "count": total_count - top_sum})
+            if not top_rows:
+                return None
+            return self._build_chart_spec(
+                chart_type=chart_type,
+                title=f"{x_column} distribution",
+                x_key="category",
+                y_key="count",
+                data=top_rows,
+                narrative=[
+                    "Top categories shown with long-tail grouped as Other",
+                    f"Total non-null rows: {total_count}",
+                ],
+                source_columns=[x_column],
+                x_title=x_column,
+                y_title="Count",
+            )
+
+        y_ident = self._quote_ident(y_column)
+        numeric_query = f"""
+        WITH base AS (
+            {ctx.analysis_query}
+        ), top AS (
+            SELECT {x_ident} AS category
+            FROM base
+            WHERE {x_ident} IS NOT NULL
+            GROUP BY category
+            ORDER BY COUNT(*) DESC
+            LIMIT 8
+        )
+        SELECT
+            base.{x_ident} AS category,
+            AVG(base.{y_ident}) AS avg_value
+        FROM base
+        JOIN top ON base.{x_ident} = top.category
+        WHERE base.{y_ident} IS NOT NULL
+        GROUP BY base.{x_ident}
+        ORDER BY avg_value DESC
+        """
+        try:
+            numeric_rows = await self.sf.execute_query(numeric_query)
+        except Exception as exc:
+            logger.warning("Custom category numeric query failed for %s: %s", x_column, exc)
+            return None
+        data = [
+            {"category": row.get("CATEGORY"), "avg_value": self._coerce_float(row.get("AVG_VALUE"))}
+            for row in numeric_rows
+        ]
+        if not data:
+            return None
+        return self._build_chart_spec(
+            chart_type=chart_type,
+            title=f"{y_column} by {x_column}",
+            x_key="category",
+            y_key="avg_value",
+            data=data,
+            narrative=[
+                f"Average {y_column} across top categories",
+                "Use to compare category-level magnitude",
+            ],
+            source_columns=[x_column, y_column],
+            x_title=x_column,
+            y_title=f"Average {y_column}",
+        )
+
     async def estimate_workflow_tokens(self, table_asset_id: int, column_name: str) -> dict[str, Any]:
         ctx = await self._load_context(table_asset_id, column_name)
         semantic_type = ctx.column_meta.semantic_type
         estimates: list[dict[str, Any]] = []
 
+        node_types = self._get_workflow_node_types(ctx.column_meta)
+        has_graph = node_types is not None
+
         if semantic_type in {"numeric", "temporal"}:
-            instruction = "Summarize numeric column insights based on stats and visuals."
-            try:
-                payload = await self._build_numeric_insights_payload(ctx, column_name)
-            except Exception:
-                payload = {"column": column_name, "stats": {}, "visuals": []}
-            estimates.append({
-                "task": "generate_insights",
-                "token_count": await self._estimate_ai_agg_tokens(payload, instruction),
-            })
+            if not has_graph or "generate_insights" in node_types:
+                instruction = "Summarize numeric column insights based on stats and visuals."
+                try:
+                    payload = await self._build_numeric_insights_payload(ctx, column_name)
+                except Exception:
+                    payload = {"column": column_name, "stats": {}, "visuals": []}
+                estimates.append({
+                    "task": "generate_insights",
+                    "token_count": await self._estimate_ai_agg_tokens(payload, instruction),
+                })
 
         if semantic_type == "categorical":
-            instruction = "Summarize category distribution insights based on stats and visuals."
-            try:
-                payload = await self._build_categorical_insights_payload(ctx, column_name)
-            except Exception:
-                payload = {"column": column_name, "stats": {}, "visuals": []}
-            estimates.append({
-                "task": "generate_insights",
-                "token_count": await self._estimate_ai_agg_tokens(payload, instruction),
-            })
+            if not has_graph or "generate_insights" in node_types:
+                instruction = "Summarize category distribution insights based on stats and visuals."
+                try:
+                    payload = await self._build_categorical_insights_payload(ctx, column_name)
+                except Exception:
+                    payload = {"column": column_name, "stats": {}, "visuals": []}
+                estimates.append({
+                    "task": "generate_insights",
+                    "token_count": await self._estimate_ai_agg_tokens(payload, instruction),
+                })
 
         if semantic_type == "text":
-            summary_tokens = await self._estimate_column_tokens(ctx.analysis_query, self._quote_ident(column_name))
-            estimates.append({
-                "task": "summarize_text",
-                **summary_tokens,
-            })
-            if (ctx.column_meta.overrides or {}).get("row_level_instruction"):
+            if not has_graph or "summarize_text" in node_types:
+                summary_tokens = await self._estimate_column_tokens(ctx.analysis_query, self._quote_ident(column_name))
+                estimates.append({
+                    "task": "summarize_text",
+                    **summary_tokens,
+                })
+            if (not has_graph or "row_level_extract" in node_types) and (
+                (ctx.column_meta.overrides or {}).get("row_level_instruction")
+            ):
                 row_tokens = await self._estimate_column_tokens(ctx.analysis_query, self._quote_ident(column_name))
                 instruction_tokens = await self._estimate_tokens_for_prompt(
                     str((ctx.column_meta.overrides or {}).get("row_level_instruction"))
@@ -780,15 +1259,20 @@ class ColumnWorkflowTools:
                 })
 
         if semantic_type == "image":
-            row_info = await self._estimate_column_tokens(ctx.analysis_query, self._quote_ident(column_name))
-            instruction = "Describe the image in under 200 characters."
-            instruction_tokens = await self._estimate_tokens_for_prompt(instruction)
-            estimates.append({
-                "task": "describe_images",
-                "row_count": row_info.get("row_count", 0),
-                "token_count": instruction_tokens * row_info.get("row_count", 0),
-                "instruction_tokens": instruction_tokens,
-            })
+            if not has_graph or "describe_images" in node_types:
+                row_info = await self._estimate_column_tokens(ctx.analysis_query, self._quote_ident(column_name))
+                instruction = "Describe the image in under 200 characters."
+                instruction_tokens = await self._estimate_tokens_for_prompt(instruction)
+                estimates.append({
+                    "task": "describe_images",
+                    "row_count": row_info.get("row_count", 0),
+                    "token_count": instruction_tokens * row_info.get("row_count", 0),
+                    "instruction_tokens": instruction_tokens,
+                })
+
+        if semantic_type not in {"numeric", "temporal", "categorical", "text", "image"}:
+            if not has_graph or "basic_stats" in node_types:
+                estimates.append({"task": "basic_stats", "token_count": 0})
 
         total_tokens = sum(self._coerce_int(item.get("token_count", 0)) for item in estimates)
         return {
@@ -807,13 +1291,36 @@ class ColumnWorkflowTools:
         data: list[dict[str, Any]],
         narrative: list[str],
         source_columns: list[str],
+        x_title: str | None = None,
+        y_title: str | None = None,
     ) -> dict[str, Any]:
+        values: list[float] = []
+        for row in data:
+            raw = row.get(y_key)
+            if raw is None or isinstance(raw, bool):
+                continue
+            if isinstance(raw, (int, float)):
+                values.append(float(raw))
+                continue
+            try:
+                values.append(float(str(raw)))
+            except (TypeError, ValueError):
+                continue
+        y_scale = "linear"
+        if values:
+            min_value = min(values)
+            max_value = max(values)
+            if min_value > 0 and max_value / min_value >= 1000:
+                y_scale = "log"
         return {
             "id": f"chart_{uuid.uuid4().hex}",
             "chartType": chart_type,
             "title": title,
             "xKey": x_key,
             "yKey": y_key,
+            "xTitle": x_title or x_key,
+            "yTitle": y_title or y_key,
+            "yScale": y_scale,
             "data": data,
             "narrative": narrative,
             "sourceColumns": source_columns,
@@ -847,6 +1354,45 @@ class ColumnWorkflowTools:
 
     def _resolve_temporal_expr(self, ctx: ColumnContext, col: str) -> str:
         return f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({col}))"
+
+    async def _list_temporal_columns(self, table_asset_id: int) -> list[str]:
+        result = await self.db.execute(
+            select(ColumnMetadata.column_name).where(
+                ColumnMetadata.table_asset_id == table_asset_id,
+                ColumnMetadata.semantic_type == "temporal",
+            )
+        )
+        return [row[0] for row in result.all() if row and row[0]]
+
+    async def _list_numeric_columns(self, table_asset_id: int) -> list[str]:
+        result = await self.db.execute(
+            select(
+                ColumnMetadata.column_name,
+                ColumnMetadata.confidence,
+                ColumnMetadata.metadata_payload,
+            ).where(
+                ColumnMetadata.table_asset_id == table_asset_id,
+                ColumnMetadata.semantic_type == "numeric",
+            )
+        )
+        rows = result.all()
+
+        def null_rate(row: tuple[Any, Any, Any]) -> float:
+            metadata_payload = row[2] or {}
+            rate = metadata_payload.get("null_rate")
+            if isinstance(rate, (int, float)):
+                return float(rate)
+            return 1.0
+
+        sorted_rows = sorted(
+            rows,
+            key=lambda row: (
+                null_rate(row),
+                -float(row[1] or 0.0),
+                str(row[0]).lower(),
+            ),
+        )
+        return [row[0] for row in sorted_rows if row and row[0]]
 
     def _resolve_image_file_expr(self, ctx: ColumnContext, col: str) -> str | None:
         sql_type = (ctx.column_meta.metadata_payload or {}).get("sql_type")
@@ -925,7 +1471,7 @@ class ColumnWorkflowTools:
         await self.db.refresh(record)
 
     async def _estimate_column_tokens(self, base_query: str, column_expr: str) -> dict[str, Any]:
-        model_id = self.model_id
+        model_id = (self.model_id or "mistral-large2").lower()
         unsupported_models = {
             "claude-4-opus",
             "claude-4-sonnet",
@@ -1133,6 +1679,8 @@ class ColumnWorkflowTools:
                         f"Min: {stats.get('min_value')}, Max: {stats.get('max_value')}",
                     ],
                     source_columns=[column_name],
+                    x_title=f"{column_name} (bin)",
+                    y_title="Count",
                 )
             )
 
@@ -1168,6 +1716,8 @@ class ColumnWorkflowTools:
                     {"time_bucket": row.get("TIME_BUCKET"), "avg_value": row.get("AVG_VALUE")}
                     for row in time_rows
                 ]
+            time_title = column_name if is_temporal else (ctx.time_column or "time")
+            y_title = "Count" if is_temporal else f"Average {column_name}"
             visuals.append(
                 self._build_chart_spec(
                     chart_type="line",
@@ -1177,6 +1727,8 @@ class ColumnWorkflowTools:
                     data=time_data,
                     narrative=["Daily trend based on counts" if is_temporal else "Daily trend based on average values"],
                     source_columns=[column_name] if is_temporal else [ctx.time_column, column_name],
+                    x_title=time_title,
+                    y_title=y_title,
                 )
             )
 
@@ -1232,6 +1784,8 @@ class ColumnWorkflowTools:
                     f"Total non-null rows: {total_count}",
                 ],
                 source_columns=[column_name],
+                x_title=column_name,
+                y_title="Count",
             )
         ]
 
@@ -1362,6 +1916,22 @@ class ColumnWorkflowOrchestrator:
 
         tasks = self._build_tasks(column_meta)
         workflow_id = f"column_{table_asset_id}_{column_name}_{uuid.uuid4().hex[:8]}"
+        if not tasks:
+            await self._record_workflow_status(
+                column_meta=column_meta,
+                workflow_id=workflow_id,
+                status="skipped",
+                workflow_state="skipped",
+                fallback_used=False,
+            )
+            return {
+                "workflow_id": workflow_id,
+                "status": "skipped",
+                "workflow_state": "skipped",
+                "column": column_name,
+                "semantic_type": column_meta.semantic_type,
+                "fallback_used": False,
+            }
 
         await asyncio.to_thread(
             self.coordinator.tool.workflow,
@@ -1422,6 +1992,18 @@ class ColumnWorkflowOrchestrator:
         )
         return result.scalar_one_or_none()
 
+    def _get_workflow_node_types(self, column_meta: ColumnMetadata) -> set[str] | None:
+        overrides = column_meta.overrides
+        if not isinstance(overrides, dict):
+            return None
+        graph = overrides.get("workflow_graph")
+        if not isinstance(graph, dict):
+            return None
+        nodes = graph.get("nodes")
+        if not isinstance(nodes, list):
+            return None
+        return {str(node.get("type")) for node in nodes if node.get("type")}
+
     async def _record_workflow_status(
         self,
         column_meta: ColumnMetadata,
@@ -1452,8 +2034,34 @@ class ColumnWorkflowOrchestrator:
         column_name = column_meta.column_name
         table_asset_id = column_meta.table_asset_id
         semantic_type = column_meta.semantic_type
+        node_types = self._get_workflow_node_types(column_meta)
 
         if semantic_type in {"numeric", "temporal"}:
+            if node_types is not None:
+                tasks: list[dict[str, Any]] = []
+                if "generate_visuals" in node_types:
+                    tasks.append(
+                        {
+                            "task_id": "generate_visuals",
+                            "tools": ["generate_numeric_visuals"],
+                            "description": f"Generate visuals for {column_name}",
+                            "system_prompt": f"Call generate_numeric_visuals with table_asset_id={table_asset_id} and column_name='{column_name}'.",
+                            "dependencies": [],
+                        }
+                    )
+                if "generate_insights" in node_types:
+                    tasks.append(
+                        {
+                            "task_id": "generate_insights",
+                            "tools": ["generate_numeric_insights"],
+                            "description": f"Generate insights for {column_name}",
+                            "system_prompt": f"Call generate_numeric_insights with table_asset_id={table_asset_id} and column_name='{column_name}'.",
+                            "dependencies": ["generate_visuals"] if any(
+                                task["task_id"] == "generate_visuals" for task in tasks
+                            ) else [],
+                        }
+                    )
+                return tasks
             return [
                 {
                     "task_id": "generate_visuals",
@@ -1472,6 +2080,31 @@ class ColumnWorkflowOrchestrator:
             ]
 
         if semantic_type == "categorical":
+            if node_types is not None:
+                tasks: list[dict[str, Any]] = []
+                if "generate_visuals" in node_types:
+                    tasks.append(
+                        {
+                            "task_id": "generate_visuals",
+                            "tools": ["generate_categorical_visuals"],
+                            "description": f"Generate visuals for {column_name}",
+                            "system_prompt": f"Call generate_categorical_visuals with table_asset_id={table_asset_id} and column_name='{column_name}'.",
+                            "dependencies": [],
+                        }
+                    )
+                if "generate_insights" in node_types:
+                    tasks.append(
+                        {
+                            "task_id": "generate_insights",
+                            "tools": ["generate_categorical_insights"],
+                            "description": f"Generate insights for {column_name}",
+                            "system_prompt": f"Call generate_categorical_insights with table_asset_id={table_asset_id} and column_name='{column_name}'.",
+                            "dependencies": ["generate_visuals"] if any(
+                                task["task_id"] == "generate_visuals" for task in tasks
+                            ) else [],
+                        }
+                    )
+                return tasks
             return [
                 {
                     "task_id": "generate_visuals",
@@ -1490,28 +2123,34 @@ class ColumnWorkflowOrchestrator:
             ]
 
         if semantic_type == "text":
-            tasks = [
-                {
-                    "task_id": "summarize_text",
-                    "tools": ["summarize_text_column"],
-                    "description": f"Summarize text for {column_name}",
-                    "system_prompt": f"Call summarize_text_column with table_asset_id={table_asset_id} and column_name='{column_name}'.",
-                    "dependencies": [],
-                }
-            ]
-            if (column_meta.overrides or {}).get("row_level_instruction"):
+            tasks = []
+            if node_types is None or "summarize_text" in node_types:
+                tasks.append(
+                    {
+                        "task_id": "summarize_text",
+                        "tools": ["summarize_text_column"],
+                        "description": f"Summarize text for {column_name}",
+                        "system_prompt": f"Call summarize_text_column with table_asset_id={table_asset_id} and column_name='{column_name}'.",
+                        "dependencies": [],
+                    }
+                )
+            if (node_types is None or "row_level_extract" in node_types) and (
+                (column_meta.overrides or {}).get("row_level_instruction")
+            ):
                 tasks.append(
                     {
                         "task_id": "row_level_extract",
                         "tools": ["row_level_extract_text"],
                         "description": f"Row-level extraction for {column_name}",
                         "system_prompt": f"Call row_level_extract_text with table_asset_id={table_asset_id} and column_name='{column_name}'.",
-                        "dependencies": ["summarize_text"],
+                        "dependencies": ["summarize_text"] if tasks else [],
                     }
                 )
             return tasks
 
         if semantic_type == "image":
+            if node_types is not None and "describe_images" not in node_types:
+                return []
             return [
                 {
                     "task_id": "describe_images",
@@ -1522,6 +2161,8 @@ class ColumnWorkflowOrchestrator:
                 }
             ]
 
+        if node_types is not None and "basic_stats" not in node_types:
+            return []
         return [
             {
                 "task_id": "basic_stats",
@@ -1536,6 +2177,32 @@ class ColumnWorkflowOrchestrator:
         metadata = column_meta.metadata_payload or {}
         analysis = metadata.get("analysis", {})
         semantic_type = column_meta.semantic_type
+        node_types = self._get_workflow_node_types(column_meta)
+
+        if node_types is not None:
+            if semantic_type in {"numeric", "temporal", "categorical"}:
+                wants_visuals = "generate_visuals" in node_types
+                wants_insights = "generate_insights" in node_types
+                if not wants_visuals and not wants_insights:
+                    return True
+                if wants_insights:
+                    return bool(analysis.get("visuals")) or bool(analysis.get("insights"))
+                return bool(analysis.get("visuals"))
+            if semantic_type == "text":
+                wants_summary = "summarize_text" in node_types
+                wants_extract = "row_level_extract" in node_types
+                if not wants_summary and not wants_extract:
+                    return True
+                if wants_extract and (column_meta.overrides or {}).get("row_level_instruction"):
+                    return bool(analysis.get("summary")) or bool(analysis.get("row_level_output"))
+                return bool(analysis.get("summary"))
+            if semantic_type == "image":
+                if "describe_images" not in node_types:
+                    return True
+                return bool(analysis.get("image_descriptions_column"))
+            if "basic_stats" not in node_types:
+                return True
+            return bool(analysis.get("basic_stats"))
 
         if semantic_type in {"numeric", "temporal"}:
             return bool(analysis.get("visuals")) or bool(analysis.get("insights"))
@@ -1551,25 +2218,35 @@ class ColumnWorkflowOrchestrator:
         table_asset_id = column_meta.table_asset_id
         column_name = column_meta.column_name
         semantic_type = column_meta.semantic_type
+        node_types = self._get_workflow_node_types(column_meta)
 
         if semantic_type in {"numeric", "temporal"}:
-            await tools.generate_numeric_visuals(table_asset_id, column_name)
-            await tools.generate_numeric_insights(table_asset_id, column_name)
+            if node_types is None or "generate_visuals" in node_types:
+                await tools.generate_numeric_visuals(table_asset_id, column_name)
+            if node_types is None or "generate_insights" in node_types:
+                await tools.generate_numeric_insights(table_asset_id, column_name)
             return
 
         if semantic_type == "categorical":
-            await tools.generate_categorical_visuals(table_asset_id, column_name)
-            await tools.generate_categorical_insights(table_asset_id, column_name)
+            if node_types is None or "generate_visuals" in node_types:
+                await tools.generate_categorical_visuals(table_asset_id, column_name)
+            if node_types is None or "generate_insights" in node_types:
+                await tools.generate_categorical_insights(table_asset_id, column_name)
             return
 
         if semantic_type == "text":
-            await tools.summarize_text_column(table_asset_id, column_name)
-            if (column_meta.overrides or {}).get("row_level_instruction"):
+            if node_types is None or "summarize_text" in node_types:
+                await tools.summarize_text_column(table_asset_id, column_name)
+            if (node_types is None or "row_level_extract" in node_types) and (
+                (column_meta.overrides or {}).get("row_level_instruction")
+            ):
                 await tools.row_level_extract_text(table_asset_id, column_name)
             return
 
         if semantic_type == "image":
-            await tools.describe_image_column(table_asset_id, column_name)
+            if node_types is None or "describe_images" in node_types:
+                await tools.describe_image_column(table_asset_id, column_name)
             return
 
-        await tools.basic_column_stats(table_asset_id, column_name)
+        if node_types is None or "basic_stats" in node_types:
+            await tools.basic_column_stats(table_asset_id, column_name)

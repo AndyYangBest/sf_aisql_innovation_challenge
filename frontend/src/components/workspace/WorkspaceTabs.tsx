@@ -65,7 +65,9 @@ const WorkspaceTabs = ({ activeTab, onTabChange, tableAsset, tableResult, hideWo
         {activeTab === "overview" && <OverviewTab tableAsset={tableAsset} tableResult={tableResult} />}
         {activeTab === "data" && <DataTab tableResult={tableResult} />}
         {activeTab === "profile" && <ProfileTab tableResult={tableResult} />}
-        {activeTab === "columnmap" && <ColumnMapTab tableResult={tableResult} />}
+        {activeTab === "columnmap" && (
+          <ColumnMapTab tableId={tableAsset.id} tableResult={tableResult} />
+        )}
         {activeTab === "charts" && <ChartsTab tableId={tableAsset.id} />}
         {activeTab === "insights" && <InsightsTab tableId={tableAsset.id} />}
         {activeTab === "notes" && <NotesTab tableId={tableAsset.id} />}

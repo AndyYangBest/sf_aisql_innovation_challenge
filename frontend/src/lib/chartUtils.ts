@@ -12,6 +12,9 @@ export interface ChartSpec {
   title: string;
   xKey: string;
   yKey: string;
+  xTitle?: string;
+  yTitle?: string;
+  yScale?: "linear" | "log";
   data: ChartData[];
   narrative: string[];
   sourceColumns: string[];

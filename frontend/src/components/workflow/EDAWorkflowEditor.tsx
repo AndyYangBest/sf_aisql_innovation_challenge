@@ -41,6 +41,7 @@ interface EDAWorkflowEditorProps {
   edges: WorkflowEdge[];
   isRunning?: boolean;
   selectedNodeIds?: string[];
+  defaultColumnName?: string;
   onWorkflowDataChange?: (data: WorkflowJSON) => void;
   onSelectionChange?: (nodeIds: string[]) => void;
   onRun?: () => void;
@@ -56,6 +57,7 @@ const EDAWorkflowToolbar = ({
   runDisabled,
   onPlaceComment,
   isPlacingComment,
+  defaultColumnName,
 }: {
   isRunning?: boolean;
   onRun?: () => void;
@@ -63,6 +65,7 @@ const EDAWorkflowToolbar = ({
   runDisabled?: boolean;
   onPlaceComment?: () => void;
   isPlacingComment?: boolean;
+  defaultColumnName?: string;
 }) => {
   const { history, document, playground } = useClientContext();
   const selectService = useService(SelectionService);
@@ -113,6 +116,7 @@ const EDAWorkflowToolbar = ({
         ...definition.defaultData,
         title: definition.name,
         status: 'idle',
+        ...(defaultColumnName ? { column_name: defaultColumnName } : {}),
       };
       const node = document.createWorkflowNodeByType(type, position, { data });
       if (selectService) {
@@ -120,7 +124,7 @@ const EDAWorkflowToolbar = ({
       }
       setAddNodeOpen(false);
     },
-    [document, playground, selectService]
+    [defaultColumnName, document, playground, selectService]
   );
 
   const nodeGroups = useMemo(() => {
@@ -303,6 +307,7 @@ export const EDAWorkflowEditor = ({
   edges,
   isRunning,
   selectedNodeIds,
+  defaultColumnName,
   onWorkflowDataChange,
   onSelectionChange,
   onRun,
@@ -473,6 +478,7 @@ export const EDAWorkflowEditor = ({
             runDisabled={runDisabled}
             onPlaceComment={() => setPlacingComment((prev) => !prev)}
             isPlacingComment={placingComment}
+            defaultColumnName={defaultColumnName}
           />
           <EDAMinimap />
         </FreeLayoutEditorProvider>

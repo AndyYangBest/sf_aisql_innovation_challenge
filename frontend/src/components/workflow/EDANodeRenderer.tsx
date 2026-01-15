@@ -119,7 +119,7 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
   const definition = EDA_NODE_DEFINITIONS[nodeType];
   const columnName = nodeData?.column_name as string | undefined;
   const columnType = nodeData?.column_type as string | undefined;
-  const columnConfidence = nodeData?.column_confidence as number | undefined;
+  const columnNullRate = nodeData?.column_null_rate as number | undefined;
 
   // Get node state
   const title = nodeData?.title ?? definition?.name ?? 'Node';
@@ -432,9 +432,9 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
                 {columnType}
               </span>
             )}
-            {typeof columnConfidence === 'number' && (
+            {typeof columnNullRate === 'number' && (
               <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-500">
-                {(columnConfidence * 100).toFixed(0)}%
+                Nulls {(columnNullRate * 100).toFixed(0)}%
               </span>
             )}
           </div>

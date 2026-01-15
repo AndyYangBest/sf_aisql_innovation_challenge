@@ -64,6 +64,19 @@ function normalizeId(value: string) {
   return value.replace(/[^a-z0-9]/gi, "_").toLowerCase();
 }
 
+function getNullRate(column: ColumnMetadataRecord): number | null {
+  const rate = column.metadata?.null_rate;
+  if (typeof rate === "number" && Number.isFinite(rate)) {
+    return rate;
+  }
+  return null;
+}
+
+function getNullRateSortValue(column: ColumnMetadataRecord): number {
+  const rate = getNullRate(column);
+  return typeof rate === "number" ? rate : 1;
+}
+
 function collectOverrides(nodes: WorkflowNode[]) {
   const overrides: Record<string, any> = {};
   const hintNode = nodes.find((node) => node.type === "column_hint");
@@ -140,12 +153,15 @@ function buildColumnWorkflowGraph(
   column: ColumnMetadataRecord,
   tableAssetId: number,
   tableName: string,
-  layoutIndex: number
+  layoutIndex: number,
+  temporalColumns: string[],
+  numericColumns: string[]
 ) {
   const nodes: WorkflowNode[] = [];
   const edges: WorkflowEdge[] = [];
   const colId = normalizeId(column.column_name);
   const basePosition = getWorkflowBasePosition(layoutIndex);
+  const columnNullRate = getNullRate(column);
   let analysisX = basePosition.x;
   let featureX = basePosition.x;
   const analysisY = basePosition.y;
@@ -154,10 +170,12 @@ function buildColumnWorkflowGraph(
   const addNode = (
     type: EDANodeType,
     data?: Record<string, any>,
-    lane: "analysis" | "feature" = "analysis"
+    lane: "analysis" | "feature" = "analysis",
+    idSuffix?: string
   ) => {
     const definition = EDA_NODE_DEFINITIONS[type];
-    const nodeId = `${type}_${colId}`;
+    const suffix = idSuffix ? `_${idSuffix}` : "";
+    const nodeId = `${type}_${colId}${suffix}`;
     const positionX = lane === "feature" ? featureX : analysisX;
     const positionY = lane === "feature" ? featureY : analysisY;
     nodes.push({
@@ -170,7 +188,7 @@ function buildColumnWorkflowGraph(
         title: data?.title || definition?.name || type,
         status: "idle",
         column_type: column.semantic_type,
-        column_confidence: column.confidence,
+        column_null_rate: columnNullRate ?? undefined,
         column_name: column.column_name,
         table_asset_id: tableAssetId,
       },
@@ -201,15 +219,136 @@ function buildColumnWorkflowGraph(
 
   const semantic = column.semantic_type;
   if (semantic === "numeric" || semantic === "temporal") {
-    const visualsNode = addNode("generate_visuals");
-    edges.push({ sourceNodeID: previousId, targetNodeID: visualsNode });
+    const plannedVisuals: Array<{
+      id: string;
+      title: string;
+      chartType: string;
+      xColumn: string;
+      yColumn: string;
+    }> = [];
+
+    if (semantic === "numeric") {
+      plannedVisuals.push({
+        id: "distribution",
+        title: `Histogram: ${column.column_name}`,
+        chartType: "bar",
+        xColumn: column.column_name,
+        yColumn: "count",
+      });
+      temporalColumns
+        .filter((name) => name !== column.column_name)
+        .forEach((name) => {
+          plannedVisuals.push({
+            id: `time_${normalizeId(name)}`,
+            title: `Line: ${column.column_name} by ${name}`,
+            chartType: "line",
+            xColumn: name,
+            yColumn: column.column_name,
+          });
+        });
+    } else {
+      plannedVisuals.push({
+        id: "time",
+        title: `Line: ${column.column_name} over time`,
+        chartType: "line",
+        xColumn: column.column_name,
+        yColumn: "count",
+      });
+    }
+
+    const visualNodeIds = plannedVisuals.map((visual, index) =>
+      addNode(
+        "generate_visuals",
+        {
+          title: visual.title,
+          chart_type: visual.chartType,
+          x_column: visual.xColumn,
+          y_column: visual.yColumn,
+          chart_count: 1,
+        },
+        "analysis",
+        index === 0 ? undefined : visual.id
+      )
+    );
+    visualNodeIds.forEach((nodeId) => {
+      edges.push({ sourceNodeID: previousId, targetNodeID: nodeId });
+    });
     const insightsNode = addNode("generate_insights", { focus: "column" });
-    edges.push({ sourceNodeID: visualsNode, targetNodeID: insightsNode });
+    visualNodeIds.forEach((nodeId) => {
+      edges.push({ sourceNodeID: nodeId, targetNodeID: insightsNode });
+    });
   } else if (semantic === "categorical") {
-    const visualsNode = addNode("generate_visuals");
-    edges.push({ sourceNodeID: previousId, targetNodeID: visualsNode });
+    const plannedVisuals: Array<{
+      id: string;
+      title: string;
+      chartType: string;
+      xColumn: string;
+      yColumn: string;
+    }> = [
+      {
+        id: "bar",
+        title: `Bar: ${column.column_name} distribution`,
+        chartType: "bar",
+        xColumn: column.column_name,
+        yColumn: "count",
+      },
+    ];
+    const uniqueCount = (column.metadata as any)?.unique_count;
+    if (typeof uniqueCount === "number" && uniqueCount <= 6) {
+      plannedVisuals.push({
+        id: "pie",
+        title: `Pie: ${column.column_name} share`,
+        chartType: "pie",
+        xColumn: column.column_name,
+        yColumn: "count",
+      });
+    }
+    temporalColumns
+      .filter((name) => name !== column.column_name)
+      .forEach((name) => {
+        plannedVisuals.push({
+          id: `time_${normalizeId(name)}`,
+          title: `Line: ${column.column_name} count by ${name}`,
+          chartType: "line",
+          xColumn: name,
+          yColumn: "count",
+        });
+      });
+
+    numericColumns
+      .filter((name) => name !== column.column_name)
+      .slice(0, 2)
+      .forEach((name) => {
+        plannedVisuals.push({
+          id: `metric_${normalizeId(name)}`,
+          title: `Bar: Avg ${name} by ${column.column_name}`,
+          chartType: "bar",
+          xColumn: column.column_name,
+          yColumn: name,
+        });
+      });
+
+    const visualNodeIds = plannedVisuals.map((visual, index) =>
+      addNode(
+        "generate_visuals",
+        {
+          title: visual.title,
+          chart_type: visual.chartType,
+          x_column: visual.xColumn,
+          y_column: visual.yColumn,
+          chart_count: 1,
+        },
+        "analysis",
+        index === 0 ? undefined : visual.id
+      )
+    );
+    visualNodeIds.forEach((nodeId) => {
+      edges.push({ sourceNodeID: previousId, targetNodeID: nodeId });
+    });
     const insightsNode = addNode("generate_insights", { focus: "column" });
-    edges.push({ sourceNodeID: visualsNode, targetNodeID: insightsNode });
+    visualNodeIds.forEach((nodeId) => {
+      edges.push({ sourceNodeID: nodeId, targetNodeID: insightsNode });
+    });
   } else if (semantic === "text") {
     const summaryNode = addNode("summarize_text");
     edges.push({ sourceNodeID: previousId, targetNodeID: summaryNode });
@@ -250,13 +389,17 @@ function hydrateColumnWorkflowGraph(
   column: ColumnMetadataRecord,
   tableAssetId: number,
   tableName: string,
-  layoutIndex: number
+  layoutIndex: number,
+  temporalColumns: string[],
+  numericColumns: string[]
 ): WorkflowGraphPayload {
   const baseGraph = buildColumnWorkflowGraph(
     column,
     tableAssetId,
     tableName,
-    layoutIndex
+    layoutIndex,
+    temporalColumns,
+    numericColumns
   );
   const storedGraph = (column.overrides as any)?.workflow_graph as
     | WorkflowGraphPayload
@@ -286,7 +429,7 @@ function hydrateColumnWorkflowGraph(
       status: storedNode?.data?.status || node.data.status || "idle",
       column_name: column.column_name,
       column_type: column.semantic_type,
-      column_confidence: column.confidence,
+      column_null_rate: getNullRate(column),
       table_asset_id: tableAssetId,
       ...(node.type === "data_source"
         ? {
@@ -318,7 +461,7 @@ function hydrateColumnWorkflowGraph(
           status: node.data?.status || "idle",
           column_name: column.column_name,
           column_type: column.semantic_type,
-          column_confidence: column.confidence,
+          column_null_rate: getNullRate(column),
           table_asset_id: tableAssetId,
         },
       };
@@ -488,6 +631,20 @@ const ColumnWorkflowPanel = ({
       }
 
       const columns = data.columns;
+      const temporalColumns = columns
+        .filter((column) => column.semantic_type === "temporal")
+        .map((column) => column.column_name);
+      const numericColumns = columns
+        .filter((column) => column.semantic_type === "numeric")
+        .sort((a, b) => {
+          const aRate = getNullRateSortValue(a);
+          const bRate = getNullRateSortValue(b);
+          if (aRate !== bRate) {
+            return aRate - bRate;
+          }
+          return a.column_name.localeCompare(b.column_name);
+        })
+        .map((column) => column.column_name);
       setWorkflows((prev) => {
         const nextWorkflows: Record<string, ColumnWorkflowState> = {};
         columns.forEach((column, index) => {
@@ -499,6 +656,7 @@ const ColumnWorkflowPanel = ({
                 ...node.data,
                 column_name: column.column_name,
                 table_asset_id: tableAssetId,
+                column_null_rate: getNullRate(column),
                 ...(node.type === "data_source"
                   ? {
                       table_name: tableName,
@@ -520,7 +678,9 @@ const ColumnWorkflowPanel = ({
             column,
             tableAssetId,
             tableName,
-            index
+            index,
+            temporalColumns,
+            numericColumns
           );
           nextWorkflows[column.column_name] = {
             column,
@@ -830,8 +990,8 @@ const ColumnWorkflowPanel = ({
       "spatial",
       "binary",
       "image",
-      "id",
       "unknown",
+      "id",
     ];
     const labels: Record<string, string> = {
       numeric: "Numeric",
@@ -851,19 +1011,28 @@ const ColumnWorkflowPanel = ({
       list.push(column);
       map.set(key, list);
     });
+    const sortColumns = (columns: ColumnMetadataRecord[]) =>
+      [...columns].sort((a, b) => {
+        const aRate = getNullRateSortValue(a);
+        const bRate = getNullRateSortValue(b);
+        if (aRate !== bRate) {
+          return aRate - bRate;
+        }
+        return a.column_name.localeCompare(b.column_name);
+      });
     const groups = order
       .filter((key) => map.has(key))
       .map((key) => ({
         type: key,
         label: labels[key] ?? key,
-        columns: map.get(key) ?? [],
+        columns: sortColumns(map.get(key) ?? []),
       }));
     const extraGroups = Array.from(map.keys())
       .filter((key) => !order.includes(key))
       .map((key) => ({
         type: key,
         label: labels[key] ?? key,
-        columns: map.get(key) ?? [],
+        columns: sortColumns(map.get(key) ?? []),
       }));
     return [...groups, ...extraGroups];
   }, [filteredColumns]);
@@ -1397,6 +1566,7 @@ const ColumnWorkflowPanel = ({
                         const hasFeature =
                           column.semantic_type === "image" ||
                           Boolean(column.overrides?.row_level_instruction);
+                        const nullRate = getNullRate(column);
                         return (
                           <div
                             key={column.column_name}
@@ -1441,12 +1611,15 @@ const ColumnWorkflowPanel = ({
                                 >
                                   {column.semantic_type}
                                 </Badge>
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px]"
-                                >
-                                  {(column.confidence * 100).toFixed(0)}%
-                                </Badge>
+                                {typeof nullRate === "number" && (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px]"
+                                    title="Null rate for this column"
+                                  >
+                                    Nulls {Math.round(nullRate * 100)}%
+                                  </Badge>
+                                )}
                                 {hasFeature && (
                                   <Badge
                                     variant="outline"
@@ -1505,6 +1678,9 @@ const ColumnWorkflowPanel = ({
               edges={boardGraph.edges}
               isRunning={isRunningAny}
               selectedNodeIds={selectedNodeIds}
+              defaultColumnName={
+                selectedColumns.length === 1 ? selectedColumns[0] : undefined
+              }
               onSelectionChange={handleCanvasSelection}
               onRun={handleEstimateSelected}
               runDisabled={
