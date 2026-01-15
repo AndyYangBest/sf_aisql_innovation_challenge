@@ -49,7 +49,7 @@ export type {
 } from './types';
 
 // 服务
-export { tablesApi, mockTableAssets, mockTableResults } from './tables';
+export { tablesApi } from './tables';
 export { artifactsApi, mockArtifacts } from './artifacts';
 export { workflowsApi, simulateNodeExecution, getExecutionOrder } from './workflows';
 export { aiApi } from './ai';

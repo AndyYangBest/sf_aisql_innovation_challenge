@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { columnMetadataApi, ColumnMetadataRecord } from '@/api/columnMetadata';
+import { tablesApi } from '@/api/tables';
 import { TableAsset, TableResult, Artifact, ChangelogEntry } from '@/types';
 
 type ReportOverrides = {
@@ -92,6 +93,8 @@ interface TableStore {
   updateTableAsset: (id: string, updates: Partial<TableAsset>) => void;
   deleteTableAsset: (id: string) => void;
   getTableResult: (id: string) => TableResult | undefined;
+  setTableResult: (id: string, result: TableResult) => void;
+  loadTableResult: (id: string) => Promise<void>;
   addArtifact: (artifact: Artifact, title?: string) => void;
   deleteArtifact: (id: string) => void;
   toggleArtifactPin: (id: string) => void;
@@ -156,6 +159,26 @@ export const useTableStore = create<TableStore>()(
           }),
 
         getTableResult: (id) => get().tableResults[id],
+
+        setTableResult: (id, result) =>
+          set((state) => ({
+            tableResults: { ...state.tableResults, [id]: result },
+          })),
+
+        loadTableResult: async (id) => {
+          const response = await tablesApi.getResult(id);
+          if (response.status === "success" && response.data) {
+            set((state) => ({
+              tableResults: { ...state.tableResults, [id]: response.data },
+            }));
+            return;
+          }
+          set((state) => {
+            const next = { ...state.tableResults };
+            delete next[id];
+            return { tableResults: next };
+          });
+        },
 
         addArtifact: (artifact, title) => {
           const actionMap: Record<Artifact["type"], ChangelogEntry["action"]> = {
@@ -410,6 +433,17 @@ export const useTableStore = create<TableStore>()(
     },
     {
       name: "table-workspace-storage",
+      version: 3,
+      migrate: (state: any, version: number) => {
+        if (version < 3) {
+          return {
+            ...state,
+            tableResults: {},
+            reportStatus: {},
+          };
+        }
+        return state;
+      },
     }
   )
 );

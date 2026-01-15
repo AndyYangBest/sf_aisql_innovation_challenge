@@ -4,6 +4,7 @@
  */
 
 import { WorkflowNodeRegistry, ValidateTrigger, Field } from '@flowgram.ai/free-layout-editor';
+import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { EDANodeType, EDA_NODE_DEFINITIONS } from '@/types/eda-workflow';
 
@@ -249,11 +250,31 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
                 </div>
               )}
             </Field>
+            <Field name="output_column">
+              {({ field }) => (
+                <Input
+                  className="text-xs"
+                  placeholder="Output column (optional)"
+                  value={field.value || ''}
+                  onChange={(event) => field.onChange(event.target.value)}
+                />
+              )}
+            </Field>
             <Field name="instruction">
               {({ field }) => (
                 <Textarea
                   className="text-xs"
                   placeholder="Extraction instruction"
+                  value={field.value || ''}
+                  onChange={(event) => field.onChange(event.target.value)}
+                />
+              )}
+            </Field>
+            <Field name="response_schema">
+              {({ field }) => (
+                <Textarea
+                  className="text-xs"
+                  placeholder="Optional JSON schema for structured output"
                   value={field.value || ''}
                   onChange={(event) => field.onChange(event.target.value)}
                 />
@@ -283,7 +304,56 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
                 </div>
               )}
             </Field>
-            <div className="text-xs text-slate-600">AI_COMPLETE per row</div>
+            <Field name="output_column">
+              {({ field }) => (
+                <Input
+                  className="text-xs"
+                  placeholder="Output column (optional)"
+                  value={field.value || ''}
+                  onChange={(event) => field.onChange(event.target.value)}
+                />
+              )}
+            </Field>
+            <Field name="image_stage">
+              {({ field }) => (
+                <Input
+                  className="text-xs"
+                  placeholder="Image stage (e.g. @my_stage)"
+                  value={field.value || ''}
+                  onChange={(event) => field.onChange(event.target.value)}
+                />
+              )}
+            </Field>
+            <Field name="image_path_prefix">
+              {({ field }) => (
+                <Input
+                  className="text-xs"
+                  placeholder="Path prefix (optional)"
+                  value={field.value || ''}
+                  onChange={(event) => field.onChange(event.target.value)}
+                />
+              )}
+            </Field>
+            <Field name="image_path_suffix">
+              {({ field }) => (
+                <Input
+                  className="text-xs"
+                  placeholder="Path suffix (optional)"
+                  value={field.value || ''}
+                  onChange={(event) => field.onChange(event.target.value)}
+                />
+              )}
+            </Field>
+            <Field name="image_model">
+              {({ field }) => (
+                <Input
+                  className="text-xs"
+                  placeholder="Image model (optional)"
+                  value={field.value || ''}
+                  onChange={(event) => field.onChange(event.target.value)}
+                />
+              )}
+            </Field>
           </>
         ),
       },

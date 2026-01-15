@@ -40,10 +40,16 @@ interface ColumnWorkflowPanelProps {
   tableName: string;
 }
 
+type WorkflowGraphPayload = {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+};
+
 const COLUMN_NODE_WIDTH = 240;
 const WORKFLOW_COLUMNS = 2;
 const WORKFLOW_SPAN_X = COLUMN_NODE_WIDTH * 4 + 240;
-const WORKFLOW_SPAN_Y = 240;
+const FEATURE_LANE_OFFSET = 170;
+const WORKFLOW_SPAN_Y = 360;
 
 function normalizeId(value: string) {
   return value.replace(/[^a-z0-9]/gi, '_').toLowerCase();
@@ -58,6 +64,30 @@ function collectOverrides(nodes: WorkflowNode[]) {
   const rowLevelNode = nodes.find((node) => node.type === 'row_level_extract');
   if (rowLevelNode) {
     overrides.row_level_instruction = rowLevelNode.data?.instruction ?? '';
+    if (rowLevelNode.data?.output_column) {
+      overrides.row_level_output_column = rowLevelNode.data.output_column;
+    }
+    if (rowLevelNode.data?.response_schema) {
+      overrides.row_level_schema = rowLevelNode.data.response_schema;
+    }
+  }
+  const imageNode = nodes.find((node) => node.type === 'describe_images');
+  if (imageNode) {
+    if (imageNode.data?.output_column) {
+      overrides.image_output_column = imageNode.data.output_column;
+    }
+    if (imageNode.data?.image_stage) {
+      overrides.image_stage = imageNode.data.image_stage;
+    }
+    if (imageNode.data?.image_path_prefix) {
+      overrides.image_path_prefix = imageNode.data.image_path_prefix;
+    }
+    if (imageNode.data?.image_path_suffix) {
+      overrides.image_path_suffix = imageNode.data.image_path_suffix;
+    }
+    if (imageNode.data?.image_model) {
+      overrides.image_model = imageNode.data.image_model;
+    }
   }
   return overrides;
 }
@@ -71,6 +101,30 @@ function getWorkflowBasePosition(index: number) {
   };
 }
 
+function coercePosition(position?: { x?: number; y?: number }) {
+  return {
+    x: typeof position?.x === 'number' ? position.x : 0,
+    y: typeof position?.y === 'number' ? position.y : 0,
+  };
+}
+
+function sanitizeWorkflowGraph(graph: WorkflowGraphPayload): WorkflowGraphPayload {
+  return {
+    nodes: graph.nodes.map((node) => ({
+      ...node,
+      position: coercePosition(node.position),
+      data: {
+        ...node.data,
+        status: node.data?.status ?? 'idle',
+      },
+    })),
+    edges: graph.edges.map((edge) => ({
+      sourceNodeID: edge.sourceNodeID,
+      targetNodeID: edge.targetNodeID,
+    })),
+  };
+}
+
 function buildColumnWorkflowGraph(
   column: ColumnMetadataRecord,
   tableAssetId: number,
@@ -81,26 +135,40 @@ function buildColumnWorkflowGraph(
   const edges: WorkflowEdge[] = [];
   const colId = normalizeId(column.column_name);
   const basePosition = getWorkflowBasePosition(layoutIndex);
-  let x = basePosition.x;
-  const y = basePosition.y;
+  let analysisX = basePosition.x;
+  let featureX = basePosition.x;
+  const analysisY = basePosition.y;
+  const featureY = basePosition.y + FEATURE_LANE_OFFSET;
 
-  const addNode = (type: EDANodeType, data?: Record<string, any>) => {
+  const addNode = (
+    type: EDANodeType,
+    data?: Record<string, any>,
+    lane: 'analysis' | 'feature' = 'analysis',
+  ) => {
     const definition = EDA_NODE_DEFINITIONS[type];
     const nodeId = `${type}_${colId}`;
+    const positionX = lane === 'feature' ? featureX : analysisX;
+    const positionY = lane === 'feature' ? featureY : analysisY;
     nodes.push({
       id: nodeId,
       type,
-      position: { x, y },
+      position: { x: positionX, y: positionY },
       data: {
         ...definition?.defaultData,
         ...(data || {}),
         title: data?.title || definition?.name || type,
         status: 'idle',
+        column_type: column.semantic_type,
+        column_confidence: column.confidence,
         column_name: column.column_name,
         table_asset_id: tableAssetId,
       },
     });
-    x += COLUMN_NODE_WIDTH;
+    if (lane === 'feature') {
+      featureX += COLUMN_NODE_WIDTH;
+    } else {
+      analysisX += COLUMN_NODE_WIDTH;
+    }
     return nodeId;
   };
 
@@ -137,11 +205,19 @@ function buildColumnWorkflowGraph(
     if (column.overrides?.row_level_instruction) {
       const extractNode = addNode('row_level_extract', {
         instruction: column.overrides?.row_level_instruction,
-      });
+        output_column: column.overrides?.row_level_output_column,
+        response_schema: column.overrides?.row_level_schema,
+      }, 'feature');
       edges.push({ sourceNodeID: summaryNode, targetNodeID: extractNode });
     }
   } else if (semantic === 'image') {
-    const imageNode = addNode('describe_images');
+    const imageNode = addNode('describe_images', {
+      output_column: column.overrides?.image_output_column,
+      image_stage: column.overrides?.image_stage,
+      image_path_prefix: column.overrides?.image_path_prefix,
+      image_path_suffix: column.overrides?.image_path_suffix,
+      image_model: column.overrides?.image_model,
+    }, 'feature');
     edges.push({ sourceNodeID: previousId, targetNodeID: imageNode });
   } else {
     const statsNode = addNode('basic_stats');
@@ -149,6 +225,76 @@ function buildColumnWorkflowGraph(
   }
 
   return { nodes, edges };
+}
+
+function hydrateColumnWorkflowGraph(
+  column: ColumnMetadataRecord,
+  tableAssetId: number,
+  tableName: string,
+  layoutIndex: number,
+): WorkflowGraphPayload {
+  const baseGraph = buildColumnWorkflowGraph(column, tableAssetId, tableName, layoutIndex);
+  const storedGraph = (column.overrides as any)?.workflow_graph as WorkflowGraphPayload | undefined;
+  if (!storedGraph || !Array.isArray(storedGraph.nodes) || !Array.isArray(storedGraph.edges)) {
+    return baseGraph;
+  }
+
+  const baseById = new Map(baseGraph.nodes.map((node) => [node.id, node]));
+  const storedById = new Map(storedGraph.nodes.map((node) => [node.id, node]));
+  const mergedNodes: WorkflowNode[] = baseGraph.nodes.map((node) => {
+    const storedNode = storedById.get(node.id);
+    const definition = EDA_NODE_DEFINITIONS[node.type];
+    const data = {
+      ...definition?.defaultData,
+      ...node.data,
+      ...(storedNode?.data ?? {}),
+      title: storedNode?.data?.title || node.data.title || definition?.name || node.type,
+      status: storedNode?.data?.status || node.data.status || 'idle',
+      column_name: column.column_name,
+      column_type: column.semantic_type,
+      column_confidence: column.confidence,
+      table_asset_id: tableAssetId,
+      ...(node.type === 'data_source'
+        ? { table_name: tableName, column_name: column.column_name, table_asset_id: tableAssetId }
+        : {}),
+    };
+    return {
+      ...node,
+      position: storedNode?.position ?? node.position,
+      data,
+    };
+  });
+
+  const extraNodes: WorkflowNode[] = storedGraph.nodes
+    .filter((node) => !baseById.has(node.id))
+    .map((node) => {
+      const definition = EDA_NODE_DEFINITIONS[node.type as EDANodeType];
+      return {
+        id: node.id,
+        type: node.type as EDANodeType,
+        position: coercePosition(node.position),
+        data: {
+          ...definition?.defaultData,
+          ...node.data,
+          title: node.data?.title || definition?.name || node.type,
+          status: node.data?.status || 'idle',
+          column_name: column.column_name,
+          column_type: column.semantic_type,
+          column_confidence: column.confidence,
+          table_asset_id: tableAssetId,
+        },
+      };
+    });
+
+  const nodeIds = new Set([...mergedNodes, ...extraNodes].map((node) => node.id));
+  const mergedEdges = storedGraph.edges.filter(
+    (edge) => nodeIds.has(edge.sourceNodeID) && nodeIds.has(edge.targetNodeID)
+  );
+
+  return {
+    nodes: [...mergedNodes, ...extraNodes],
+    edges: mergedEdges.length > 0 ? mergedEdges : baseGraph.edges,
+  };
 }
 
 const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelProps) => {
@@ -169,6 +315,11 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
   const [filter, setFilter] = useState('');
   const [logs, setLogs] = useState<WorkflowLogEvent[]>([]);
   const [isLogExpanded, setIsLogExpanded] = useState(true);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const selectionSourceRef = useRef<'list' | 'canvas' | null>(null);
+  const selectionResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workflowPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingWorkflowPersistRef = useRef<Record<string, WorkflowGraphPayload>>({});
 
   const appendLog = useCallback((type: WorkflowLogEvent['type'], message: string, data?: any) => {
     setLogs((prev) => {
@@ -197,20 +348,62 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
       id: board.id,
       name: board.name,
       columnNames: board.columnNames,
+      selectedColumns: board.selectedColumns,
     }));
   }, []);
 
   const persistBoards = useCallback(
     async (nextBoards: BoardState[]) => {
       const payload = buildBoardsPayload(nextBoards);
+      const extrasPayload = Object.entries(boardExtras).reduce<Record<string, any>>(
+        (acc, [boardId, extra]) => {
+          acc[boardId] = {
+            nodes: extra.nodes,
+            edges: extra.edges,
+          };
+          return acc;
+        },
+        {}
+      );
+      const activeId = activeBoardIdRef.current ?? nextBoards[0]?.id ?? null;
       try {
-        await columnMetadataApi.overrideTable(tableAssetId, { workflow_boards: payload });
+        await columnMetadataApi.overrideTable(tableAssetId, {
+          workflow_boards: payload,
+          workflow_board_extras: extrasPayload,
+          workflow_active_board_id: activeId,
+        });
       } catch (error) {
         appendLog('error', 'Failed to save board configuration', { error });
       }
     },
-    [appendLog, buildBoardsPayload, tableAssetId]
+    [appendLog, boardExtras, buildBoardsPayload, tableAssetId]
   );
+
+  const persistWorkflowGraphs = useCallback(async () => {
+    const pending = { ...pendingWorkflowPersistRef.current };
+    pendingWorkflowPersistRef.current = {};
+    const entries = Object.entries(pending);
+    if (entries.length === 0) return;
+
+    const results = await Promise.allSettled(
+      entries.map(async ([columnName, graph]) => {
+        const sanitized = sanitizeWorkflowGraph(graph);
+        await columnMetadataApi.override(tableAssetId, columnName, {
+          workflow_graph: sanitized,
+        });
+      })
+    );
+
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        const [columnName] = entries[index];
+        appendLog('error', 'Failed to save workflow layout', {
+          column: columnName,
+          error: result.reason,
+        });
+      }
+    });
+  }, [appendLog, tableAssetId]);
 
   const loadMetadata = useCallback(async () => {
     setLoading(true);
@@ -250,7 +443,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
             };
             return;
           }
-          const graph = buildColumnWorkflowGraph(column, tableAssetId, tableName, index);
+          const graph = hydrateColumnWorkflowGraph(column, tableAssetId, tableName, index);
           nextWorkflows[column.column_name] = {
             column,
             nodes: graph.nodes,
@@ -264,6 +457,30 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
       const persistedBoards = Array.isArray(data.table?.overrides?.workflow_boards)
         ? data.table?.overrides?.workflow_boards
         : null;
+      const persistedExtras =
+        data.table?.overrides?.workflow_board_extras &&
+        typeof data.table?.overrides?.workflow_board_extras === 'object'
+          ? data.table?.overrides?.workflow_board_extras
+          : null;
+      const persistedActiveBoardId =
+        typeof data.table?.overrides?.workflow_active_board_id === 'string'
+          ? data.table?.overrides?.workflow_active_board_id
+          : null;
+
+      let sanitizedExtras: Record<string, { nodes: WorkflowNode[]; edges: WorkflowEdge[] }> | null = null;
+      if (persistedExtras) {
+        sanitizedExtras = Object.entries(persistedExtras).reduce<Record<string, { nodes: WorkflowNode[]; edges: WorkflowEdge[] }>>(
+          (acc, [boardId, extra]) => {
+            if (!extra || typeof extra !== 'object') return acc;
+            const nodes = Array.isArray((extra as any).nodes) ? (extra as any).nodes : [];
+            const edges = Array.isArray((extra as any).edges) ? (extra as any).edges : [];
+            acc[boardId] = { nodes, edges };
+            return acc;
+          },
+          {}
+        );
+        setBoardExtras((prev) => ({ ...prev, ...sanitizedExtras }));
+      }
 
       setBoards((prev) => {
         hydratingRef.current = true;
@@ -301,10 +518,16 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
               ),
             };
           }
-          if (!activeBoardId && ensured.length > 0) {
+          if (persistedActiveBoardId && ensured.some((board) => board.id === persistedActiveBoardId)) {
+            setActiveBoardId(persistedActiveBoardId);
+          } else if (!activeBoardId && ensured.length > 0) {
             setActiveBoardId(ensured[0].id);
           }
-          lastBoardsPayloadRef.current = JSON.stringify(buildBoardsPayload(ensured));
+          lastBoardsPayloadRef.current = JSON.stringify({
+            boards: buildBoardsPayload(ensured),
+            extras: sanitizedExtras || {},
+            activeBoardId: persistedActiveBoardId,
+          });
           setTimeout(() => {
             hydratingRef.current = false;
           }, 0);
@@ -314,7 +537,11 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         if (prev.length === 0) {
           const board = createBoard('Board 1', columnNames);
           setActiveBoardId(board.id);
-          lastBoardsPayloadRef.current = JSON.stringify(buildBoardsPayload([board]));
+          lastBoardsPayloadRef.current = JSON.stringify({
+            boards: buildBoardsPayload([board]),
+            extras: sanitizedExtras || {},
+            activeBoardId: board.id,
+          });
           setTimeout(() => {
             hydratingRef.current = false;
           }, 0);
@@ -356,7 +583,11 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
               }
             : board
         );
-        lastBoardsPayloadRef.current = JSON.stringify(buildBoardsPayload(updatedBoards));
+        lastBoardsPayloadRef.current = JSON.stringify({
+          boards: buildBoardsPayload(updatedBoards),
+          extras: sanitizedExtras || {},
+          activeBoardId: targetId,
+        });
         setTimeout(() => {
           hydratingRef.current = false;
         }, 0);
@@ -380,13 +611,17 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
   }, [tableAssetId, loadMetadata]);
 
   useEffect(() => {
-    activeBoardIdRef.current = activeBoardId;
-  }, [activeBoardId]);
+    activeBoardIdRef.current = activeBoardId ?? boards[0]?.id ?? null;
+  }, [activeBoardId, boards]);
 
   useEffect(() => {
     if (boards.length === 0) return;
     if (hydratingRef.current) return;
-    const payload = buildBoardsPayload(boards);
+    const payload = {
+      boards: buildBoardsPayload(boards),
+      extras: boardExtras,
+      activeBoardId: activeBoardIdRef.current,
+    };
     const serialized = JSON.stringify(payload);
     if (serialized === lastBoardsPayloadRef.current) return;
     lastBoardsPayloadRef.current = serialized;
@@ -396,34 +631,44 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     persistTimerRef.current = setTimeout(() => {
       void persistBoards(boards);
     }, 600);
-  }, [boards, buildBoardsPayload, persistBoards]);
+  }, [boards, boardExtras, buildBoardsPayload, persistBoards]);
 
   useEffect(() => {
-    if (!activeBoardId && boards.length > 0) {
-      setActiveBoardId(boards[0].id);
+    if (boards.length === 0) return;
+    if (activeBoardId && boards.some((board) => board.id === activeBoardId)) {
+      return;
     }
+    setActiveBoardId(boards[0].id);
   }, [activeBoardId, boards]);
 
   const workflowList = useMemo(() => Object.values(workflows), [workflows]);
   const columns = useMemo(() => workflowList.map((workflow) => workflow.column), [workflowList]);
 
+  const activeBoardIdValue = activeBoardId ?? boards[0]?.id ?? null;
   const activeBoard = useMemo(
-    () => boards.find((board) => board.id === activeBoardId) ?? boards[0],
-    [boards, activeBoardId]
+    () => boards.find((board) => board.id === activeBoardIdValue) ?? boards[0],
+    [boards, activeBoardIdValue]
   );
 
-  const updateActiveBoard = useCallback((updater: (board: BoardState) => BoardState) => {
-    if (!activeBoard) return;
-    setBoards((prev) => prev.map((board) => (board.id === activeBoard.id ? updater(board) : board)));
-  }, [activeBoard]);
+  const updateActiveBoard = useCallback((updater: (board: BoardState) => BoardState, targetBoardId?: string) => {
+    setBoards((prev) => {
+      const activeId = targetBoardId ?? activeBoardIdRef.current ?? prev[0]?.id;
+      if (!activeId) {
+        return prev;
+      }
+      return prev.map((board) => (board.id === activeId ? updater(board) : board));
+    });
+  }, []);
 
   const selectedColumns = activeBoard?.selectedColumns ?? [];
 
   useEffect(() => {
     if (!activeBoard) return;
     if (activeBoard.columnNames.length === 0) return;
-    if (activeBoard.selectedColumns.length > 0) return;
-    updateActiveBoard((board) => ({ ...board, selectedColumns: board.columnNames }));
+    const validSelection = activeBoard.selectedColumns.filter((name) => activeBoard.columnNames.includes(name));
+    if (validSelection.length !== activeBoard.selectedColumns.length) {
+      updateActiveBoard((board) => ({ ...board, selectedColumns: validSelection }), activeBoard.id);
+    }
   }, [activeBoard, updateActiveBoard]);
 
   const activeBoardColumns = useMemo(() => {
@@ -440,6 +685,69 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
       column.semantic_type.toLowerCase().includes(query)
     );
   }, [activeBoardColumns, filter]);
+  const isFiltering = filter.trim().length > 0;
+
+  const groupedColumns = useMemo(() => {
+    const order = [
+      'numeric',
+      'temporal',
+      'categorical',
+      'text',
+      'spatial',
+      'binary',
+      'image',
+      'id',
+      'unknown',
+    ];
+    const labels: Record<string, string> = {
+      numeric: 'Numeric',
+      temporal: 'Temporal',
+      categorical: 'Categorical',
+      text: 'Text',
+      spatial: 'Spatial',
+      binary: 'Binary',
+      image: 'Image',
+      id: 'Identifiers',
+      unknown: 'Unknown',
+    };
+    const map = new Map<string, ColumnMetadataRecord[]>();
+    filteredColumns.forEach((column) => {
+      const key = column.semantic_type || 'unknown';
+      const list = map.get(key) ?? [];
+      list.push(column);
+      map.set(key, list);
+    });
+    const groups = order
+      .filter((key) => map.has(key))
+      .map((key) => ({
+        type: key,
+        label: labels[key] ?? key,
+        columns: map.get(key) ?? [],
+      }));
+    const extraGroups = Array.from(map.keys())
+      .filter((key) => !order.includes(key))
+      .map((key) => ({
+        type: key,
+        label: labels[key] ?? key,
+        columns: map.get(key) ?? [],
+      }));
+    return [...groups, ...extraGroups];
+  }, [filteredColumns]);
+
+  const defaultGroupsExpanded = activeBoardColumns.length <= 12;
+
+  useEffect(() => {
+    if (groupedColumns.length === 0) return;
+    setExpandedGroups((prev) => {
+      const next = { ...prev };
+      groupedColumns.forEach((group) => {
+        if (next[group.type] === undefined) {
+          next[group.type] = defaultGroupsExpanded;
+        }
+      });
+      return next;
+    });
+  }, [defaultGroupsExpanded, groupedColumns]);
 
   const boardGraph = useMemo(() => {
     const nodes: WorkflowNode[] = [];
@@ -474,16 +782,36 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     return mapping;
   }, [activeBoard, workflows]);
 
+  const selectedNodeIds = useMemo(() => {
+    if (!activeBoard) return [];
+    const ids: string[] = [];
+    activeBoard.selectedColumns.forEach((columnName) => {
+      const workflow = workflows[columnName];
+      if (!workflow) return;
+      workflow.nodes.forEach((node) => ids.push(node.id));
+    });
+    return ids;
+  }, [activeBoard, workflows]);
+
   const updateWorkflowData = useCallback((data: { nodes: any[]; edges: any[] }) => {
     if (!activeBoard) return;
 
     const nodeColumnMap = new Map<string, string>();
     const extraNodes: WorkflowNode[] = [];
     const extraNodeIds = new Set<string>();
+    const nodesByColumn = new Map<string, WorkflowNode[]>();
     data.nodes.forEach((node) => {
       const columnName = node.data?.column_name;
       if (columnName) {
         nodeColumnMap.set(node.id, columnName);
+        const list = nodesByColumn.get(columnName) ?? [];
+        list.push({
+          id: node.id,
+          type: node.type as EDANodeType,
+          position: node.meta?.position ?? { x: 0, y: 0 },
+          data: node.data,
+        });
+        nodesByColumn.set(columnName, list);
       } else {
         extraNodeIds.add(node.id);
         extraNodes.push({
@@ -498,6 +826,18 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     const extraEdges = data.edges.filter(
       (edge) => extraNodeIds.has(edge.sourceNodeID) && extraNodeIds.has(edge.targetNodeID)
     );
+    const edgesByColumn = new Map<string, WorkflowEdge[]>();
+    data.edges.forEach((edge) => {
+      const sourceColumn = nodeColumnMap.get(edge.sourceNodeID);
+      const targetColumn = nodeColumnMap.get(edge.targetNodeID);
+      if (!sourceColumn || sourceColumn !== targetColumn) return;
+      const list = edgesByColumn.get(sourceColumn) ?? [];
+      list.push({
+        sourceNodeID: edge.sourceNodeID,
+        targetNodeID: edge.targetNodeID,
+      });
+      edgesByColumn.set(sourceColumn, list);
+    });
     setBoardExtras((prevExtras) => ({
       ...prevExtras,
       [activeBoard.id]: {
@@ -510,33 +850,6 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     }));
 
     setWorkflows((prev) => {
-      const nodesByColumn = new Map<string, WorkflowNode[]>();
-      data.nodes.forEach((node) => {
-        const columnName = node.data?.column_name;
-        if (!columnName || !prev[columnName]) return;
-        const list = nodesByColumn.get(columnName) ?? [];
-        list.push({
-          id: node.id,
-          type: node.type as EDANodeType,
-          position: node.meta?.position ?? { x: 0, y: 0 },
-          data: node.data,
-        });
-        nodesByColumn.set(columnName, list);
-      });
-
-      const edgesByColumn = new Map<string, WorkflowEdge[]>();
-      data.edges.forEach((edge) => {
-        const sourceColumn = nodeColumnMap.get(edge.sourceNodeID);
-        const targetColumn = nodeColumnMap.get(edge.targetNodeID);
-        if (!sourceColumn || sourceColumn !== targetColumn) return;
-        const list = edgesByColumn.get(sourceColumn) ?? [];
-        list.push({
-          sourceNodeID: edge.sourceNodeID,
-          targetNodeID: edge.targetNodeID,
-        });
-        edgesByColumn.set(sourceColumn, list);
-      });
-
       const next = { ...prev };
       nodesByColumn.forEach((nodes, columnName) => {
         next[columnName] = {
@@ -547,13 +860,33 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
       });
       return next;
     });
-  }, [activeBoard]);
+
+    if (nodesByColumn.size > 0) {
+      nodesByColumn.forEach((nodes, columnName) => {
+        pendingWorkflowPersistRef.current[columnName] = {
+          nodes,
+          edges: edgesByColumn.get(columnName) ?? [],
+        };
+      });
+      if (workflowPersistTimerRef.current) {
+        clearTimeout(workflowPersistTimerRef.current);
+      }
+      workflowPersistTimerRef.current = setTimeout(() => {
+        void persistWorkflowGraphs();
+      }, 800);
+    }
+  }, [activeBoard, persistWorkflowGraphs]);
 
   const handleCanvasSelection = useCallback((nodeIds: string[]) => {
     if (!activeBoard) return;
     if (nodeIds.length === 0) {
       return;
     }
+    if (selectionSourceRef.current === 'list') {
+      selectionSourceRef.current = null;
+      return;
+    }
+    selectionSourceRef.current = 'canvas';
     const selected = new Set<string>();
     nodeIds.forEach((id) => {
       const columnName = nodeIdToColumn.get(id);
@@ -564,10 +897,19 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     if (selected.size === 0) {
       return;
     }
-    updateActiveBoard((board) => ({ ...board, selectedColumns: Array.from(selected) }));
+    updateActiveBoard((board) => ({ ...board, selectedColumns: Array.from(selected) }), activeBoard.id);
   }, [activeBoard, nodeIdToColumn, updateActiveBoard]);
 
   const handleToggleColumn = useCallback((columnName: string, checked: boolean) => {
+    selectionSourceRef.current = 'list';
+    if (selectionResetRef.current) {
+      clearTimeout(selectionResetRef.current);
+    }
+    selectionResetRef.current = setTimeout(() => {
+      if (selectionSourceRef.current === 'list') {
+        selectionSourceRef.current = null;
+      }
+    }, 150);
     updateActiveBoard((board) => {
       const selected = new Set(board.selectedColumns);
       if (checked) {
@@ -576,8 +918,13 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         selected.delete(columnName);
       }
       return { ...board, selectedColumns: Array.from(selected) };
-    });
-  }, [updateActiveBoard]);
+    }, activeBoard?.id);
+  }, [activeBoard, updateActiveBoard]);
+
+  const handleClearSelection = useCallback(() => {
+    if (!activeBoard) return;
+    updateActiveBoard((board) => ({ ...board, selectedColumns: [] }), activeBoard.id);
+  }, [activeBoard, updateActiveBoard]);
 
   const handleAddBoard = useCallback(() => {
     if (!activeBoard) return;
@@ -603,7 +950,14 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
       .concat(board);
     setBoards(nextBoards);
     setActiveBoardId(board.id);
-  }, [activeBoard, boards, createBoard, selectedColumns, toast]);
+    activeBoardIdRef.current = board.id;
+    lastBoardsPayloadRef.current = JSON.stringify({
+      boards: buildBoardsPayload(nextBoards),
+      extras: boardExtras,
+      activeBoardId: board.id,
+    });
+    void persistBoards(nextBoards);
+  }, [activeBoard, boardExtras, boards, buildBoardsPayload, createBoard, persistBoards, selectedColumns, toast]);
 
   const isRunningAny = useMemo(() => Object.values(workflows).some((wf) => wf.isRunning), [workflows]);
 
@@ -772,7 +1126,18 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     <div className="flex h-full min-h-0 gap-4">
       <div className="w-72 shrink-0 rounded-lg border border-border bg-card flex flex-col min-h-0">
         <div className="border-b border-border p-4 space-y-3">
-          <div className="text-sm font-semibold">Columns</div>
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold">Columns</div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={handleClearSelection}
+              disabled={selectedColumns.length === 0}
+            >
+              Clear
+            </Button>
+          </div>
           <Input
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
@@ -784,40 +1149,80 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         </div>
         <ScrollArea className="flex-1">
           <div className="p-3 space-y-2">
-            {filteredColumns.map((column) => {
-              const checked = selectedColumns.includes(column.column_name);
+            {groupedColumns.length === 0 && (
+              <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-muted-foreground text-center">
+                No columns on this board.
+              </div>
+            )}
+            {groupedColumns.map((group) => {
+              const expanded = isFiltering ? true : expandedGroups[group.type] ?? defaultGroupsExpanded;
               return (
-                <div
-                  key={column.column_name}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleToggleColumn(column.column_name, !checked)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      handleToggleColumn(column.column_name, !checked);
+                <div key={group.type} className="space-y-2">
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                    onClick={() =>
+                      setExpandedGroups((prev) => ({
+                        ...prev,
+                        [group.type]: !(prev[group.type] ?? true),
+                      }))
                     }
-                  }}
-                  className={cn(
-                    'flex items-start gap-3 rounded-lg border border-transparent px-2 py-2 hover:bg-muted/50 cursor-pointer select-none',
-                    checked && 'border-primary/40 bg-primary/5'
-                  )}
-                >
-                  <Checkbox
-                    checked={checked}
-                    onCheckedChange={(value) => handleToggleColumn(column.column_name, Boolean(value))}
-                    onClick={(event) => event.stopPropagation()}
-                    className="mt-0.5"
-                  />
-                  <div className="flex-1 space-y-1">
-                    <div className="text-sm font-medium text-foreground">{column.column_name}</div>
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <span>{column.semantic_type}</span>
-                      <Badge variant="secondary" className="text-[10px]">
-                        {(column.confidence * 100).toFixed(0)}%
-                      </Badge>
+                    disabled={isFiltering}
+                  >
+                    <span>{group.label}</span>
+                    <span>{group.columns.length}</span>
+                  </button>
+                  {expanded && (
+                    <div className="space-y-2">
+                      {group.columns.map((column) => {
+                        const checked = selectedColumns.includes(column.column_name);
+                        const hasFeature =
+                          column.semantic_type === 'image' ||
+                          Boolean(column.overrides?.row_level_instruction);
+                        return (
+                          <div
+                            key={column.column_name}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => handleToggleColumn(column.column_name, !checked)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                handleToggleColumn(column.column_name, !checked);
+                              }
+                            }}
+                            className={cn(
+                              'flex items-start gap-3 rounded-lg border border-transparent px-2 py-2 hover:bg-muted/50 cursor-pointer select-none',
+                              checked && 'border-primary/40 bg-primary/5'
+                            )}
+                          >
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={(value) => handleToggleColumn(column.column_name, Boolean(value))}
+                              onClick={(event) => event.stopPropagation()}
+                              className="mt-0.5"
+                            />
+                            <div className="flex-1 space-y-1">
+                              <div className="text-sm font-medium text-foreground">{column.column_name}</div>
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
+                                  {column.semantic_type}
+                                </Badge>
+                                <Badge variant="outline" className="text-[10px]">
+                                  {(column.confidence * 100).toFixed(0)}%
+                                </Badge>
+                                {hasFeature && (
+                                  <Badge variant="outline" className="text-[10px] border-emerald-200 text-emerald-700">
+                                    Feature
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  </div>
+                  )}
                 </div>
               );
             })}
@@ -827,7 +1232,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
 
       <div className="flex flex-1 flex-col min-h-0">
         <div className="flex items-center justify-between border-b border-border pb-2">
-          <Tabs value={activeBoard?.id} onValueChange={setActiveBoardId}>
+          <Tabs value={activeBoardIdValue ?? undefined} onValueChange={setActiveBoardId}>
             <TabsList>
               {boards.map((board) => (
                 <TabsTrigger key={board.id} value={board.id}>
@@ -855,6 +1260,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
               nodes={boardGraph.nodes}
               edges={boardGraph.edges}
               isRunning={isRunningAny}
+              selectedNodeIds={selectedNodeIds}
               onSelectionChange={handleCanvasSelection}
               onRun={handleEstimateSelected}
               runDisabled={isRunningAny || isEstimating || selectedColumns.length === 0}
@@ -883,32 +1289,32 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
       </div>
 
       <Dialog open={!!estimateResults} onOpenChange={(open) => !open && handleCancelEstimate()}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Token Estimate</DialogTitle>
+        <DialogContent className="bg-slate-950 text-slate-100 border-slate-800">
+          <DialogHeader className="text-slate-100">
+            <DialogTitle className="text-slate-100">Token Estimate</DialogTitle>
           </DialogHeader>
           {estimateResults && (
-            <div className="space-y-4 text-sm text-foreground">
-              <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-                <span className="text-muted-foreground">Columns</span>
+            <div className="space-y-4 text-sm text-slate-100">
+              <div className="flex items-center justify-between rounded-lg border border-slate-800 px-3 py-2">
+                <span className="text-slate-300">Columns</span>
                 <span className="font-medium">{estimateTotals.columns}</span>
               </div>
-              <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-                <span className="text-muted-foreground">Total tokens</span>
+              <div className="flex items-center justify-between rounded-lg border border-slate-800 px-3 py-2">
+                <span className="text-slate-300">Total tokens</span>
                 <span className="font-medium">{estimateTotals.totalTokens}</span>
               </div>
               <div className="space-y-3">
                 {estimateResults.map((estimate) => (
-                  <div key={estimate.column} className="rounded-lg border border-border px-3 py-2">
+                  <div key={estimate.column} className="rounded-lg border border-slate-800 px-3 py-2">
                     <div className="flex items-center justify-between">
-                      <span className="font-medium text-foreground">{estimate.column}</span>
-                      <span className="text-xs text-muted-foreground">{estimate.total_tokens} tokens</span>
+                      <span className="font-medium text-slate-100">{estimate.column}</span>
+                      <span className="text-xs text-slate-300">{estimate.total_tokens} tokens</span>
                     </div>
                     <div className="mt-2 space-y-1">
                       {estimate.estimates.map((item, idx) => (
                         <div key={`${estimate.column}-${item.task}-${idx}`} className="flex items-center justify-between">
-                          <span className="text-xs text-muted-foreground">{item.task}</span>
-                          <span className="text-xs text-muted-foreground">
+                          <span className="text-xs text-slate-300">{item.task}</span>
+                          <span className="text-xs text-slate-300">
                             {item.row_count ? `${item.row_count} rows · ` : ''}
                             {item.token_count} tokens
                           </span>
@@ -921,8 +1327,19 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={handleCancelEstimate}>Cancel</Button>
-            <Button onClick={handleRunSelected}>Run Workflows</Button>
+            <Button
+              variant="outline"
+              onClick={handleCancelEstimate}
+              className="border-slate-700 text-slate-100 hover:bg-slate-900"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleRunSelected}
+              className="bg-slate-100 text-slate-900 hover:bg-slate-200"
+            >
+              Run Workflows
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

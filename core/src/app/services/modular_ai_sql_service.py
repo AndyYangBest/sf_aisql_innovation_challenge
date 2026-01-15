@@ -103,16 +103,20 @@ class ModularAISQLService:
                 raise ValueError("Prompt too long for AI_COMPLETE; please reduce context under 16KB.")
 
             if response_format:
-                response_format_json = json.dumps(response_format).replace("'", "''")
+                format_payload = response_format
+                if "schema" not in response_format:
+                    format_payload = {"type": "json", "schema": response_format}
+                response_format_json = json.dumps(format_payload).replace("'", "''")
                 return f"""
-                SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                SELECT AI_COMPLETE(
                     '{model}',
                     '{safe_prompt}',
+                    NULL,
                     PARSE_JSON('{response_format_json}')
                 ) as response
                 """
             return f"""
-            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+            SELECT AI_COMPLETE(
                 '{model}',
                 '{safe_prompt}'
             ) as response
@@ -123,9 +127,17 @@ class ModularAISQLService:
         query = build_query(safe_prompt)
 
         print("[AI_COMPLETE] query used:\n", query)
+        def normalize_response(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, (dict, list)):
+                return json.dumps(value)
+            return str(value)
+
         try:
             result = await self.sf.execute_query(query)
-            return result[0]["RESPONSE"] if result else ""
+            response = result[0].get("RESPONSE") if result else ""
+            return normalize_response(response)
         except ProgrammingError as e:
             msg = str(e)
             if "needs to be a string literal" not in msg:
@@ -137,7 +149,8 @@ class ModularAISQLService:
             query = build_query(safe_prompt)
             print("[AI_COMPLETE] retry with aggressive sanitization:\n", query)
             result = await self.sf.execute_query(query)
-            return result[0]["RESPONSE"] if result else ""
+            response = result[0].get("RESPONSE") if result else ""
+            return normalize_response(response)
 
     async def ai_classify(
         self,

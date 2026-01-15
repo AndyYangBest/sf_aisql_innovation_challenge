@@ -14,6 +14,7 @@ from typing import Any
 import re
 
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.asyncio import AsyncSession
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
@@ -33,6 +34,7 @@ class ColumnContext:
     table_asset_id: int
     column_name: str
     base_query: str
+    analysis_query: str
     table_ref: str | None
     time_column: str | None
     structure_type: str | None
@@ -53,6 +55,7 @@ class ColumnWorkflowTools:
         self.ai_sql = ai_sql_service
         self.db = db
         self.model_id = settings.SNOWFLAKE_CORTEX_MODEL or "mistral-large2"
+        self.image_model_id = settings.SNOWFLAKE_CORTEX_IMAGE_MODEL or "pixtral-large"
 
     @tool
     async def generate_numeric_visuals(self, table_asset_id: int, column_name: str) -> dict[str, Any]:
@@ -62,15 +65,16 @@ class ColumnWorkflowTools:
 
         is_temporal = ctx.column_meta.semantic_type == "temporal"
         time_expr = None
+        analysis_errors: list[dict[str, Any]] = []
         if is_temporal:
             time_expr = self._resolve_temporal_expr(ctx, col)
             stats_query = f"""
             WITH base AS (
-                {ctx.base_query}
+                {ctx.analysis_query}
             )
             SELECT
-                MIN({time_expr}) AS min_value,
-                MAX({time_expr}) AS max_value,
+                TO_VARCHAR(MIN({time_expr})) AS min_value,
+                TO_VARCHAR(MAX({time_expr})) AS max_value,
                 COUNT_IF({time_expr} IS NOT NULL) AS total_count
             FROM base
             WHERE {time_expr} IS NOT NULL
@@ -78,7 +82,7 @@ class ColumnWorkflowTools:
         else:
             stats_query = f"""
             WITH base AS (
-                {ctx.base_query}
+                {ctx.analysis_query}
             )
             SELECT
                 MIN({col}) AS min_value,
@@ -88,7 +92,12 @@ class ColumnWorkflowTools:
             FROM base
             WHERE {col} IS NOT NULL
             """
-        stats_rows = await self.sf.execute_query(stats_query)
+        try:
+            stats_rows = await self.sf.execute_query(stats_query)
+        except Exception as exc:
+            logger.warning("Stats query failed for %s: %s", column_name, exc)
+            analysis_errors.append({"step": "stats_query", "error": str(exc)})
+            stats_rows = []
         raw_stats = stats_rows[0] if stats_rows else {}
         stats = {
             "min_value": raw_stats.get("MIN_VALUE"),
@@ -106,7 +115,7 @@ class ColumnWorkflowTools:
         if not is_temporal and stats.get("MIN_VALUE") is not None and stats.get("MAX_VALUE") is not None:
             hist_query = f"""
             WITH base AS (
-                {ctx.base_query}
+                {ctx.analysis_query}
             ), stats AS (
                 SELECT
                     MIN({col}) AS min_value,
@@ -122,9 +131,14 @@ class ColumnWorkflowTools:
             GROUP BY bin
             ORDER BY bin
             """
-            histogram_rows = await self.sf.execute_query(hist_query)
+            try:
+                histogram_rows = await self.sf.execute_query(hist_query)
+            except Exception as exc:
+                logger.warning("Histogram query failed for %s: %s", column_name, exc)
+                analysis_errors.append({"step": "hist_query", "error": str(exc)})
+                histogram_rows = []
             histogram_data = [
-                {"bin": row.get("BIN"), "count": row.get("COUNT")}
+                {"bin": row.get("BIN"), "count": self._coerce_int(row.get("COUNT"))}
                 for row in histogram_rows
             ]
             visuals.append(
@@ -143,50 +157,99 @@ class ColumnWorkflowTools:
             )
 
         time_col = None
+        fallback_query: str | None = None
         if is_temporal:
             time_col = time_expr or col
         elif ctx.time_column:
-            time_col = self._quote_ident(ctx.time_column)
+            time_col = f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({self._quote_ident(ctx.time_column)}))"
         if time_col:
+            time_bucket_expr = f"DATE_TRUNC('day', {time_col})"
             time_query = f"""
             WITH base AS (
-                {ctx.base_query}
+                {ctx.analysis_query}
             )
             SELECT
-                DATE_TRUNC('day', {time_col}) AS time_bucket,
+                TO_VARCHAR({time_bucket_expr}) AS time_bucket,
                 {"COUNT(*) AS count" if is_temporal else f"AVG({col}) AS avg_value"}
             FROM base
             WHERE {time_col} IS NOT NULL
             {"AND " + col + " IS NOT NULL" if not is_temporal else ""}
-            GROUP BY time_bucket
+            GROUP BY {time_bucket_expr}
             ORDER BY time_bucket
             LIMIT 500
             """
-            time_rows = await self.sf.execute_query(time_query)
+            try:
+                time_rows = await self.sf.execute_query(time_query)
+            except Exception as exc:
+                logger.warning("Time series query failed for %s: %s", column_name, exc)
+                analysis_errors.append({"step": "time_query", "error": str(exc)})
+                time_rows = []
             if is_temporal:
                 time_data = [
-                    {"time_bucket": row.get("TIME_BUCKET"), "count": row.get("COUNT")}
+                    {"time_bucket": row.get("TIME_BUCKET"), "count": self._coerce_int(row.get("COUNT"))}
                     for row in time_rows
                 ]
             else:
                 time_data = [
-                    {"time_bucket": row.get("TIME_BUCKET"), "avg_value": row.get("AVG_VALUE")}
+                    {"time_bucket": row.get("TIME_BUCKET"), "avg_value": self._coerce_float(row.get("AVG_VALUE"))}
                     for row in time_rows
                 ]
-            visuals.append(
-                self._build_chart_spec(
-                    chart_type="line",
-                    title=f"{column_name} over time",
-                    x_key="time_bucket",
-                    y_key="count" if is_temporal else "avg_value",
-                    data=time_data,
-                    narrative=[
-                        "Daily trend based on counts" if is_temporal else "Daily trend based on average values",
-                        "Look for seasonality or breaks in trend",
-                    ],
-                    source_columns=[column_name] if is_temporal else [ctx.time_column, column_name],
+            if time_data:
+                visuals.append(
+                    self._build_chart_spec(
+                        chart_type="line",
+                        title=f"{column_name} over time",
+                        x_key="time_bucket",
+                        y_key="count" if is_temporal else "avg_value",
+                        data=time_data,
+                        narrative=[
+                            "Daily trend based on counts" if is_temporal else "Daily trend based on average values",
+                            "Look for seasonality or breaks in trend",
+                        ],
+                        source_columns=[column_name] if is_temporal else [ctx.time_column, column_name],
+                    )
                 )
-            )
+            elif is_temporal:
+                fallback_query = f"""
+                WITH base AS (
+                    {ctx.analysis_query}
+                )
+                SELECT TO_VARCHAR({col}) AS category, COUNT(*) AS count
+                FROM base
+                WHERE {col} IS NOT NULL
+                GROUP BY category
+                ORDER BY count DESC
+                LIMIT 8
+                """
+                try:
+                    fallback_rows = await self.sf.execute_query(fallback_query)
+                except Exception as exc:
+                    logger.warning("Temporal fallback query failed for %s: %s", column_name, exc)
+                    analysis_errors.append({"step": "temporal_fallback_query", "error": str(exc)})
+                    fallback_rows = []
+                fallback_data = [
+                    {"category": row.get("CATEGORY"), "count": self._coerce_int(row.get("COUNT"))}
+                    for row in fallback_rows
+                ]
+                if fallback_data:
+                    visuals.append(
+                        self._build_chart_spec(
+                            chart_type="bar",
+                            title=f"{column_name} value distribution",
+                            x_key="category",
+                            y_key="count",
+                            data=fallback_data,
+                            narrative=[
+                                "Fallback to raw values when timestamps cannot be parsed",
+                                "Review data quality for temporal parsing",
+                            ],
+                            source_columns=[column_name],
+                        )
+                    )
+                    analysis_errors.append({
+                        "step": "temporal_parse_fallback",
+                        "detail": "No valid timestamps parsed; used raw value distribution.",
+                    })
 
         analysis = {
             "visuals": visuals,
@@ -195,8 +258,14 @@ class ColumnWorkflowTools:
                 "stats_query": stats_query.strip(),
             },
         }
+        if analysis_errors:
+            analysis["errors"] = analysis_errors
         if histogram_data and hist_query:
             analysis["queries"]["hist_query"] = hist_query.strip()
+        if time_col:
+            analysis["queries"]["time_query"] = time_query.strip()
+        if fallback_query and is_temporal:
+            analysis["queries"]["temporal_fallback_query"] = fallback_query.strip()
         await self._update_column_analysis(ctx, analysis)
 
         return {
@@ -210,21 +279,27 @@ class ColumnWorkflowTools:
         """Generate visuals for categorical columns and persist them."""
         ctx = await self._load_context(table_asset_id, column_name)
         col = self._quote_ident(column_name)
+        analysis_errors: list[dict[str, Any]] = []
 
         total_query = f"""
         WITH base AS (
-            {ctx.base_query}
+            {ctx.analysis_query}
         )
         SELECT COUNT(*) AS total_count
         FROM base
         WHERE {col} IS NOT NULL
         """
-        total_rows = await self.sf.execute_query(total_query)
+        try:
+            total_rows = await self.sf.execute_query(total_query)
+        except Exception as exc:
+            logger.warning("Total count query failed for %s: %s", column_name, exc)
+            analysis_errors.append({"step": "total_query", "error": str(exc)})
+            total_rows = []
         total_count = self._coerce_int(total_rows[0]["TOTAL_COUNT"]) if total_rows else 0
 
         top_query = f"""
         WITH base AS (
-            {ctx.base_query}
+            {ctx.analysis_query}
         )
         SELECT {col} AS category, COUNT(*) AS count
         FROM base
@@ -233,7 +308,12 @@ class ColumnWorkflowTools:
         ORDER BY count DESC
         LIMIT 8
         """
-        top_rows_raw = await self.sf.execute_query(top_query)
+        try:
+            top_rows_raw = await self.sf.execute_query(top_query)
+        except Exception as exc:
+            logger.warning("Top categories query failed for %s: %s", column_name, exc)
+            analysis_errors.append({"step": "top_query", "error": str(exc)})
+            top_rows_raw = []
         top_rows = [
             {"category": row.get("CATEGORY"), "count": self._coerce_int(row.get("COUNT"))}
             for row in top_rows_raw
@@ -278,6 +358,8 @@ class ColumnWorkflowTools:
                 "total_query": total_query.strip(),
             },
         }
+        if analysis_errors:
+            analysis["errors"] = analysis_errors
         await self._update_column_analysis(ctx, analysis)
 
         return {"column": column_name, "visuals": visuals, "total_count": total_count}
@@ -301,9 +383,22 @@ class ColumnWorkflowTools:
         token_estimate = await self._estimate_ai_agg_tokens(payload, instruction)
         insights = await self._run_ai_agg(payload, instruction)
 
-        analysis.update({"insights": insights, "insight_token_estimate": token_estimate})
+        normalized_insights = insights.get("insights", []) if isinstance(insights, dict) else insights
+        normalized_caveats = insights.get("caveats", []) if isinstance(insights, dict) else []
+        analysis.update(
+            {
+                "insights": normalized_insights,
+                "caveats": normalized_caveats,
+                "insight_token_estimate": token_estimate,
+            }
+        )
         await self._update_column_analysis(ctx, analysis)
-        return {"column": column_name, "insights": insights, "token_estimate": token_estimate}
+        return {
+            "column": column_name,
+            "insights": normalized_insights,
+            "caveats": normalized_caveats,
+            "token_estimate": token_estimate,
+        }
 
     @tool
     async def generate_categorical_insights(self, table_asset_id: int, column_name: str) -> dict[str, Any]:
@@ -323,22 +418,35 @@ class ColumnWorkflowTools:
         token_estimate = await self._estimate_ai_agg_tokens(payload, instruction)
         insights = await self._run_ai_agg(payload, instruction)
 
-        analysis.update({"insights": insights, "insight_token_estimate": token_estimate})
+        normalized_insights = insights.get("insights", []) if isinstance(insights, dict) else insights
+        normalized_caveats = insights.get("caveats", []) if isinstance(insights, dict) else []
+        analysis.update(
+            {
+                "insights": normalized_insights,
+                "caveats": normalized_caveats,
+                "insight_token_estimate": token_estimate,
+            }
+        )
         await self._update_column_analysis(ctx, analysis)
-        return {"column": column_name, "insights": insights, "token_estimate": token_estimate}
+        return {
+            "column": column_name,
+            "insights": normalized_insights,
+            "caveats": normalized_caveats,
+            "token_estimate": token_estimate,
+        }
 
     @tool
     async def summarize_text_column(self, table_asset_id: int, column_name: str) -> dict[str, Any]:
         """Summarize text column using AI_SUMMARIZE_AGG with token estimate."""
         ctx = await self._load_context(table_asset_id, column_name)
         col = self._quote_ident(column_name)
-        token_info = await self._estimate_column_tokens(ctx.base_query, col)
+        token_info = await self._estimate_column_tokens(ctx.analysis_query, col)
 
         summary_query = f"""
         WITH base AS (
-            {ctx.base_query}
+            {ctx.analysis_query}
         )
-        SELECT SNOWFLAKE.CORTEX.SUMMARIZE_AGG({col}) AS summary
+        SELECT AI_SUMMARIZE_AGG({col}) AS summary
         FROM base
         WHERE {col} IS NOT NULL
         """
@@ -366,25 +474,69 @@ class ColumnWorkflowTools:
         if not ctx.table_ref:
             return {"column": column_name, "skipped": True, "reason": "table_ref_missing"}
 
-        output_column = overrides.get("output_column") or f"{column_name}_extracted"
+        output_column = (
+            overrides.get("row_level_output_column")
+            or overrides.get("output_column")
+            or f"{column_name}_extracted"
+        )
         col = self._quote_ident(column_name)
-        token_info = await self._estimate_column_tokens(ctx.base_query, col)
+        token_info = await self._estimate_column_tokens(ctx.analysis_query, col)
+        instruction_tokens = await self._estimate_tokens_for_prompt(str(instruction))
         safe_instruction = self._sanitize_literal(instruction)
+        response_format = overrides.get("row_level_schema") or overrides.get("row_level_response_format")
 
         await self._ensure_column(ctx.table_ref, output_column)
+        prompt_expr = f"CONCAT('{safe_instruction}', ' ', TO_VARCHAR({col}))"
+        complete_expr = f"AI_COMPLETE('{self.model_id}', {prompt_expr})"
+        if response_format:
+            if isinstance(response_format, str):
+                try:
+                    response_format = json.loads(response_format)
+                except json.JSONDecodeError:
+                    response_format = None
+            if isinstance(response_format, dict):
+                if "schema" not in response_format:
+                    response_format = {"type": "json", "schema": response_format}
+                response_json = json.dumps(response_format)
+                response_literal = self._sanitize_literal(response_json)
+                complete_expr = (
+                    f"AI_COMPLETE('{self.model_id}', {prompt_expr}, NULL, PARSE_JSON('{response_literal}'))"
+                )
+
         update_query = f"""
         UPDATE {ctx.table_ref}
-        SET {self._quote_ident(output_column)} = SNOWFLAKE.CORTEX.COMPLETE(
-            '{self.model_id}',
-            PROMPT('{safe_instruction}', {col})
-        )
+        SET {self._quote_ident(output_column)} = {complete_expr}
+        WHERE {col} IS NOT NULL
         """
         await self.sf.execute_query(update_query)
+        await self._ensure_feature_column_metadata(
+            table_asset_id=ctx.table_asset_id,
+            output_column=output_column,
+            source_column=column_name,
+            feature_type="row_level_extract",
+        )
 
         analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
+        feature_outputs = list(analysis.get("feature_outputs", []))
+        feature_outputs = [
+            item for item in feature_outputs
+            if item.get("output_column") != output_column
+        ]
+        feature_outputs.append({
+            "type": "row_level_extract",
+            "output_column": output_column,
+            "source_column": column_name,
+            "instruction": instruction,
+        })
+        total_tokens = token_info.get("token_count", 0) + instruction_tokens * token_info.get("row_count", 0)
         analysis.update({
             "row_level_output": output_column,
-            "row_level_token_estimate": token_info,
+            "row_level_token_estimate": {
+                **token_info,
+                "instruction_tokens": instruction_tokens,
+                "total_tokens": total_tokens,
+            },
+            "feature_outputs": feature_outputs,
         })
         await self._update_column_analysis(ctx, analysis)
 
@@ -395,27 +547,95 @@ class ColumnWorkflowTools:
         """Row-level AI_COMPLETE image descriptions; writes to new column."""
         ctx = await self._load_context(table_asset_id, column_name)
         if not ctx.table_ref:
+            analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
+            errors = list(analysis.get("errors", []))
+            errors.append({
+                "step": "describe_images",
+                "error": "table_ref_missing",
+                "detail": "Image descriptions require a physical table reference.",
+            })
+            analysis.update({"errors": errors})
+            await self._update_column_analysis(ctx, analysis)
             return {"column": column_name, "skipped": True, "reason": "table_ref_missing"}
 
-        output_column = f"{column_name}_description"
+        overrides = ctx.column_meta.overrides or {}
+        output_column = (
+            overrides.get("image_output_column")
+            or overrides.get("output_column")
+            or f"{column_name}_description"
+        )
         col = self._quote_ident(column_name)
-        token_info = await self._estimate_column_tokens(ctx.base_query, col)
-        instruction = self._sanitize_literal("Describe the image in under 200 characters.")
+        token_info = await self._estimate_column_tokens(ctx.analysis_query, col)
+        instruction_text = "Describe the image in under 200 characters. If it cannot be accessed, respond with 'image_unavailable'."
+        instruction_tokens = await self._estimate_tokens_for_prompt(instruction_text)
+        instruction = self._sanitize_literal(instruction_text)
+        file_expr = self._resolve_image_file_expr(ctx, col)
+        image_model = overrides.get("image_model") or self.image_model_id
+        supported_image_models = {
+            "claude-4-opus",
+            "claude-4-sonnet",
+            "claude-3-7-sonnet",
+            "claude-3-5-sonnet",
+            "llama4-maverick",
+            "llama4-scout",
+            "openai-o4-mini",
+            "openai-gpt-4.1",
+            "pixtral-large",
+        }
+        if image_model not in supported_image_models:
+            image_model = self.image_model_id
+
+        if not file_expr:
+            analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
+            errors = list(analysis.get("errors", []))
+            errors.append({
+                "step": "describe_images",
+                "error": "image_stage_missing",
+                "detail": "Provide image_stage in table/column overrides or store FILE objects.",
+            })
+            analysis.update({"errors": errors})
+            await self._update_column_analysis(ctx, analysis)
+            return {"column": column_name, "skipped": True, "reason": "image_stage_missing"}
 
         await self._ensure_column(ctx.table_ref, output_column)
         update_query = f"""
         UPDATE {ctx.table_ref}
-        SET {self._quote_ident(output_column)} = SNOWFLAKE.CORTEX.COMPLETE(
-            '{self.model_id}',
-            PROMPT('{instruction}', {col})
+        SET {self._quote_ident(output_column)} = AI_COMPLETE(
+            '{self._sanitize_literal(str(image_model))}',
+            '{instruction}',
+            {file_expr}
         )
+        WHERE {col} IS NOT NULL
         """
         await self.sf.execute_query(update_query)
+        await self._ensure_feature_column_metadata(
+            table_asset_id=ctx.table_asset_id,
+            output_column=output_column,
+            source_column=column_name,
+            feature_type="image_description",
+        )
 
         analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
+        feature_outputs = list(analysis.get("feature_outputs", []))
+        feature_outputs = [
+            item for item in feature_outputs
+            if item.get("output_column") != output_column
+        ]
+        feature_outputs.append({
+            "type": "image_description",
+            "output_column": output_column,
+            "source_column": column_name,
+            "model": image_model,
+        })
+        total_tokens = token_info.get("row_count", 0) * instruction_tokens
         analysis.update({
             "image_descriptions_column": output_column,
-            "row_level_token_estimate": token_info,
+            "row_level_token_estimate": {
+                **token_info,
+                "instruction_tokens": instruction_tokens,
+                "total_tokens": total_tokens,
+            },
+            "feature_outputs": feature_outputs,
         })
         await self._update_column_analysis(ctx, analysis)
 
@@ -429,7 +649,7 @@ class ColumnWorkflowTools:
 
         stats_query = f"""
         WITH base AS (
-            {ctx.base_query}
+            {ctx.analysis_query}
         )
         SELECT
             COUNT(*) AS total_count,
@@ -464,14 +684,24 @@ class ColumnWorkflowTools:
         if not column_meta:
             raise ValueError("Column metadata missing; initialize column metadata first.")
 
-        base_query = (table_meta.metadata_payload or {}).get("base_query")
+        metadata_payload = table_meta.metadata_payload or {}
+        base_query = metadata_payload.get("base_query")
         if not base_query:
             raise ValueError("Base query missing from table metadata.")
+
+        analysis_query = metadata_payload.get("analysis_query") or base_query
 
         table_ref = None
         meta_payload = column_meta.metadata_payload or {}
         if meta_payload.get("table_ref"):
             table_ref = meta_payload.get("table_ref")
+        elif metadata_payload.get("table_ref"):
+            table_ref = metadata_payload.get("table_ref")
+
+        if table_ref:
+            analysis_query = f"SELECT * FROM {table_ref}"
+        else:
+            analysis_query = self._strip_limit_clause(str(analysis_query))
 
         time_column = (table_meta.metadata_payload or {}).get("time_column")
         structure_type = table_meta.structure_type
@@ -480,6 +710,7 @@ class ColumnWorkflowTools:
             table_asset_id=table_asset_id,
             column_name=column_name,
             base_query=base_query,
+            analysis_query=analysis_query,
             table_ref=table_ref,
             time_column=time_column,
             structure_type=structure_type,
@@ -488,11 +719,16 @@ class ColumnWorkflowTools:
         )
 
     async def _update_column_analysis(self, ctx: ColumnContext, analysis_update: dict[str, Any]) -> None:
-        metadata = ctx.column_meta.metadata_payload or {}
-        analysis = metadata.get("analysis", {})
+        metadata = dict(ctx.column_meta.metadata_payload or {})
+        analysis = dict(metadata.get("analysis", {}))
         analysis.update(analysis_update)
+        analysis.setdefault("column", ctx.column_name)
+        analysis.setdefault("type", ctx.column_meta.semantic_type)
+        analysis.setdefault("confidence", ctx.column_meta.confidence)
+        analysis.setdefault("provenance", ctx.column_meta.provenance or {})
         metadata["analysis"] = analysis
         ctx.column_meta.metadata_payload = metadata
+        flag_modified(ctx.column_meta, "metadata_payload")
         ctx.column_meta.last_updated = datetime.now(timezone.utc)
         await self.db.commit()
         await self.db.refresh(ctx.column_meta)
@@ -525,26 +761,36 @@ class ColumnWorkflowTools:
             })
 
         if semantic_type == "text":
-            summary_tokens = await self._estimate_column_tokens(ctx.base_query, self._quote_ident(column_name))
+            summary_tokens = await self._estimate_column_tokens(ctx.analysis_query, self._quote_ident(column_name))
             estimates.append({
                 "task": "summarize_text",
                 **summary_tokens,
             })
             if (ctx.column_meta.overrides or {}).get("row_level_instruction"):
-                row_tokens = await self._estimate_column_tokens(ctx.base_query, self._quote_ident(column_name))
+                row_tokens = await self._estimate_column_tokens(ctx.analysis_query, self._quote_ident(column_name))
+                instruction_tokens = await self._estimate_tokens_for_prompt(
+                    str((ctx.column_meta.overrides or {}).get("row_level_instruction"))
+                )
+                total_tokens = row_tokens.get("token_count", 0) + instruction_tokens * row_tokens.get("row_count", 0)
                 estimates.append({
                     "task": "row_level_extract",
                     **row_tokens,
+                    "instruction_tokens": instruction_tokens,
+                    "token_count": total_tokens,
                 })
 
         if semantic_type == "image":
-            row_tokens = await self._estimate_column_tokens(ctx.base_query, self._quote_ident(column_name))
+            row_info = await self._estimate_column_tokens(ctx.analysis_query, self._quote_ident(column_name))
+            instruction = "Describe the image in under 200 characters."
+            instruction_tokens = await self._estimate_tokens_for_prompt(instruction)
             estimates.append({
                 "task": "describe_images",
-                **row_tokens,
+                "row_count": row_info.get("row_count", 0),
+                "token_count": instruction_tokens * row_info.get("row_count", 0),
+                "instruction_tokens": instruction_tokens,
             })
 
-        total_tokens = sum(int(item.get("token_count", 0)) for item in estimates)
+        total_tokens = sum(self._coerce_int(item.get("token_count", 0)) for item in estimates)
         return {
             "column": column_name,
             "semantic_type": semantic_type,
@@ -587,57 +833,219 @@ class ColumnWorkflowTools:
         except (TypeError, ValueError):
             return default
 
+    def _coerce_float(self, value: Any, default: float | None = None) -> float | None:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return float(int(value))
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value))
+        except (TypeError, ValueError):
+            return default
+
     def _resolve_temporal_expr(self, ctx: ColumnContext, col: str) -> str:
-        sql_type = (ctx.column_meta.metadata_payload or {}).get("sql_type")
-        if sql_type:
-            normalized = str(sql_type).upper()
-            if "TIMESTAMP" in normalized or "DATE" in normalized or "TIME" in normalized:
-                return col
         return f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({col}))"
 
+    def _resolve_image_file_expr(self, ctx: ColumnContext, col: str) -> str | None:
+        sql_type = (ctx.column_meta.metadata_payload or {}).get("sql_type")
+        if sql_type and "FILE" in str(sql_type).upper():
+            return col
+
+        overrides = ctx.column_meta.overrides or {}
+        table_overrides = ctx.table_meta.overrides or {}
+        stage = overrides.get("image_stage") or table_overrides.get("image_stage")
+        if not stage:
+            return None
+
+        prefix = overrides.get("image_path_prefix") or ""
+        suffix = overrides.get("image_path_suffix") or ""
+        stage_value = str(stage)
+        if not stage_value.startswith("@"):
+            stage_value = f"@{stage_value}"
+        stage_literal = self._sanitize_literal(stage_value)
+
+        path_expr = col
+        if prefix:
+            prefix_literal = self._sanitize_literal(str(prefix))
+            path_expr = f"'{prefix_literal}' || {path_expr}"
+        if suffix:
+            suffix_literal = self._sanitize_literal(str(suffix))
+            path_expr = f"{path_expr} || '{suffix_literal}'"
+
+        return f"TO_FILE('{stage_literal}', {path_expr})"
+
+    async def _ensure_feature_column_metadata(
+        self,
+        table_asset_id: int,
+        output_column: str,
+        source_column: str,
+        feature_type: str,
+    ) -> None:
+        result = await self.db.execute(
+            select(ColumnMetadata).where(
+                ColumnMetadata.table_asset_id == table_asset_id,
+                ColumnMetadata.column_name == output_column,
+            )
+        )
+        record = result.scalar_one_or_none()
+        metadata_payload = dict(record.metadata_payload or {}) if record else {}
+        metadata_payload.update(
+            {
+                "sql_type": "VARCHAR",
+                "derived_from": source_column,
+                "feature_type": feature_type,
+                "generated_by": "feature_engineering",
+            }
+        )
+
+        if record:
+            record.semantic_type = record.semantic_type or "text"
+            record.confidence = record.confidence or 0.6
+            record.metadata_payload = metadata_payload
+            record.last_updated = datetime.now(timezone.utc)
+        else:
+            record = ColumnMetadata()
+            record.table_asset_id = table_asset_id
+            record.column_name = output_column
+            record.semantic_type = "text"
+            record.confidence = 0.6
+            record.metadata_payload = metadata_payload
+            record.provenance = {
+                "generated_by": "feature_engineering",
+                "source_column": source_column,
+            }
+            record.examples = None
+            record.overrides = None
+            record.last_updated = datetime.now(timezone.utc)
+            self.db.add(record)
+
+        await self.db.commit()
+        await self.db.refresh(record)
+
     async def _estimate_column_tokens(self, base_query: str, column_expr: str) -> dict[str, Any]:
+        model_id = self.model_id
+        unsupported_models = {
+            "claude-4-opus",
+            "claude-4-sonnet",
+            "claude-3-7-sonnet",
+            "claude-3-5-sonnet",
+            "openai-gpt-4.1",
+            "openai-o4-mini",
+        }
+        if model_id in unsupported_models:
+            model_id = "mistral-large2"
         query = f"""
         WITH base AS (
             {base_query}
         )
         SELECT
             COUNT(*) AS row_count,
-            SUM(SNOWFLAKE.CORTEX.COUNT_TOKENS('{self.model_id}', {column_expr})) AS token_count
+            SUM(AI_COUNT_TOKENS('ai_complete', '{model_id}', TO_VARCHAR({column_expr}))) AS token_count
         FROM base
         WHERE {column_expr} IS NOT NULL
         """
         try:
             result = await self.sf.execute_query(query)
         except Exception:
+            fallback_query = f"""
+            WITH base AS (
+                {base_query}
+            )
+            SELECT
+                COUNT(*) AS row_count,
+                SUM(AI_COUNT_TOKENS('ai_complete', 'mistral-large2', TO_VARCHAR({column_expr}))) AS token_count
+            FROM base
+            WHERE {column_expr} IS NOT NULL
+            """
+            try:
+                result = await self.sf.execute_query(fallback_query)
+            except Exception:
+                count_query = f"""
+                WITH base AS (
+                    {base_query}
+                )
+                SELECT
+                    COUNT(*) AS row_count,
+                    AVG(LENGTH(TO_VARCHAR({column_expr}))) AS avg_len
+                FROM base
+                WHERE {column_expr} IS NOT NULL
+                """
+                try:
+                    count_result = await self.sf.execute_query(count_query)
+                    if not count_result:
+                        return {"row_count": 0, "token_count": 0}
+                    row_count = self._coerce_int(count_result[0].get("ROW_COUNT"))
+                    avg_len = count_result[0].get("AVG_LEN")
+                    approx_tokens = self._coerce_int(row_count * (float(avg_len) / 4)) if avg_len else 0
+                    return {"row_count": row_count, "token_count": approx_tokens}
+                except Exception:
+                    return {"row_count": 0, "token_count": 0}
+
+        if not result:
             count_query = f"""
             WITH base AS (
                 {base_query}
             )
-            SELECT COUNT(*) AS row_count
+            SELECT
+                COUNT(*) AS row_count,
+                AVG(LENGTH(TO_VARCHAR({column_expr}))) AS avg_len
             FROM base
             WHERE {column_expr} IS NOT NULL
             """
             try:
                 count_result = await self.sf.execute_query(count_query)
-                return {"row_count": count_result[0].get("ROW_COUNT", 0) if count_result else 0, "token_count": 0}
+                if not count_result:
+                    return {"row_count": 0, "token_count": 0}
+                row_count = self._coerce_int(count_result[0].get("ROW_COUNT"))
+                avg_len = count_result[0].get("AVG_LEN")
+                approx_tokens = self._coerce_int(row_count * (float(avg_len) / 4)) if avg_len else 0
+                return {"row_count": row_count, "token_count": approx_tokens}
             except Exception:
                 return {"row_count": 0, "token_count": 0}
-
-        if not result:
-            return {"row_count": 0, "token_count": 0}
         return {
-            "row_count": result[0].get("ROW_COUNT", 0),
-            "token_count": result[0].get("TOKEN_COUNT") or 0,
+            "row_count": self._coerce_int(result[0].get("ROW_COUNT", 0)),
+            "token_count": self._coerce_int(result[0].get("TOKEN_COUNT") or 0),
         }
 
     async def _estimate_tokens_for_prompt(self, prompt: str) -> int:
         safe_prompt = self._sanitize_literal(prompt)
-        query = f"SELECT SNOWFLAKE.CORTEX.COUNT_TOKENS('{self.model_id}', '{safe_prompt}') AS TOKEN_COUNT"
+        model_id = self.model_id
+        unsupported_models = {
+            "claude-4-opus",
+            "claude-4-sonnet",
+            "claude-3-7-sonnet",
+            "claude-3-5-sonnet",
+            "openai-gpt-4.1",
+            "openai-o4-mini",
+        }
+        if model_id in unsupported_models:
+            model_id = "mistral-large2"
+        query = (
+            "SELECT AI_COUNT_TOKENS('ai_complete', "
+            f"'{model_id}', '{safe_prompt}') AS TOKEN_COUNT"
+        )
         try:
             result = await self.sf.execute_query(query)
         except Exception:
-            return 0
-        return int(result[0]["TOKEN_COUNT"]) if result else 0
+            fallback_query = (
+                "SELECT AI_COUNT_TOKENS('ai_complete', "
+                f"'mistral-large2', '{safe_prompt}') AS TOKEN_COUNT"
+            )
+            try:
+                result = await self.sf.execute_query(fallback_query)
+                if not result:
+                    return max(1, len(prompt) // 4)
+                return int(result[0]["TOKEN_COUNT"])
+            except Exception:
+                return max(1, len(prompt) // 4)
+        if not result:
+            return max(1, len(prompt) // 4)
+        try:
+            return int(result[0]["TOKEN_COUNT"])
+        except (TypeError, ValueError, KeyError):
+            return max(1, len(prompt) // 4)
 
     async def _estimate_ai_agg_tokens(self, payload: dict[str, Any], instruction: str) -> int:
         prompt_tokens = await self._estimate_tokens_for_prompt(instruction)
@@ -654,11 +1062,11 @@ class ColumnWorkflowTools:
             time_expr = self._resolve_temporal_expr(ctx, col)
             stats_query = f"""
             WITH base AS (
-                {ctx.base_query}
+                {ctx.analysis_query}
             )
             SELECT
-                MIN({time_expr}) AS min_value,
-                MAX({time_expr}) AS max_value,
+                TO_VARCHAR(MIN({time_expr})) AS min_value,
+                TO_VARCHAR(MAX({time_expr})) AS max_value,
                 COUNT_IF({time_expr} IS NOT NULL) AS total_count
             FROM base
             WHERE {time_expr} IS NOT NULL
@@ -666,7 +1074,7 @@ class ColumnWorkflowTools:
         else:
             stats_query = f"""
             WITH base AS (
-                {ctx.base_query}
+                {ctx.analysis_query}
             )
             SELECT
                 MIN({col}) AS min_value,
@@ -692,7 +1100,7 @@ class ColumnWorkflowTools:
         if not is_temporal and stats.get("MIN_VALUE") is not None and stats.get("MAX_VALUE") is not None:
             hist_query = f"""
             WITH base AS (
-                {ctx.base_query}
+                {ctx.analysis_query}
             ), stats AS (
                 SELECT
                     MIN({col}) AS min_value,
@@ -732,19 +1140,20 @@ class ColumnWorkflowTools:
         if is_temporal:
             time_col = time_expr or col
         elif ctx.time_column:
-            time_col = self._quote_ident(ctx.time_column)
+            time_col = f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({self._quote_ident(ctx.time_column)}))"
         if time_col:
+            time_bucket_expr = f"DATE_TRUNC('day', {time_col})"
             time_query = f"""
             WITH base AS (
-                {ctx.base_query}
+                {ctx.analysis_query}
             )
             SELECT
-                DATE_TRUNC('day', {time_col}) AS time_bucket,
+                TO_VARCHAR({time_bucket_expr}) AS time_bucket,
                 {"COUNT(*) AS count" if is_temporal else f"AVG({col}) AS avg_value"}
             FROM base
             WHERE {time_col} IS NOT NULL
             {"AND " + col + " IS NOT NULL" if not is_temporal else ""}
-            GROUP BY time_bucket
+            GROUP BY {time_bucket_expr}
             ORDER BY time_bucket
             LIMIT 90
             """
@@ -782,7 +1191,7 @@ class ColumnWorkflowTools:
         col = self._quote_ident(column_name)
         total_query = f"""
         WITH base AS (
-            {ctx.base_query}
+            {ctx.analysis_query}
         )
         SELECT COUNT(*) AS total_count
         FROM base
@@ -793,7 +1202,7 @@ class ColumnWorkflowTools:
 
         top_query = f"""
         WITH base AS (
-            {ctx.base_query}
+            {ctx.analysis_query}
         )
         SELECT {col} AS category, COUNT(*) AS count
         FROM base
@@ -841,7 +1250,11 @@ class ColumnWorkflowTools:
         SELECT AI_AGG(payload, $${instruction}$$) AS RESPONSE
         FROM data
         """
-        result = await self.ai_sql.sf.execute_query(query)
+        try:
+            result = await self.ai_sql.sf.execute_query(query)
+        except Exception as exc:
+            logger.warning("AI_AGG failed: %s", exc)
+            return {"insights": [], "caveats": ["AI_AGG failed; retry later."]}
         raw_response = result[0]["RESPONSE"] if result else None
         if isinstance(raw_response, dict):
             return raw_response
@@ -869,6 +1282,11 @@ class ColumnWorkflowTools:
 
     def _quote_ident(self, identifier: str) -> str:
         return f'"{identifier.replace("\"", "\"\"")}"'
+
+    def _strip_limit_clause(self, query: str) -> str:
+        trimmed = str(query).strip().rstrip(";")
+        pattern = re.compile(r"\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$", re.IGNORECASE)
+        return pattern.sub("", trimmed).strip()
 
 
 class ColumnWorkflowOrchestrator:
@@ -1012,8 +1430,8 @@ class ColumnWorkflowOrchestrator:
         workflow_state: str | None,
         fallback_used: bool,
     ) -> None:
-        metadata = column_meta.metadata_payload or {}
-        workflow_meta = metadata.get("workflow", {})
+        metadata = dict(column_meta.metadata_payload or {})
+        workflow_meta = dict(metadata.get("workflow", {}))
         workflow_meta.update(
             {
                 "workflow_id": workflow_id,
@@ -1025,6 +1443,7 @@ class ColumnWorkflowOrchestrator:
         )
         metadata["workflow"] = workflow_meta
         column_meta.metadata_payload = metadata
+        flag_modified(column_meta, "metadata_payload")
         column_meta.last_updated = datetime.now(timezone.utc)
         await self.db.commit()
         await self.db.refresh(column_meta)

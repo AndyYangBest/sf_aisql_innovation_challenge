@@ -31,6 +31,16 @@ type OutputGroup = {
   columnName: string;
   charts: ChartArtifact[];
   insights: InsightArtifact[];
+  features: FeatureOutput[];
+};
+
+type FeatureOutput = {
+  id: string;
+  outputColumn: string;
+  sourceColumn: string;
+  kind: string;
+  instruction?: string;
+  model?: string;
 };
 
 const normalizeChartType = (value?: string): ChartArtifact["content"]["chartType"] => {
@@ -79,6 +89,11 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
       if (!bullets.length && typeof analysis.summary === "string" && analysis.summary.trim()) {
         bullets = [analysis.summary.trim()];
       }
+      const caveats = Array.isArray(analysis.caveats)
+        ? analysis.caveats
+        : Array.isArray((analysis.insights as any)?.caveats)
+          ? (analysis.insights as any).caveats
+          : [];
 
       const insights: InsightArtifact[] = bullets.length
         ? [
@@ -89,9 +104,7 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
               content: {
                 title: `${column.column_name} insights`,
                 bullets,
-                summary: Array.isArray(analysis.insights?.caveats)
-                  ? analysis.insights.caveats.join(" ")
-                  : undefined,
+                summary: caveats.length ? caveats.join(" ") : undefined,
                 sourceColumns: [column.column_name],
               },
               createdAt,
@@ -99,7 +112,37 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
           ]
         : [];
 
-      if (charts.length === 0 && insights.length === 0) {
+      const featureOutputs: FeatureOutput[] = [];
+      if (Array.isArray(analysis.feature_outputs)) {
+        analysis.feature_outputs.forEach((item: any, idx: number) => {
+          if (!item?.output_column) return;
+          featureOutputs.push({
+            id: item.id || `feature_${tableId}_${column.column_name}_${idx}`,
+            outputColumn: item.output_column,
+            sourceColumn: item.source_column || column.column_name,
+            kind: item.type || 'feature',
+            instruction: item.instruction,
+            model: item.model,
+          });
+        });
+      } else if (analysis.row_level_output) {
+        featureOutputs.push({
+          id: `feature_${tableId}_${column.column_name}_row_extract`,
+          outputColumn: analysis.row_level_output,
+          sourceColumn: column.column_name,
+          kind: 'row_level_extract',
+          instruction: column.overrides?.row_level_instruction,
+        });
+      } else if (analysis.image_descriptions_column) {
+        featureOutputs.push({
+          id: `feature_${tableId}_${column.column_name}_image_desc`,
+          outputColumn: analysis.image_descriptions_column,
+          sourceColumn: column.column_name,
+          kind: 'image_description',
+        });
+      }
+
+      if (charts.length === 0 && insights.length === 0 && featureOutputs.length === 0) {
         return null;
       }
 
@@ -107,9 +150,35 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
         columnName: column.column_name,
         charts,
         insights,
+        features: featureOutputs,
       };
     })
     .filter(Boolean) as OutputGroup[];
+};
+
+const featureToArtifact = (feature: FeatureOutput, tableId: string): Artifact => {
+  const title = `${feature.outputColumn} (derived)`;
+  const lines = [
+    `**Output column:** ${feature.outputColumn}`,
+    `**Source column:** ${feature.sourceColumn}`,
+    `**Type:** ${feature.kind}`,
+  ];
+  if (feature.instruction) {
+    lines.push(`**Instruction:** ${feature.instruction}`);
+  }
+  if (feature.model) {
+    lines.push(`**Model:** ${feature.model}`);
+  }
+  return {
+    type: "doc",
+    id: feature.id,
+    tableId,
+    content: {
+      title,
+      markdown: lines.join("\n\n"),
+    },
+    createdAt: new Date().toISOString(),
+  };
 };
 
 const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanelProps) => {
@@ -162,7 +231,10 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
   };
 
   const handleSaveGroup = (group: OutputGroup) => {
-    const pending = [...group.charts, ...group.insights].filter((item) => !savedIds.has(item.id));
+    const featureArtifacts = group.features.map((feature) => featureToArtifact(feature, tableId));
+    const pending = [...group.charts, ...group.insights, ...featureArtifacts].filter(
+      (item) => !savedIds.has(item.id)
+    );
     if (pending.length === 0) {
       toast({ title: "Already saved" });
       return;
@@ -208,7 +280,7 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                   <div>
                     <div className="text-sm font-medium">{group.columnName}</div>
                     <div className="text-[11px] text-muted-foreground">
-                      {group.charts.length} charts · {group.insights.length} insights
+                      {group.charts.length} charts · {group.insights.length} insights · {group.features.length} features
                     </div>
                   </div>
                   <Button
@@ -298,6 +370,44 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                               onClick={() => handleSave(insight)}
                             >
                               <Save className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {group.features.length > 0 && (
+                  <div className="space-y-2">
+                    {group.features.map((feature) => {
+                      const featureArtifact = featureToArtifact(feature, tableId);
+                      const isSaved = savedIds.has(featureArtifact.id);
+                      return (
+                        <div
+                          key={feature.id}
+                          className={cn(
+                            "rounded-md border border-border/60 px-2.5 py-2 text-xs",
+                            isSaved && "bg-secondary/30"
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5 text-foreground">
+                                <Sparkles className="h-3.5 w-3.5 text-[hsl(var(--viz-green))]" />
+                                <span className="truncate">{feature.outputColumn}</span>
+                              </div>
+                              <div className="text-[11px] text-muted-foreground">
+                                Derived from {feature.sourceColumn}
+                              </div>
+                            </div>
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              onClick={() => handleSave(featureArtifact)}
+                              disabled={isSaved}
+                            >
+                              {isSaved ? "Saved" : "Save"}
                             </Button>
                           </div>
                         </div>

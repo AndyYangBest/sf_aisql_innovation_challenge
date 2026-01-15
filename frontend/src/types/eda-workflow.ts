@@ -35,8 +35,9 @@ export interface EDANodeDefinition {
   name: string;
   description: string;
   icon: string;
-  category: 'source' | 'analysis' | 'output';
+  category: 'source' | 'analysis' | 'feature' | 'output';
   defaultData?: Record<string, any>;
+  createsColumn?: boolean;
 }
 
 export const EDA_NODE_DEFINITIONS: Record<EDANodeType, EDANodeDefinition> = {
@@ -126,10 +127,13 @@ export const EDA_NODE_DEFINITIONS: Record<EDANodeType, EDANodeDefinition> = {
     name: 'Row-level Extract',
     description: 'AI_COMPLETE extraction per row',
     icon: 'Sparkles',
-    category: 'analysis',
+    category: 'feature',
+    createsColumn: true,
     defaultData: {
       title: 'Row-level Extract',
       instruction: '',
+      output_column: '',
+      response_schema: '',
     },
   },
   describe_images: {
@@ -137,9 +141,15 @@ export const EDA_NODE_DEFINITIONS: Record<EDANodeType, EDANodeDefinition> = {
     name: 'Describe Images',
     description: 'Generate per-row image descriptions',
     icon: 'Image',
-    category: 'analysis',
+    category: 'feature',
+    createsColumn: true,
     defaultData: {
       title: 'Describe Images',
+      output_column: '',
+      image_stage: '',
+      image_path_prefix: '',
+      image_path_suffix: '',
+      image_model: '',
     },
   },
   basic_stats: {

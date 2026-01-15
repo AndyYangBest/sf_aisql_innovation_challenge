@@ -31,6 +31,7 @@ const TableWorkspace = () => {
     updateTableAsset,
     addTableAsset,
     loadReport,
+    loadTableResult,
   } = useTableStore();
   const [activeTab, setActiveTab] = useState<"workflow" | "report">("workflow");
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
@@ -74,6 +75,11 @@ const TableWorkspace = () => {
       });
     });
   }, [activeTab, id, loadReport, tableAsset, toast]);
+
+  useEffect(() => {
+    if (!id || !tableAsset) return;
+    void loadTableResult(id);
+  }, [id, loadTableResult, tableAsset]);
 
   if (isLoading) {
     return (

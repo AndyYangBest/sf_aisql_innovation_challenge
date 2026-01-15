@@ -1,7 +1,7 @@
 """Table Asset schemas for request/response validation."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
@@ -51,3 +51,17 @@ class TableAssetList(BaseModel):
     total: int
     page: int = 1
     page_size: int = 50
+
+
+class TablePreviewColumn(BaseModel):
+    """Schema for table preview columns."""
+    name: str
+    type: Optional[str] = None
+    role: Optional[str] = None
+
+
+class TableAssetPreview(BaseModel):
+    """Schema for table preview response."""
+    columns: list[TablePreviewColumn]
+    rows: list[dict[str, Any]]
+    row_count: int

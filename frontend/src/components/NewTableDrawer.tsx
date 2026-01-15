@@ -54,7 +54,7 @@ const NewTableDrawer = ({ open, onOpenChange }: NewTableDrawerProps) => {
   const [numericColumns, setNumericColumns] = useState<string[]>([]);
   const [isProfilingColumns, setIsProfilingColumns] = useState(false);
   const [colWidth, setColWidth] = useState(200);
-  const { addTableAsset, tableResults } = useTableStore();
+  const { addTableAsset, setTableResult } = useTableStore();
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -311,7 +311,7 @@ LIMIT 1;
 
         // Store the result if we have preview data
         if (previewData) {
-          tableResults[response.data.id] = previewData;
+          setTableResult(response.data.id, previewData);
         }
 
         toast({

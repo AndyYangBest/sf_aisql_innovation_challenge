@@ -1,6 +1,7 @@
 """API endpoints for column metadata caching and initialization."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.db.database import get_async_db_session
@@ -84,9 +85,10 @@ async def override_column_metadata(
     if not target:
         raise HTTPException(status_code=404, detail="Column not found")
 
-    overrides = target.overrides or {}
+    overrides = dict(target.overrides or {})
     overrides.update(request.overrides)
     target.overrides = overrides
+    flag_modified(target, "overrides")
 
     await db.commit()
     await db.refresh(target)
@@ -114,9 +116,10 @@ async def override_table_metadata(
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    overrides = table_meta.overrides or {}
+    overrides = dict(table_meta.overrides or {})
     overrides.update(request.overrides)
     table_meta.overrides = overrides
+    flag_modified(table_meta, "overrides")
 
     await db.commit()
     await db.refresh(table_meta)

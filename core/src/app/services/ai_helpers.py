@@ -56,7 +56,7 @@ class AIMetadataGenerator:
 
         # Build SQL query with escaped prompt as literal
         query = f"""
-        SELECT SNOWFLAKE.CORTEX.COMPLETE(
+        SELECT AI_COMPLETE(
             '{escaped_model}',
             '{escaped_prompt}'
         ) as response

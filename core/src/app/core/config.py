@@ -78,6 +78,7 @@ class SnowflakeSettings(BaseSettings):
     SNOWFLAKE_SCHEMA: str = "PUBLIC"
     SNOWFLAKE_ROLE: str = "ACCOUNTADMIN"
     SNOWFLAKE_CORTEX_MODEL: str = "mistral-large2"
+    SNOWFLAKE_CORTEX_IMAGE_MODEL: str = "pixtral-large"
 
     # Optional: For Snowflake SQLAlchemy integration
     @computed_field  # type: ignore[prop-decorator]

@@ -40,6 +40,7 @@ interface EDAWorkflowEditorProps {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   isRunning?: boolean;
+  selectedNodeIds?: string[];
   onWorkflowDataChange?: (data: WorkflowJSON) => void;
   onSelectionChange?: (nodeIds: string[]) => void;
   onRun?: () => void;
@@ -123,9 +124,10 @@ const EDAWorkflowToolbar = ({
   );
 
   const nodeGroups = useMemo(() => {
-    const grouped: Record<'source' | 'analysis' | 'output', EDANodeDefinition[]> = {
+    const grouped: Record<'source' | 'analysis' | 'feature' | 'output', EDANodeDefinition[]> = {
       source: [],
       analysis: [],
+      feature: [],
       output: [],
     };
 
@@ -183,7 +185,7 @@ const EDAWorkflowToolbar = ({
             Add Node
           </div>
           <div className="space-y-3">
-            {(['source', 'analysis', 'output'] as const).map((category) => (
+            {(['source', 'analysis', 'feature', 'output'] as const).map((category) => (
               <div key={category} className="space-y-1">
                 <div className="text-[11px] uppercase text-slate-400 tracking-wide">
                   {category}
@@ -300,6 +302,7 @@ export const EDAWorkflowEditor = ({
   nodes,
   edges,
   isRunning,
+  selectedNodeIds,
   onWorkflowDataChange,
   onSelectionChange,
   onRun,
@@ -455,8 +458,12 @@ export const EDAWorkflowEditor = ({
           <CommentPlacementLayer
             active={placingComment}
             onPlaced={() => setPlacingComment(false)}
+            onCancel={() => setPlacingComment(false)}
           />
-          {onSelectionChange && (
+          {selectedNodeIds && selectedNodeIds.length > 0 && !placingComment && (
+            <SelectionSync selectedNodeIds={selectedNodeIds} />
+          )}
+          {onSelectionChange && !placingComment && (
             <SelectionWatcher onSelectionChange={onSelectionChange} />
           )}
           <EDAWorkflowToolbar
@@ -477,13 +484,58 @@ export const EDAWorkflowEditor = ({
 const CommentPlacementLayer = ({
   active,
   onPlaced,
+  onCancel,
 }: {
   active: boolean;
   onPlaced: () => void;
+  onCancel: () => void;
 }) => {
   const { document, playground } = useClientContext();
   const dragService = useService(WorkflowDragService);
   const selectService = useService(SelectionService);
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const pendingRef = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!active) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+    };
+  }, [active, onCancel]);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, []);
+
+  const handleMouseMove = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (!active) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      pendingRef.current = {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      };
+      if (rafRef.current) {
+        return;
+      }
+      rafRef.current = requestAnimationFrame(() => {
+        setCursor(pendingRef.current);
+        rafRef.current = null;
+      });
+    },
+    [active]
+  );
 
   const handleMouseDown = useCallback(
     async (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -505,7 +557,13 @@ const CommentPlacementLayer = ({
       if (selectService) {
         selectService.selection = [node];
       }
-      dragService.startDragSelectedNodes(nativeEvent);
+      if (dragService && typeof dragService.startDragSelectedNodes === 'function') {
+        try {
+          dragService.startDragSelectedNodes(nativeEvent);
+        } catch {
+          // Fallback to static placement if drag is unavailable.
+        }
+      }
       onPlaced();
     },
     [active, document, dragService, onPlaced, playground, selectService]
@@ -515,9 +573,20 @@ const CommentPlacementLayer = ({
 
   return (
     <div
-      className="absolute inset-0 z-30 cursor-crosshair"
+      className="absolute inset-0 z-50 cursor-crosshair pointer-events-auto"
+      onMouseMove={handleMouseMove}
       onMouseDown={handleMouseDown}
-    />
+      onMouseLeave={() => setCursor(null)}
+    >
+      {cursor && (
+        <div
+          className="pointer-events-none absolute z-50 -translate-y-1/2 translate-x-3 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-900 shadow-sm"
+          style={{ left: cursor.x, top: cursor.y }}
+        >
+          Comment
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -533,12 +602,46 @@ const SelectionWatcher = ({ onSelectionChange }: { onSelectionChange: (nodeIds: 
       onSelectionChange(selectedNodes.map((node) => node.id));
     };
 
-    emitSelection();
     const disposable = selectService.onSelectionChanged?.(emitSelection);
     return () => {
       disposable?.dispose?.();
     };
   }, [selectService, onSelectionChange]);
+
+  return null;
+};
+
+const SelectionSync = ({ selectedNodeIds }: { selectedNodeIds: string[] }) => {
+  const selectService = useService(SelectionService);
+  const { document } = useClientContext();
+  const lastAppliedRef = useRef<string>('');
+
+  useEffect(() => {
+    if (!selectService) {
+      return;
+    }
+    const desired = new Set(selectedNodeIds);
+    const desiredKey = Array.from(desired).sort().join('|');
+    if (lastAppliedRef.current === desiredKey) {
+      return;
+    }
+    const selectedNodes = selectService.selection || [];
+    const current = new Set(selectedNodes.map((node) => node.id));
+    if (desired.size === current.size && Array.from(desired).every((id) => current.has(id))) {
+      lastAppliedRef.current = desiredKey;
+      return;
+    }
+
+    const docAny = document as any;
+    const nodes: any[] =
+      docAny?.getAllNodes?.() ??
+      docAny?.getNodes?.() ??
+      docAny?.nodes ??
+      [];
+    const nextSelection = nodes.filter((node) => desired.has(node.id));
+    selectService.selection = nextSelection;
+    lastAppliedRef.current = desiredKey;
+  }, [document, selectService, selectedNodeIds]);
 
   return null;
 };

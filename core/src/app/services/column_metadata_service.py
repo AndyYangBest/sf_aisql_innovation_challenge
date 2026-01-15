@@ -49,6 +49,7 @@ class ColumnMetadataService:
         self.ai_sql = ai_sql_service
         self.detector = DataTypeDetector()
         self.model_id = settings.SNOWFLAKE_CORTEX_MODEL or "mistral-large2"
+        self.image_model_id = settings.SNOWFLAKE_CORTEX_IMAGE_MODEL or "pixtral-large"
 
     async def get_cached_metadata(self, table_asset_id: int) -> tuple[TableAssetMetadata | None, list[ColumnMetadata]]:
         table_meta_result = await self.db.execute(
@@ -103,6 +104,7 @@ class ColumnMetadataService:
             structure_info=structure_info,
             base_query=base_query,
             sample_query=sample_query,
+            table_ref=table_ref,
         )
 
         saved_columns = await self._upsert_column_metadata(table_asset_id, column_metadata)
@@ -117,6 +119,19 @@ class ColumnMetadataService:
 
         if self._looks_like_table_ref(source_sql):
             table_ref = source_sql
+            if database and schema and "." not in table_ref:
+                table_ref = f"{database}.{schema}.{table_ref}"
+            base_query = f"SELECT * FROM {table_ref}"
+            return base_query, table_ref, False
+
+        # Detect simple "SELECT * FROM table" queries so we can recover table_ref.
+        simple_match = re.match(
+            r"^SELECT\s+\*\s+FROM\s+([A-Za-z0-9_\.]+)\s*(?:LIMIT\s+\d+\s*)?$",
+            source_sql,
+            re.IGNORECASE,
+        )
+        if simple_match:
+            table_ref = simple_match.group(1)
             if database and schema and "." not in table_ref:
                 table_ref = f"{database}.{schema}.{table_ref}"
             base_query = f"SELECT * FROM {table_ref}"
@@ -471,29 +486,58 @@ class ColumnMetadataService:
                     },
                 },
             )
-        except Exception:
-            return None
+        except Exception as exc:
+            return {
+                "type": current_type,
+                "confidence": 0.0,
+                "rationale": "ai_complete_error",
+                "token_estimate": tokens,
+                "error": str(exc),
+            }
 
         try:
-            parsed = json.loads(result)
+            if result is None or result == "":
+                return {
+                    "type": current_type,
+                    "confidence": 0.0,
+                    "rationale": "ai_complete_empty",
+                    "token_estimate": tokens,
+                }
+            if isinstance(result, dict):
+                parsed = result
+            else:
+                parsed = json.loads(result)
+            parsed.setdefault("type", current_type)
+            parsed.setdefault("confidence", 0.0)
             parsed["token_estimate"] = tokens
             return parsed
-        except json.JSONDecodeError:
+        except (TypeError, json.JSONDecodeError):
             return {"type": current_type, "confidence": 0.0, "rationale": "parse_failed", "token_estimate": tokens}
 
     async def _describe_image_sample(self, sample_value: Any) -> dict[str, Any]:
-        prompt = (
-            "Describe the image referenced below in under 200 characters. "
-            "If the image cannot be accessed, respond with 'image_unavailable'.\n"
-            f"Image reference: {sample_value}"
+        instruction = (
+            "Describe the image in under 200 characters. "
+            "If the image cannot be accessed, respond with 'image_unavailable'."
         )
-        tokens = await self._estimate_tokens_for_prompt(prompt)
+        tokens = await self._estimate_tokens_for_prompt(instruction)
+        file_expr = self._resolve_image_file_expr(sample_value)
+        if not file_expr:
+            return {
+                "description": "image_unavailable",
+                "token_estimate": tokens,
+                "source": "unresolved_reference",
+                "detail": "Image reference is not a staged FILE object.",
+            }
+        query = f"""
+        SELECT AI_COMPLETE(
+            '{self.image_model_id}',
+            '{self._sanitize_literal(instruction)}',
+            {file_expr}
+        ) AS response
+        """
         try:
-            response = await self.ai_sql.ai_complete(
-                model=self.model_id,
-                prompt=prompt,
-            )
-            description = response.strip()
+            result = await self.sf.execute_query(query)
+            description = (result[0].get("RESPONSE") if result else "") or "image_unavailable"
         except Exception:
             description = "image_unavailable"
         if len(description) > 200:
@@ -501,18 +545,54 @@ class ColumnMetadataService:
         return {
             "description": description,
             "token_estimate": tokens,
-            "source": "ai_complete_prompt",
+            "source": "ai_complete_image",
         }
+
+    def _resolve_image_file_expr(self, sample_value: Any) -> str | None:
+        if not isinstance(sample_value, str):
+            return None
+        reference = sample_value.strip()
+        if not reference.startswith("@"):
+            return None
+        if "/" not in reference:
+            return None
+        stage, path = reference.split("/", 1)
+        stage_literal = self._sanitize_literal(stage)
+        path_literal = self._sanitize_literal(path)
+        return f"TO_FILE('{stage_literal}', '{path_literal}')"
 
     async def _estimate_tokens_for_prompt(self, prompt: str, model: str | None = None) -> int:
         safe_prompt = self._sanitize_literal(prompt)
         model_id = model or self.model_id
-        query = f"SELECT SNOWFLAKE.CORTEX.COUNT_TOKENS('{model_id}', '{safe_prompt}') as TOKEN_COUNT"
+        unsupported_models = {
+            "claude-4-opus",
+            "claude-4-sonnet",
+            "claude-3-7-sonnet",
+            "claude-3-5-sonnet",
+            "openai-gpt-4.1",
+            "openai-o4-mini",
+        }
+        if model_id in unsupported_models:
+            model_id = "mistral-large2"
+        query = (
+            "SELECT AI_COUNT_TOKENS('ai_complete', "
+            f"'{model_id}', '{safe_prompt}') as TOKEN_COUNT"
+        )
         try:
             result = await self.sf.execute_query(query)
         except Exception:
-            return 0
-        return int(result[0]["TOKEN_COUNT"]) if result else 0
+            if model_id != "mistral-large2":
+                fallback_query = (
+                    "SELECT AI_COUNT_TOKENS('ai_complete', "
+                    f"'mistral-large2', '{safe_prompt}') as TOKEN_COUNT"
+                )
+                try:
+                    result = await self.sf.execute_query(fallback_query)
+                    return int(result[0]["TOKEN_COUNT"]) if result else max(1, len(prompt) // 4)
+                except Exception:
+                    return max(1, len(prompt) // 4)
+            return max(1, len(prompt) // 4)
+        return int(result[0]["TOKEN_COUNT"]) if result else max(1, len(prompt) // 4)
 
     def _sanitize_literal(self, text: str) -> str:
         cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)
@@ -526,14 +606,20 @@ class ColumnMetadataService:
         structure_info: dict[str, Any],
         base_query: str,
         sample_query: str,
+        table_ref: str | None,
     ) -> TableAssetMetadata:
         result = await self.db.execute(
             select(TableAssetMetadata).where(TableAssetMetadata.table_asset_id == table_asset_id)
         )
         existing = result.scalar_one_or_none()
+        analysis_query = self._strip_limit_clause(base_query)
+        if table_ref:
+            analysis_query = f"SELECT * FROM {table_ref}"
         metadata_payload = {
             "base_query": base_query,
+            "analysis_query": analysis_query,
             "sample_query": sample_query,
+            "table_ref": table_ref,
             "time_column": structure_info.get("time_column"),
             "entity_column": structure_info.get("entity_column"),
             "sample_size": structure_info.get("sample_size", 50),
@@ -571,10 +657,18 @@ class ColumnMetadataService:
                 record = existing[col_name]
                 record.semantic_type = payload["semantic_type"]
                 record.confidence = payload["confidence"]
-                record.metadata_payload = payload.get("metadata")
+                incoming_metadata = payload.get("metadata") or {}
+                existing_metadata = record.metadata_payload or {}
+                analysis_payload = existing_metadata.get("analysis")
+                if analysis_payload is not None:
+                    incoming_metadata = dict(incoming_metadata)
+                    incoming_metadata["analysis"] = analysis_payload
+                record.metadata_payload = incoming_metadata
                 record.provenance = payload.get("provenance")
                 record.examples = payload.get("examples")
-                record.overrides = payload.get("overrides")
+                incoming_overrides = payload.get("overrides")
+                if incoming_overrides is not None:
+                    record.overrides = incoming_overrides
                 record.last_updated = datetime.now(timezone.utc)
             else:
                 record = ColumnMetadata()
@@ -594,3 +688,8 @@ class ColumnMetadataService:
 
     def _quote_ident(self, identifier: str) -> str:
         return f'"{identifier.replace("\"", "\"\"")}"'
+
+    def _strip_limit_clause(self, query: str) -> str:
+        trimmed = query.strip().rstrip(";")
+        pattern = re.compile(r"\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$", re.IGNORECASE)
+        return pattern.sub("", trimmed).strip()

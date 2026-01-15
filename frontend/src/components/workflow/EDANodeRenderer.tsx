@@ -117,6 +117,9 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
   const nodeData = data ?? {};
   const nodeType = (type ?? node?.flowNodeType) as EDANodeType;
   const definition = EDA_NODE_DEFINITIONS[nodeType];
+  const columnName = nodeData?.column_name as string | undefined;
+  const columnType = nodeData?.column_type as string | undefined;
+  const columnConfidence = nodeData?.column_confidence as number | undefined;
 
   // Get node state
   const title = nodeData?.title ?? definition?.name ?? 'Node';
@@ -147,6 +150,7 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
     isComment ? 'border-amber-200 bg-amber-50 shadow-sm' : statusStyles[status],
     isDimmed && 'opacity-70',
     status === 'running' && !isComment && 'scale-105',
+    definition?.createsColumn && 'ring-1 ring-emerald-200',
     selected && 'selected',
     activated && 'activated'
   );
@@ -417,6 +421,37 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
             </button>
           )}
         </div>
+
+        {!isComment && columnName && (
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <span className="inline-flex max-w-full truncate rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-700">
+              {columnName}
+            </span>
+            {columnType && (
+              <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
+                {columnType}
+              </span>
+            )}
+            {typeof columnConfidence === 'number' && (
+              <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-500">
+                {(columnConfidence * 100).toFixed(0)}%
+              </span>
+            )}
+          </div>
+        )}
+
+        {!isComment && definition?.createsColumn && (
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-600">
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 font-semibold uppercase tracking-wide text-emerald-700">
+              Feature
+            </span>
+            {nodeData?.output_column && (
+              <span className="truncate rounded-full border border-slate-200 bg-white px-2 py-0.5">
+                Output: {nodeData.output_column}
+              </span>
+            )}
+          </div>
+        )}
 
         {!isComment && (
           <div className="mt-2 text-[11px] text-slate-500">

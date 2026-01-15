@@ -54,13 +54,17 @@ class AICompleteBuilder:
         if self.response_format:
             # Convert dict to JSON string for Snowflake
             import json
-            format_json = json.dumps(self.response_format).replace("'", "''")
-            return f"""SNOWFLAKE.CORTEX.COMPLETE(
+            format_payload = self.response_format
+            if "schema" not in self.response_format:
+                format_payload = {"type": "json", "schema": self.response_format}
+            format_json = json.dumps(format_payload).replace("'", "''")
+            return f"""AI_COMPLETE(
                 '{self.model}',
                 '{escaped_prompt}',
+                NULL,
                 PARSE_JSON('{format_json}')
             )"""
-        return f"SNOWFLAKE.CORTEX.COMPLETE('{self.model}', '{escaped_prompt}')"
+        return f"AI_COMPLETE('{self.model}', '{escaped_prompt}')"
 
 
 class AIClassifyBuilder:
@@ -133,7 +137,7 @@ class SummarizeBuilder:
 
     def build(self) -> str:
         """Build SUMMARIZE function call."""
-        return f"SNOWFLAKE.CORTEX.SUMMARIZE({self.text_column})"
+        return f"AI_SUMMARIZE_AGG({self.text_column})"
 
 
 class AITranscribeBuilder:
@@ -156,7 +160,7 @@ class AIEmbedBuilder:
 
     def build(self) -> str:
         """Build AI_EMBED function call."""
-        return f"SNOWFLAKE.CORTEX.EMBED_TEXT_768('{self.model}', {self.content})"
+        return f"AI_EMBED('{self.model}', {self.content})"
 
 
 class AISimilarityBuilder:
@@ -168,7 +172,7 @@ class AISimilarityBuilder:
 
     def build(self) -> str:
         """Build AI_SIMILARITY function call."""
-        return f"SNOWFLAKE.CORTEX.SIMILARITY({self.content1}, {self.content2})"
+        return f"AI_SIMILARITY({self.content1}, {self.content2})"
 
 
 class AITranslateBuilder:
@@ -181,7 +185,7 @@ class AITranslateBuilder:
 
     def build(self) -> str:
         """Build AI_TRANSLATE function call."""
-        return f"SNOWFLAKE.CORTEX.TRANSLATE({self.text}, '{self.source_lang}', '{self.target_lang}')"
+        return f"AI_TRANSLATE({self.text}, '{self.source_lang}', '{self.target_lang}')"
 
 
 class AIExtractBuilder:
@@ -194,7 +198,10 @@ class AIExtractBuilder:
     def build(self) -> str:
         """Build AI_EXTRACT function call."""
         escaped_instruction = self.instruction.replace("'", "''")
-        return f"SNOWFLAKE.CORTEX.EXTRACT_ANSWER({self.content}, '{escaped_instruction}')"
+        stripped = self.instruction.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            return f"AI_EXTRACT({self.content}, PARSE_JSON('{escaped_instruction}'))"
+        return f"AI_EXTRACT({self.content}, ARRAY_CONSTRUCT('{escaped_instruction}'))"
 
 
 class AISummarizeAggBuilder:
@@ -205,7 +212,7 @@ class AISummarizeAggBuilder:
 
     def build(self) -> str:
         """Build AI_SUMMARIZE_AGG function call."""
-        return f"SNOWFLAKE.CORTEX.SUMMARIZE_AGG({self.column})"
+        return f"AI_SUMMARIZE_AGG({self.column})"
 
 
 class AICountTokensBuilder:
@@ -217,7 +224,7 @@ class AICountTokensBuilder:
 
     def build(self) -> str:
         """Build AI_COUNT_TOKENS function call."""
-        return f"SNOWFLAKE.CORTEX.COUNT_TOKENS('{self.model}', {self.text})"
+        return f"AI_COUNT_TOKENS('ai_complete', '{self.model}', {self.text})"
 
 
 class AIRedactBuilder:
@@ -236,8 +243,8 @@ class AIRedactBuilder:
         """Build AI_REDACT function call."""
         if self.pii_types:
             types_str = ", ".join(f"'{t}'" for t in self.pii_types)
-            return f"SNOWFLAKE.CORTEX.REDACT({self.text}, ARRAY_CONSTRUCT({types_str}))"
-        return f"SNOWFLAKE.CORTEX.REDACT({self.text})"
+            return f"AI_REDACT({self.text}, ARRAY_CONSTRUCT({types_str}))"
+        return f"AI_REDACT({self.text})"
 
 
 class AIParseDocumentBuilder:
@@ -254,7 +261,7 @@ class AIParseDocumentBuilder:
 
     def build(self) -> str:
         """Build AI_PARSE_DOCUMENT function call."""
-        return f"SNOWFLAKE.CORTEX.PARSE_DOCUMENT({self.file_path}, {{'mode': '{self.mode}'}})"
+        return f"AI_PARSE_DOCUMENT({self.file_path}, {{'mode': '{self.mode}'}})"
 
 
 # ============================================================================
@@ -488,13 +495,15 @@ class StructuredExtractionBuilder(QueryBuilder):
 
     def build(self) -> str:
         """Build structured extraction query."""
+        import json
+        schema_json = json.dumps(self.schema).replace("'", "''")
         return f"""
         SELECT
             {self.text_column},
-            SNOWFLAKE.CORTEX.COMPLETE(
+            AI_COMPLETE(
                 model => '{self.model}',
                 prompt => PROMPT('{self.extraction_prompt}', {self.text_column}),
-                response_format => {self.schema}
+                response_format => PARSE_JSON('{schema_json}')
             ) as extracted_data
         FROM {self.table_name}
         LIMIT {self.limit_value}
