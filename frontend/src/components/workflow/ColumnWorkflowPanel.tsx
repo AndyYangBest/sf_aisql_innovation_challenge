@@ -2,24 +2,33 @@
  * ColumnWorkflowPanel - renders multi-column Flowgram workflows with selection.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { columnMetadataApi, ColumnMetadataRecord } from '@/api/columnMetadata';
-import { columnWorkflowsApi, ColumnWorkflowEstimate } from '@/api/columnWorkflows';
-import { EDAWorkflowEditor } from '@/components/workflow/EDAWorkflowEditor';
-import { WorkflowLogPanel } from '@/components/workflow/WorkflowLogPanel';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useToast } from '@/hooks/use-toast';
-import { useTableStore } from '@/store/tableStore';
-import type { WorkflowNode, WorkflowEdge } from '@/hooks/useEDAWorkflow';
-import { EDA_NODE_DEFINITIONS, EDANodeType } from '@/types/eda-workflow';
-import type { WorkflowLogEvent } from '@/api/eda';
-import { cn } from '@/lib/utils';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { columnMetadataApi, ColumnMetadataRecord } from "@/api/columnMetadata";
+import {
+  columnWorkflowsApi,
+  ColumnWorkflowEstimate,
+} from "@/api/columnWorkflows";
+import { EDAWorkflowEditor } from "@/components/workflow/EDAWorkflowEditor";
+import { WorkflowLogPanel } from "@/components/workflow/WorkflowLogPanel";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/hooks/use-toast";
+import { useTableStore } from "@/store/tableStore";
+import type { WorkflowNode, WorkflowEdge } from "@/hooks/useEDAWorkflow";
+import { EDA_NODE_DEFINITIONS, EDANodeType } from "@/types/eda-workflow";
+import type { WorkflowLogEvent } from "@/api/eda";
+import { cn } from "@/lib/utils";
 
 interface ColumnWorkflowState {
   column: ColumnMetadataRecord;
@@ -52,18 +61,18 @@ const FEATURE_LANE_OFFSET = 170;
 const WORKFLOW_SPAN_Y = 360;
 
 function normalizeId(value: string) {
-  return value.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  return value.replace(/[^a-z0-9]/gi, "_").toLowerCase();
 }
 
 function collectOverrides(nodes: WorkflowNode[]) {
   const overrides: Record<string, any> = {};
-  const hintNode = nodes.find((node) => node.type === 'column_hint');
+  const hintNode = nodes.find((node) => node.type === "column_hint");
   if (hintNode) {
-    overrides.hint = hintNode.data?.hint ?? '';
+    overrides.hint = hintNode.data?.hint ?? "";
   }
-  const rowLevelNode = nodes.find((node) => node.type === 'row_level_extract');
+  const rowLevelNode = nodes.find((node) => node.type === "row_level_extract");
   if (rowLevelNode) {
-    overrides.row_level_instruction = rowLevelNode.data?.instruction ?? '';
+    overrides.row_level_instruction = rowLevelNode.data?.instruction ?? "";
     if (rowLevelNode.data?.output_column) {
       overrides.row_level_output_column = rowLevelNode.data.output_column;
     }
@@ -71,7 +80,7 @@ function collectOverrides(nodes: WorkflowNode[]) {
       overrides.row_level_schema = rowLevelNode.data.response_schema;
     }
   }
-  const imageNode = nodes.find((node) => node.type === 'describe_images');
+  const imageNode = nodes.find((node) => node.type === "describe_images");
   if (imageNode) {
     if (imageNode.data?.output_column) {
       overrides.image_output_column = imageNode.data.output_column;
@@ -103,19 +112,21 @@ function getWorkflowBasePosition(index: number) {
 
 function coercePosition(position?: { x?: number; y?: number }) {
   return {
-    x: typeof position?.x === 'number' ? position.x : 0,
-    y: typeof position?.y === 'number' ? position.y : 0,
+    x: typeof position?.x === "number" ? position.x : 0,
+    y: typeof position?.y === "number" ? position.y : 0,
   };
 }
 
-function sanitizeWorkflowGraph(graph: WorkflowGraphPayload): WorkflowGraphPayload {
+function sanitizeWorkflowGraph(
+  graph: WorkflowGraphPayload
+): WorkflowGraphPayload {
   return {
     nodes: graph.nodes.map((node) => ({
       ...node,
       position: coercePosition(node.position),
       data: {
         ...node.data,
-        status: node.data?.status ?? 'idle',
+        status: node.data?.status ?? "idle",
       },
     })),
     edges: graph.edges.map((edge) => ({
@@ -129,7 +140,7 @@ function buildColumnWorkflowGraph(
   column: ColumnMetadataRecord,
   tableAssetId: number,
   tableName: string,
-  layoutIndex: number,
+  layoutIndex: number
 ) {
   const nodes: WorkflowNode[] = [];
   const edges: WorkflowEdge[] = [];
@@ -143,12 +154,12 @@ function buildColumnWorkflowGraph(
   const addNode = (
     type: EDANodeType,
     data?: Record<string, any>,
-    lane: 'analysis' | 'feature' = 'analysis',
+    lane: "analysis" | "feature" = "analysis"
   ) => {
     const definition = EDA_NODE_DEFINITIONS[type];
     const nodeId = `${type}_${colId}`;
-    const positionX = lane === 'feature' ? featureX : analysisX;
-    const positionY = lane === 'feature' ? featureY : analysisY;
+    const positionX = lane === "feature" ? featureX : analysisX;
+    const positionY = lane === "feature" ? featureY : analysisY;
     nodes.push({
       id: nodeId,
       type,
@@ -157,14 +168,14 @@ function buildColumnWorkflowGraph(
         ...definition?.defaultData,
         ...(data || {}),
         title: data?.title || definition?.name || type,
-        status: 'idle',
+        status: "idle",
         column_type: column.semantic_type,
         column_confidence: column.confidence,
         column_name: column.column_name,
         table_asset_id: tableAssetId,
       },
     });
-    if (lane === 'feature') {
+    if (lane === "feature") {
       featureX += COLUMN_NODE_WIDTH;
     } else {
       analysisX += COLUMN_NODE_WIDTH;
@@ -172,7 +183,7 @@ function buildColumnWorkflowGraph(
     return nodeId;
   };
 
-  const dataNodeId = addNode('data_source', {
+  const dataNodeId = addNode("data_source", {
     table_asset_id: tableAssetId,
     table_name: tableName,
     column_name: column.column_name,
@@ -181,46 +192,54 @@ function buildColumnWorkflowGraph(
   let previousId = dataNodeId;
 
   if (column.confidence < 0.6) {
-    const hintNodeId = addNode('column_hint', {
-      hint: column.overrides?.hint || '',
+    const hintNodeId = addNode("column_hint", {
+      hint: column.overrides?.hint || "",
     });
     edges.push({ sourceNodeID: previousId, targetNodeID: hintNodeId });
     previousId = hintNodeId;
   }
 
   const semantic = column.semantic_type;
-  if (semantic === 'numeric' || semantic === 'temporal') {
-    const visualsNode = addNode('generate_visuals');
+  if (semantic === "numeric" || semantic === "temporal") {
+    const visualsNode = addNode("generate_visuals");
     edges.push({ sourceNodeID: previousId, targetNodeID: visualsNode });
-    const insightsNode = addNode('generate_insights', { focus: 'column' });
+    const insightsNode = addNode("generate_insights", { focus: "column" });
     edges.push({ sourceNodeID: visualsNode, targetNodeID: insightsNode });
-  } else if (semantic === 'categorical') {
-    const visualsNode = addNode('generate_visuals');
+  } else if (semantic === "categorical") {
+    const visualsNode = addNode("generate_visuals");
     edges.push({ sourceNodeID: previousId, targetNodeID: visualsNode });
-    const insightsNode = addNode('generate_insights', { focus: 'column' });
+    const insightsNode = addNode("generate_insights", { focus: "column" });
     edges.push({ sourceNodeID: visualsNode, targetNodeID: insightsNode });
-  } else if (semantic === 'text') {
-    const summaryNode = addNode('summarize_text');
+  } else if (semantic === "text") {
+    const summaryNode = addNode("summarize_text");
     edges.push({ sourceNodeID: previousId, targetNodeID: summaryNode });
     if (column.overrides?.row_level_instruction) {
-      const extractNode = addNode('row_level_extract', {
-        instruction: column.overrides?.row_level_instruction,
-        output_column: column.overrides?.row_level_output_column,
-        response_schema: column.overrides?.row_level_schema,
-      }, 'feature');
+      const extractNode = addNode(
+        "row_level_extract",
+        {
+          instruction: column.overrides?.row_level_instruction,
+          output_column: column.overrides?.row_level_output_column,
+          response_schema: column.overrides?.row_level_schema,
+        },
+        "feature"
+      );
       edges.push({ sourceNodeID: summaryNode, targetNodeID: extractNode });
     }
-  } else if (semantic === 'image') {
-    const imageNode = addNode('describe_images', {
-      output_column: column.overrides?.image_output_column,
-      image_stage: column.overrides?.image_stage,
-      image_path_prefix: column.overrides?.image_path_prefix,
-      image_path_suffix: column.overrides?.image_path_suffix,
-      image_model: column.overrides?.image_model,
-    }, 'feature');
+  } else if (semantic === "image") {
+    const imageNode = addNode(
+      "describe_images",
+      {
+        output_column: column.overrides?.image_output_column,
+        image_stage: column.overrides?.image_stage,
+        image_path_prefix: column.overrides?.image_path_prefix,
+        image_path_suffix: column.overrides?.image_path_suffix,
+        image_model: column.overrides?.image_model,
+      },
+      "feature"
+    );
     edges.push({ sourceNodeID: previousId, targetNodeID: imageNode });
   } else {
-    const statsNode = addNode('basic_stats');
+    const statsNode = addNode("basic_stats");
     edges.push({ sourceNodeID: previousId, targetNodeID: statsNode });
   }
 
@@ -231,11 +250,22 @@ function hydrateColumnWorkflowGraph(
   column: ColumnMetadataRecord,
   tableAssetId: number,
   tableName: string,
-  layoutIndex: number,
+  layoutIndex: number
 ): WorkflowGraphPayload {
-  const baseGraph = buildColumnWorkflowGraph(column, tableAssetId, tableName, layoutIndex);
-  const storedGraph = (column.overrides as any)?.workflow_graph as WorkflowGraphPayload | undefined;
-  if (!storedGraph || !Array.isArray(storedGraph.nodes) || !Array.isArray(storedGraph.edges)) {
+  const baseGraph = buildColumnWorkflowGraph(
+    column,
+    tableAssetId,
+    tableName,
+    layoutIndex
+  );
+  const storedGraph = (column.overrides as any)?.workflow_graph as
+    | WorkflowGraphPayload
+    | undefined;
+  if (
+    !storedGraph ||
+    !Array.isArray(storedGraph.nodes) ||
+    !Array.isArray(storedGraph.edges)
+  ) {
     return baseGraph;
   }
 
@@ -248,14 +278,22 @@ function hydrateColumnWorkflowGraph(
       ...definition?.defaultData,
       ...node.data,
       ...(storedNode?.data ?? {}),
-      title: storedNode?.data?.title || node.data.title || definition?.name || node.type,
-      status: storedNode?.data?.status || node.data.status || 'idle',
+      title:
+        storedNode?.data?.title ||
+        node.data.title ||
+        definition?.name ||
+        node.type,
+      status: storedNode?.data?.status || node.data.status || "idle",
       column_name: column.column_name,
       column_type: column.semantic_type,
       column_confidence: column.confidence,
       table_asset_id: tableAssetId,
-      ...(node.type === 'data_source'
-        ? { table_name: tableName, column_name: column.column_name, table_asset_id: tableAssetId }
+      ...(node.type === "data_source"
+        ? {
+            table_name: tableName,
+            column_name: column.column_name,
+            table_asset_id: tableAssetId,
+          }
         : {}),
     };
     return {
@@ -277,7 +315,7 @@ function hydrateColumnWorkflowGraph(
           ...definition?.defaultData,
           ...node.data,
           title: node.data?.title || definition?.name || node.type,
-          status: node.data?.status || 'idle',
+          status: node.data?.status || "idle",
           column_name: column.column_name,
           column_type: column.semantic_type,
           column_confidence: column.confidence,
@@ -286,7 +324,9 @@ function hydrateColumnWorkflowGraph(
       };
     });
 
-  const nodeIds = new Set([...mergedNodes, ...extraNodes].map((node) => node.id));
+  const nodeIds = new Set(
+    [...mergedNodes, ...extraNodes].map((node) => node.id)
+  );
   const mergedEdges = storedGraph.edges.filter(
     (edge) => nodeIds.has(edge.sourceNodeID) && nodeIds.has(edge.targetNodeID)
   );
@@ -297,51 +337,81 @@ function hydrateColumnWorkflowGraph(
   };
 }
 
-const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelProps) => {
+const ColumnWorkflowPanel = ({
+  tableAssetId,
+  tableName,
+}: ColumnWorkflowPanelProps) => {
   const { toast } = useToast();
   const { loadReport } = useTableStore();
   const [loading, setLoading] = useState(true);
-  const [workflows, setWorkflows] = useState<Record<string, ColumnWorkflowState>>({});
+  const [workflows, setWorkflows] = useState<
+    Record<string, ColumnWorkflowState>
+  >({});
   const [boards, setBoards] = useState<BoardState[]>([]);
   const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
-  const [boardExtras, setBoardExtras] = useState<Record<string, { nodes: WorkflowNode[]; edges: WorkflowEdge[] }>>({});
+  const [boardExtras, setBoardExtras] = useState<
+    Record<string, { nodes: WorkflowNode[]; edges: WorkflowEdge[] }>
+  >({});
   const lastBoardsPayloadRef = useRef<string | null>(null);
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeBoardIdRef = useRef<string | null>(null);
   const hydratingRef = useRef(false);
-  const [estimateResults, setEstimateResults] = useState<ColumnWorkflowEstimate[] | null>(null);
+  const [estimateResults, setEstimateResults] = useState<
+    ColumnWorkflowEstimate[] | null
+  >(null);
   const [estimateTargets, setEstimateTargets] = useState<string[]>([]);
   const [isEstimating, setIsEstimating] = useState(false);
-  const [filter, setFilter] = useState('');
+  const [filter, setFilter] = useState("");
   const [logs, setLogs] = useState<WorkflowLogEvent[]>([]);
   const [isLogExpanded, setIsLogExpanded] = useState(true);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
-  const selectionSourceRef = useRef<'list' | 'canvas' | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
+    {}
+  );
+  const selectionSourceRef = useRef<"list" | "canvas" | null>(null);
   const selectionResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const workflowPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingWorkflowPersistRef = useRef<Record<string, WorkflowGraphPayload>>({});
+  const workflowPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const pendingWorkflowPersistRef = useRef<
+    Record<string, WorkflowGraphPayload>
+  >({});
 
-  const appendLog = useCallback((type: WorkflowLogEvent['type'], message: string, data?: any) => {
-    setLogs((prev) => {
-      const next = [...prev, { type, timestamp: new Date().toISOString(), message, data }];
-      return next.slice(-200);
-    });
-  }, []);
+  const appendLog = useCallback(
+    (type: WorkflowLogEvent["type"], message: string, data?: any) => {
+      setLogs((prev) => {
+        const next = [
+          ...prev,
+          { type, timestamp: new Date().toISOString(), message, data },
+        ];
+        return next.slice(-200);
+      });
+    },
+    []
+  );
 
-  const createBoard = useCallback((name: string, columnNames: string[], selectedColumns?: string[]): BoardState => {
-    const id = typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `board-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-    const initialSelection = selectedColumns && selectedColumns.length > 0
-      ? selectedColumns
-      : columnNames;
-    return {
-      id,
-      name,
-      columnNames,
-      selectedColumns: columnNames.length > 0 ? initialSelection : [],
-    };
-  }, []);
+  const createBoard = useCallback(
+    (
+      name: string,
+      columnNames: string[],
+      selectedColumns?: string[]
+    ): BoardState => {
+      const id =
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `board-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const initialSelection =
+        selectedColumns && selectedColumns.length > 0
+          ? selectedColumns
+          : columnNames;
+      return {
+        id,
+        name,
+        columnNames,
+        selectedColumns: columnNames.length > 0 ? initialSelection : [],
+      };
+    },
+    []
+  );
 
   const buildBoardsPayload = useCallback((nextBoards: BoardState[]) => {
     return nextBoards.map((board) => ({
@@ -355,16 +425,15 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
   const persistBoards = useCallback(
     async (nextBoards: BoardState[]) => {
       const payload = buildBoardsPayload(nextBoards);
-      const extrasPayload = Object.entries(boardExtras).reduce<Record<string, any>>(
-        (acc, [boardId, extra]) => {
-          acc[boardId] = {
-            nodes: extra.nodes,
-            edges: extra.edges,
-          };
-          return acc;
-        },
-        {}
-      );
+      const extrasPayload = Object.entries(boardExtras).reduce<
+        Record<string, any>
+      >((acc, [boardId, extra]) => {
+        acc[boardId] = {
+          nodes: extra.nodes,
+          edges: extra.edges,
+        };
+        return acc;
+      }, {});
       const activeId = activeBoardIdRef.current ?? nextBoards[0]?.id ?? null;
       try {
         await columnMetadataApi.overrideTable(tableAssetId, {
@@ -373,7 +442,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
           workflow_active_board_id: activeId,
         });
       } catch (error) {
-        appendLog('error', 'Failed to save board configuration', { error });
+        appendLog("error", "Failed to save board configuration", { error });
       }
     },
     [appendLog, boardExtras, buildBoardsPayload, tableAssetId]
@@ -395,9 +464,9 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     );
 
     results.forEach((result, index) => {
-      if (result.status === 'rejected') {
+      if (result.status === "rejected") {
         const [columnName] = entries[index];
-        appendLog('error', 'Failed to save workflow layout', {
+        appendLog("error", "Failed to save workflow layout", {
           column: columnName,
           error: result.reason,
         });
@@ -415,7 +484,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         data = initResponse.data;
       }
       if (!data) {
-        throw new Error('No metadata returned');
+        throw new Error("No metadata returned");
       }
 
       const columns = data.columns;
@@ -430,8 +499,12 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
                 ...node.data,
                 column_name: column.column_name,
                 table_asset_id: tableAssetId,
-                ...(node.type === 'data_source'
-                  ? { table_name: tableName, column_name: column.column_name, table_asset_id: tableAssetId }
+                ...(node.type === "data_source"
+                  ? {
+                      table_name: tableName,
+                      column_name: column.column_name,
+                      table_asset_id: tableAssetId,
+                    }
                   : {}),
               },
             }));
@@ -443,7 +516,12 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
             };
             return;
           }
-          const graph = hydrateColumnWorkflowGraph(column, tableAssetId, tableName, index);
+          const graph = hydrateColumnWorkflowGraph(
+            column,
+            tableAssetId,
+            tableName,
+            index
+          );
           nextWorkflows[column.column_name] = {
             column,
             nodes: graph.nodes,
@@ -454,31 +532,39 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         return nextWorkflows;
       });
 
-      const persistedBoards = Array.isArray(data.table?.overrides?.workflow_boards)
+      const persistedBoards = Array.isArray(
+        data.table?.overrides?.workflow_boards
+      )
         ? data.table?.overrides?.workflow_boards
         : null;
       const persistedExtras =
         data.table?.overrides?.workflow_board_extras &&
-        typeof data.table?.overrides?.workflow_board_extras === 'object'
+        typeof data.table?.overrides?.workflow_board_extras === "object"
           ? data.table?.overrides?.workflow_board_extras
           : null;
       const persistedActiveBoardId =
-        typeof data.table?.overrides?.workflow_active_board_id === 'string'
+        typeof data.table?.overrides?.workflow_active_board_id === "string"
           ? data.table?.overrides?.workflow_active_board_id
           : null;
 
-      let sanitizedExtras: Record<string, { nodes: WorkflowNode[]; edges: WorkflowEdge[] }> | null = null;
+      let sanitizedExtras: Record<
+        string,
+        { nodes: WorkflowNode[]; edges: WorkflowEdge[] }
+      > | null = null;
       if (persistedExtras) {
-        sanitizedExtras = Object.entries(persistedExtras).reduce<Record<string, { nodes: WorkflowNode[]; edges: WorkflowEdge[] }>>(
-          (acc, [boardId, extra]) => {
-            if (!extra || typeof extra !== 'object') return acc;
-            const nodes = Array.isArray((extra as any).nodes) ? (extra as any).nodes : [];
-            const edges = Array.isArray((extra as any).edges) ? (extra as any).edges : [];
-            acc[boardId] = { nodes, edges };
-            return acc;
-          },
-          {}
-        );
+        sanitizedExtras = Object.entries(persistedExtras).reduce<
+          Record<string, { nodes: WorkflowNode[]; edges: WorkflowEdge[] }>
+        >((acc, [boardId, extra]) => {
+          if (!extra || typeof extra !== "object") return acc;
+          const nodes = Array.isArray((extra as any).nodes)
+            ? (extra as any).nodes
+            : [];
+          const edges = Array.isArray((extra as any).edges)
+            ? (extra as any).edges
+            : [];
+          acc[boardId] = { nodes, edges };
+          return acc;
+        }, {});
         setBoardExtras((prev) => ({ ...prev, ...sanitizedExtras }));
       }
 
@@ -486,28 +572,52 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         hydratingRef.current = true;
         const columnNames = columns.map((column) => column.column_name);
         if (persistedBoards) {
-          const prevSelections = new Map(prev.map((board) => [board.id, board.selectedColumns]));
+          const prevSelections = new Map(
+            prev.map((board) => [board.id, board.selectedColumns])
+          );
           const normalized = persistedBoards
             .map((board: any) => {
-              const name = typeof board?.name === 'string' ? board.name : 'Board';
-              const id = typeof board?.id === 'string' ? board.id : `board-${Date.now()}-${Math.random()}`;
-              const names = Array.isArray(board?.columnNames) ? board.columnNames : [];
-              const filtered = names.filter((name: string) => columnNames.includes(name));
-              const selected = prevSelections.get(id) || (Array.isArray(board?.selectedColumns) ? board.selectedColumns : []);
-              const nextSelected = selected.filter((name: string) => filtered.includes(name));
+              const name =
+                typeof board?.name === "string" ? board.name : "Board";
+              const id =
+                typeof board?.id === "string"
+                  ? board.id
+                  : `board-${Date.now()}-${Math.random()}`;
+              const names = Array.isArray(board?.columnNames)
+                ? board.columnNames
+                : [];
+              const filtered = names.filter((name: string) =>
+                columnNames.includes(name)
+              );
+              const selected =
+                prevSelections.get(id) ||
+                (Array.isArray(board?.selectedColumns)
+                  ? board.selectedColumns
+                  : []);
+              const nextSelected = selected.filter((name: string) =>
+                filtered.includes(name)
+              );
               return {
                 id,
                 name,
                 columnNames: filtered,
-                selectedColumns: filtered.length > 0
-                  ? (nextSelected.length > 0 ? nextSelected : filtered)
-                  : [],
+                selectedColumns:
+                  filtered.length > 0
+                    ? nextSelected.length > 0
+                      ? nextSelected
+                      : filtered
+                    : [],
               } satisfies BoardState;
             })
             .filter((board: BoardState) => board.columnNames.length > 0);
 
-          const ensured = normalized.length > 0 ? normalized : [createBoard('Board 1', columnNames)];
-          const assigned = new Set(ensured.flatMap((board) => board.columnNames));
+          const ensured =
+            normalized.length > 0
+              ? normalized
+              : [createBoard("Board 1", columnNames)];
+          const assigned = new Set(
+            ensured.flatMap((board) => board.columnNames)
+          );
           const unassigned = columnNames.filter((name) => !assigned.has(name));
           if (unassigned.length > 0) {
             ensured[0] = {
@@ -518,7 +628,10 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
               ),
             };
           }
-          if (persistedActiveBoardId && ensured.some((board) => board.id === persistedActiveBoardId)) {
+          if (
+            persistedActiveBoardId &&
+            ensured.some((board) => board.id === persistedActiveBoardId)
+          ) {
             setActiveBoardId(persistedActiveBoardId);
           } else if (!activeBoardId && ensured.length > 0) {
             setActiveBoardId(ensured[0].id);
@@ -535,7 +648,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         }
 
         if (prev.length === 0) {
-          const board = createBoard('Board 1', columnNames);
+          const board = createBoard("Board 1", columnNames);
           setActiveBoardId(board.id);
           lastBoardsPayloadRef.current = JSON.stringify({
             boards: buildBoardsPayload([board]),
@@ -549,18 +662,27 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         }
 
         const nextBoards = prev.map((board) => {
-          const nextColumnNames = board.columnNames.filter((name) => columnNames.includes(name));
-          const nextSelection = board.selectedColumns.filter((name) => nextColumnNames.includes(name));
+          const nextColumnNames = board.columnNames.filter((name) =>
+            columnNames.includes(name)
+          );
+          const nextSelection = board.selectedColumns.filter((name) =>
+            nextColumnNames.includes(name)
+          );
           return {
             ...board,
             columnNames: nextColumnNames,
-            selectedColumns: nextColumnNames.length > 0
-              ? (nextSelection.length > 0 ? nextSelection : nextColumnNames)
-              : [],
+            selectedColumns:
+              nextColumnNames.length > 0
+                ? nextSelection.length > 0
+                  ? nextSelection
+                  : nextColumnNames
+                : [],
           };
         });
 
-        const assigned = new Set(nextBoards.flatMap((board) => board.columnNames));
+        const assigned = new Set(
+          nextBoards.flatMap((board) => board.columnNames)
+        );
         const unassigned = columnNames.filter((name) => !assigned.has(name));
         if (unassigned.length === 0) {
           return nextBoards;
@@ -575,10 +697,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
                 ...board,
                 columnNames: [...board.columnNames, ...unassigned],
                 selectedColumns: Array.from(
-                  new Set([
-                    ...board.selectedColumns,
-                    ...unassigned,
-                  ])
+                  new Set([...board.selectedColumns, ...unassigned])
                 ),
               }
             : board
@@ -595,9 +714,9 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
       });
     } catch (error) {
       toast({
-        title: 'Failed to load column metadata',
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: 'destructive',
+        title: "Failed to load column metadata",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
       });
     } finally {
       setLoading(false);
@@ -642,7 +761,10 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
   }, [activeBoardId, boards]);
 
   const workflowList = useMemo(() => Object.values(workflows), [workflows]);
-  const columns = useMemo(() => workflowList.map((workflow) => workflow.column), [workflowList]);
+  const columns = useMemo(
+    () => workflowList.map((workflow) => workflow.column),
+    [workflowList]
+  );
 
   const activeBoardIdValue = activeBoardId ?? boards[0]?.id ?? null;
   const activeBoard = useMemo(
@@ -650,24 +772,35 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     [boards, activeBoardIdValue]
   );
 
-  const updateActiveBoard = useCallback((updater: (board: BoardState) => BoardState, targetBoardId?: string) => {
-    setBoards((prev) => {
-      const activeId = targetBoardId ?? activeBoardIdRef.current ?? prev[0]?.id;
-      if (!activeId) {
-        return prev;
-      }
-      return prev.map((board) => (board.id === activeId ? updater(board) : board));
-    });
-  }, []);
+  const updateActiveBoard = useCallback(
+    (updater: (board: BoardState) => BoardState, targetBoardId?: string) => {
+      setBoards((prev) => {
+        const activeId =
+          targetBoardId ?? activeBoardIdRef.current ?? prev[0]?.id;
+        if (!activeId) {
+          return prev;
+        }
+        return prev.map((board) =>
+          board.id === activeId ? updater(board) : board
+        );
+      });
+    },
+    []
+  );
 
   const selectedColumns = activeBoard?.selectedColumns ?? [];
 
   useEffect(() => {
     if (!activeBoard) return;
     if (activeBoard.columnNames.length === 0) return;
-    const validSelection = activeBoard.selectedColumns.filter((name) => activeBoard.columnNames.includes(name));
+    const validSelection = activeBoard.selectedColumns.filter((name) =>
+      activeBoard.columnNames.includes(name)
+    );
     if (validSelection.length !== activeBoard.selectedColumns.length) {
-      updateActiveBoard((board) => ({ ...board, selectedColumns: validSelection }), activeBoard.id);
+      updateActiveBoard(
+        (board) => ({ ...board, selectedColumns: validSelection }),
+        activeBoard.id
+      );
     }
   }, [activeBoard, updateActiveBoard]);
 
@@ -680,39 +813,40 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
   const filteredColumns = useMemo(() => {
     const query = filter.trim().toLowerCase();
     if (!query) return activeBoardColumns;
-    return activeBoardColumns.filter((column) =>
-      column.column_name.toLowerCase().includes(query) ||
-      column.semantic_type.toLowerCase().includes(query)
+    return activeBoardColumns.filter(
+      (column) =>
+        column.column_name.toLowerCase().includes(query) ||
+        column.semantic_type.toLowerCase().includes(query)
     );
   }, [activeBoardColumns, filter]);
   const isFiltering = filter.trim().length > 0;
 
   const groupedColumns = useMemo(() => {
     const order = [
-      'numeric',
-      'temporal',
-      'categorical',
-      'text',
-      'spatial',
-      'binary',
-      'image',
-      'id',
-      'unknown',
+      "numeric",
+      "temporal",
+      "categorical",
+      "text",
+      "spatial",
+      "binary",
+      "image",
+      "id",
+      "unknown",
     ];
     const labels: Record<string, string> = {
-      numeric: 'Numeric',
-      temporal: 'Temporal',
-      categorical: 'Categorical',
-      text: 'Text',
-      spatial: 'Spatial',
-      binary: 'Binary',
-      image: 'Image',
-      id: 'Identifiers',
-      unknown: 'Unknown',
+      numeric: "Numeric",
+      temporal: "Temporal",
+      categorical: "Categorical",
+      text: "Text",
+      spatial: "Spatial",
+      binary: "Binary",
+      image: "Image",
+      id: "Identifiers",
+      unknown: "Unknown",
     };
     const map = new Map<string, ColumnMetadataRecord[]>();
     filteredColumns.forEach((column) => {
-      const key = column.semantic_type || 'unknown';
+      const key = column.semantic_type || "unknown";
       const list = map.get(key) ?? [];
       list.push(column);
       map.set(key, list);
@@ -793,158 +927,186 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     return ids;
   }, [activeBoard, workflows]);
 
-  const updateWorkflowData = useCallback((data: { nodes: any[]; edges: any[] }) => {
-    if (!activeBoard) return;
+  const updateWorkflowData = useCallback(
+    (data: { nodes: any[]; edges: any[] }) => {
+      if (!activeBoard) return;
 
-    const nodeColumnMap = new Map<string, string>();
-    const extraNodes: WorkflowNode[] = [];
-    const extraNodeIds = new Set<string>();
-    const nodesByColumn = new Map<string, WorkflowNode[]>();
-    data.nodes.forEach((node) => {
-      const columnName = node.data?.column_name;
-      if (columnName) {
-        nodeColumnMap.set(node.id, columnName);
-        const list = nodesByColumn.get(columnName) ?? [];
-        list.push({
-          id: node.id,
-          type: node.type as EDANodeType,
-          position: node.meta?.position ?? { x: 0, y: 0 },
-          data: node.data,
-        });
-        nodesByColumn.set(columnName, list);
-      } else {
-        extraNodeIds.add(node.id);
-        extraNodes.push({
-          id: node.id,
-          type: node.type as EDANodeType,
-          position: node.meta?.position ?? { x: 0, y: 0 },
-          data: node.data,
-        });
-      }
-    });
-
-    const extraEdges = data.edges.filter(
-      (edge) => extraNodeIds.has(edge.sourceNodeID) && extraNodeIds.has(edge.targetNodeID)
-    );
-    const edgesByColumn = new Map<string, WorkflowEdge[]>();
-    data.edges.forEach((edge) => {
-      const sourceColumn = nodeColumnMap.get(edge.sourceNodeID);
-      const targetColumn = nodeColumnMap.get(edge.targetNodeID);
-      if (!sourceColumn || sourceColumn !== targetColumn) return;
-      const list = edgesByColumn.get(sourceColumn) ?? [];
-      list.push({
-        sourceNodeID: edge.sourceNodeID,
-        targetNodeID: edge.targetNodeID,
+      const nodeColumnMap = new Map<string, string>();
+      const extraNodes: WorkflowNode[] = [];
+      const extraNodeIds = new Set<string>();
+      const nodesByColumn = new Map<string, WorkflowNode[]>();
+      data.nodes.forEach((node) => {
+        const columnName = node.data?.column_name;
+        if (columnName) {
+          nodeColumnMap.set(node.id, columnName);
+          const list = nodesByColumn.get(columnName) ?? [];
+          list.push({
+            id: node.id,
+            type: node.type as EDANodeType,
+            position: node.meta?.position ?? { x: 0, y: 0 },
+            data: node.data,
+          });
+          nodesByColumn.set(columnName, list);
+        } else {
+          extraNodeIds.add(node.id);
+          extraNodes.push({
+            id: node.id,
+            type: node.type as EDANodeType,
+            position: node.meta?.position ?? { x: 0, y: 0 },
+            data: node.data,
+          });
+        }
       });
-      edgesByColumn.set(sourceColumn, list);
-    });
-    setBoardExtras((prevExtras) => ({
-      ...prevExtras,
-      [activeBoard.id]: {
-        nodes: extraNodes,
-        edges: extraEdges.map((edge) => ({
+
+      const extraEdges = data.edges.filter(
+        (edge) =>
+          extraNodeIds.has(edge.sourceNodeID) &&
+          extraNodeIds.has(edge.targetNodeID)
+      );
+      const edgesByColumn = new Map<string, WorkflowEdge[]>();
+      data.edges.forEach((edge) => {
+        const sourceColumn = nodeColumnMap.get(edge.sourceNodeID);
+        const targetColumn = nodeColumnMap.get(edge.targetNodeID);
+        if (!sourceColumn || sourceColumn !== targetColumn) return;
+        const list = edgesByColumn.get(sourceColumn) ?? [];
+        list.push({
           sourceNodeID: edge.sourceNodeID,
           targetNodeID: edge.targetNodeID,
-        })),
-      },
-    }));
-
-    setWorkflows((prev) => {
-      const next = { ...prev };
-      nodesByColumn.forEach((nodes, columnName) => {
-        next[columnName] = {
-          ...next[columnName],
-          nodes,
-          edges: edgesByColumn.get(columnName) ?? next[columnName].edges,
-        };
+        });
+        edgesByColumn.set(sourceColumn, list);
       });
-      return next;
-    });
+      setBoardExtras((prevExtras) => ({
+        ...prevExtras,
+        [activeBoard.id]: {
+          nodes: extraNodes,
+          edges: extraEdges.map((edge) => ({
+            sourceNodeID: edge.sourceNodeID,
+            targetNodeID: edge.targetNodeID,
+          })),
+        },
+      }));
 
-    if (nodesByColumn.size > 0) {
-      nodesByColumn.forEach((nodes, columnName) => {
-        pendingWorkflowPersistRef.current[columnName] = {
-          nodes,
-          edges: edgesByColumn.get(columnName) ?? [],
-        };
+      setWorkflows((prev) => {
+        const next = { ...prev };
+        nodesByColumn.forEach((nodes, columnName) => {
+          next[columnName] = {
+            ...next[columnName],
+            nodes,
+            edges: edgesByColumn.get(columnName) ?? next[columnName].edges,
+          };
+        });
+        return next;
       });
-      if (workflowPersistTimerRef.current) {
-        clearTimeout(workflowPersistTimerRef.current);
-      }
-      workflowPersistTimerRef.current = setTimeout(() => {
-        void persistWorkflowGraphs();
-      }, 800);
-    }
-  }, [activeBoard, persistWorkflowGraphs]);
 
-  const handleCanvasSelection = useCallback((nodeIds: string[]) => {
-    if (!activeBoard) return;
-    if (nodeIds.length === 0) {
-      return;
-    }
-    if (selectionSourceRef.current === 'list') {
-      selectionSourceRef.current = null;
-      return;
-    }
-    selectionSourceRef.current = 'canvas';
-    const selected = new Set<string>();
-    nodeIds.forEach((id) => {
-      const columnName = nodeIdToColumn.get(id);
-      if (columnName) {
-        selected.add(columnName);
+      if (nodesByColumn.size > 0) {
+        nodesByColumn.forEach((nodes, columnName) => {
+          pendingWorkflowPersistRef.current[columnName] = {
+            nodes,
+            edges: edgesByColumn.get(columnName) ?? [],
+          };
+        });
+        if (workflowPersistTimerRef.current) {
+          clearTimeout(workflowPersistTimerRef.current);
+        }
+        workflowPersistTimerRef.current = setTimeout(() => {
+          void persistWorkflowGraphs();
+        }, 800);
       }
-    });
-    if (selected.size === 0) {
-      return;
-    }
-    updateActiveBoard((board) => ({ ...board, selectedColumns: Array.from(selected) }), activeBoard.id);
-  }, [activeBoard, nodeIdToColumn, updateActiveBoard]);
+    },
+    [activeBoard, persistWorkflowGraphs]
+  );
 
-  const handleToggleColumn = useCallback((columnName: string, checked: boolean) => {
-    selectionSourceRef.current = 'list';
-    if (selectionResetRef.current) {
-      clearTimeout(selectionResetRef.current);
-    }
-    selectionResetRef.current = setTimeout(() => {
-      if (selectionSourceRef.current === 'list') {
+  const handleCanvasSelection = useCallback(
+    (nodeIds: string[]) => {
+      if (!activeBoard) return;
+      if (nodeIds.length === 0) {
+        return;
+      }
+      if (selectionSourceRef.current === "list") {
         selectionSourceRef.current = null;
+        return;
       }
-    }, 150);
-    updateActiveBoard((board) => {
-      const selected = new Set(board.selectedColumns);
-      if (checked) {
-        selected.add(columnName);
-      } else {
-        selected.delete(columnName);
+      selectionSourceRef.current = "canvas";
+      const selected = new Set<string>();
+      nodeIds.forEach((id) => {
+        const columnName = nodeIdToColumn.get(id);
+        if (columnName) {
+          selected.add(columnName);
+        }
+      });
+      if (selected.size === 0) {
+        return;
       }
-      return { ...board, selectedColumns: Array.from(selected) };
-    }, activeBoard?.id);
-  }, [activeBoard, updateActiveBoard]);
+      updateActiveBoard(
+        (board) => ({ ...board, selectedColumns: Array.from(selected) }),
+        activeBoard.id
+      );
+    },
+    [activeBoard, nodeIdToColumn, updateActiveBoard]
+  );
+
+  const handleToggleColumn = useCallback(
+    (columnName: string, checked: boolean) => {
+      selectionSourceRef.current = "list";
+      if (selectionResetRef.current) {
+        clearTimeout(selectionResetRef.current);
+      }
+      selectionResetRef.current = setTimeout(() => {
+        if (selectionSourceRef.current === "list") {
+          selectionSourceRef.current = null;
+        }
+      }, 150);
+      updateActiveBoard((board) => {
+        const selected = new Set(board.selectedColumns);
+        if (checked) {
+          selected.add(columnName);
+        } else {
+          selected.delete(columnName);
+        }
+        return { ...board, selectedColumns: Array.from(selected) };
+      }, activeBoard?.id);
+    },
+    [activeBoard, updateActiveBoard]
+  );
 
   const handleClearSelection = useCallback(() => {
     if (!activeBoard) return;
-    updateActiveBoard((board) => ({ ...board, selectedColumns: [] }), activeBoard.id);
+    updateActiveBoard(
+      (board) => ({ ...board, selectedColumns: [] }),
+      activeBoard.id
+    );
   }, [activeBoard, updateActiveBoard]);
 
   const handleAddBoard = useCallback(() => {
     if (!activeBoard) return;
-    const unselected = activeBoard.columnNames.filter((name) => !selectedColumns.includes(name));
+    const unselected = activeBoard.columnNames.filter(
+      (name) => !selectedColumns.includes(name)
+    );
     if (unselected.length === 0) {
-      toast({ title: 'Select columns to keep on this board before splitting.' });
+      toast({
+        title: "Select columns to keep on this board before splitting.",
+      });
       return;
     }
     const board = createBoard(`Board ${boards.length + 1}`, unselected);
     const nextBoards = boards
       .map((item) => {
         if (item.id !== activeBoard.id) return item;
-        const remaining = item.columnNames.filter((name) => !unselected.includes(name));
-        const remainingSelected = item.selectedColumns.filter((name) => remaining.includes(name));
+        const remaining = item.columnNames.filter(
+          (name) => !unselected.includes(name)
+        );
+        const remainingSelected = item.selectedColumns.filter((name) =>
+          remaining.includes(name)
+        );
         return {
           ...item,
           columnNames: remaining,
-          selectedColumns: remaining.length > 0
-            ? (remainingSelected.length > 0 ? remainingSelected : remaining)
-            : [],
+          selectedColumns:
+            remaining.length > 0
+              ? remainingSelected.length > 0
+                ? remainingSelected
+                : remaining
+              : [],
         };
       })
       .concat(board);
@@ -957,19 +1119,34 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
       activeBoardId: board.id,
     });
     void persistBoards(nextBoards);
-  }, [activeBoard, boardExtras, boards, buildBoardsPayload, createBoard, persistBoards, selectedColumns, toast]);
+  }, [
+    activeBoard,
+    boardExtras,
+    boards,
+    buildBoardsPayload,
+    createBoard,
+    persistBoards,
+    selectedColumns,
+    toast,
+  ]);
 
-  const isRunningAny = useMemo(() => Object.values(workflows).some((wf) => wf.isRunning), [workflows]);
+  const isRunningAny = useMemo(
+    () => Object.values(workflows).some((wf) => wf.isRunning),
+    [workflows]
+  );
 
   const handleEstimateSelected = useCallback(async () => {
     if (!activeBoard) return;
     if (selectedColumns.length === 0) {
-      toast({ title: 'Select at least one workflow to run.' });
+      toast({ title: "Select at least one workflow to run." });
       return;
     }
 
     setIsEstimating(true);
-    appendLog('status', `Estimating tokens for ${selectedColumns.length} columns...`);
+    appendLog(
+      "status",
+      `Estimating tokens for ${selectedColumns.length} columns...`
+    );
 
     const results = await Promise.allSettled(
       selectedColumns.map(async (columnName) => {
@@ -977,47 +1154,58 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         if (workflow) {
           const overrides = collectOverrides(workflow.nodes);
           if (Object.keys(overrides).length > 0) {
-            await columnMetadataApi.override(tableAssetId, columnName, overrides);
+            await columnMetadataApi.override(
+              tableAssetId,
+              columnName,
+              overrides
+            );
           }
         }
-        const response = await columnWorkflowsApi.estimate(tableAssetId, columnName);
+        const response = await columnWorkflowsApi.estimate(
+          tableAssetId,
+          columnName
+        );
         return response.data as ColumnWorkflowEstimate;
       })
     );
 
     const estimates: ColumnWorkflowEstimate[] = [];
     results.forEach((result) => {
-      if (result.status === 'fulfilled' && result.value) {
+      if (result.status === "fulfilled" && result.value) {
         estimates.push(result.value);
-      } else if (result.status === 'rejected') {
-        appendLog('error', 'Token estimate failed', { error: result.reason });
+      } else if (result.status === "rejected") {
+        appendLog("error", "Token estimate failed", { error: result.reason });
       }
     });
 
     if (estimates.length === 0) {
       toast({
-        title: 'Failed to estimate tokens',
-        description: 'No estimates returned from server',
-        variant: 'destructive',
+        title: "Failed to estimate tokens",
+        description: "No estimates returned from server",
+        variant: "destructive",
       });
       setIsEstimating(false);
       return;
     }
 
-    appendLog('complete', `Token estimate ready for ${estimates.length} columns.`);
+    appendLog(
+      "complete",
+      `Token estimate ready for ${estimates.length} columns.`
+    );
     setEstimateResults(estimates);
     setEstimateTargets(estimates.map((item) => item.column));
     setIsEstimating(false);
   }, [activeBoard, appendLog, selectedColumns, tableAssetId, toast, workflows]);
 
   const handleRunSelected = useCallback(async () => {
-    const targets = estimateTargets.length > 0 ? estimateTargets : selectedColumns;
+    const targets =
+      estimateTargets.length > 0 ? estimateTargets : selectedColumns;
     if (targets.length === 0) {
       setEstimateResults(null);
       return;
     }
 
-    appendLog('status', `Running workflows for ${targets.length} columns...`);
+    appendLog("status", `Running workflows for ${targets.length} columns...`);
     setEstimateResults(null);
 
     setWorkflows((prev) => {
@@ -1030,7 +1218,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
           isRunning: true,
           nodes: workflow.nodes.map((node) => ({
             ...node,
-            data: { ...node.data, status: 'running' },
+            data: { ...node.data, status: "running" },
           })),
         };
       });
@@ -1040,7 +1228,10 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     const results = await Promise.allSettled(
       targets.map(async (columnName) => {
         try {
-          const response = await columnWorkflowsApi.run(tableAssetId, columnName);
+          const response = await columnWorkflowsApi.run(
+            tableAssetId,
+            columnName
+          );
           return { columnName, response };
         } catch (error) {
           throw { columnName, error };
@@ -1051,7 +1242,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     setWorkflows((prev) => {
       const next = { ...prev };
       results.forEach((result) => {
-        if (result.status === 'fulfilled') {
+        if (result.status === "fulfilled") {
           const workflow = next[result.value.columnName];
           if (!workflow) return;
           next[result.value.columnName] = {
@@ -1059,18 +1250,23 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
             isRunning: false,
             nodes: workflow.nodes.map((node) => ({
               ...node,
-              data: { ...node.data, status: 'success' },
+              data: { ...node.data, status: "success" },
             })),
           };
         } else {
-          const columnName = (result as PromiseRejectedResult).reason?.columnName;
+          const columnName = (result as PromiseRejectedResult).reason
+            ?.columnName;
           if (columnName && next[columnName]) {
             next[columnName] = {
               ...next[columnName],
               isRunning: false,
               nodes: next[columnName].nodes.map((node) => ({
                 ...node,
-                data: { ...node.data, status: node.data.status === 'running' ? 'error' : node.data.status },
+                data: {
+                  ...node.data,
+                  status:
+                    node.data.status === "running" ? "error" : node.data.status,
+                },
               })),
             };
           }
@@ -1080,18 +1276,33 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
     });
 
     results.forEach((result) => {
-      if (result.status === 'fulfilled') {
-        appendLog('complete', `Workflow completed for ${result.value.columnName}`, result.value.response.data);
+      if (result.status === "fulfilled") {
+        appendLog(
+          "complete",
+          `Workflow completed for ${result.value.columnName}`,
+          result.value.response.data
+        );
       } else {
         const columnName = (result as PromiseRejectedResult).reason?.columnName;
-        appendLog('error', `Workflow failed${columnName ? ` for ${columnName}` : ''}`, (result as PromiseRejectedResult).reason);
+        appendLog(
+          "error",
+          `Workflow failed${columnName ? ` for ${columnName}` : ""}`,
+          (result as PromiseRejectedResult).reason
+        );
       }
     });
 
     await loadMetadata();
     await loadReport(String(tableAssetId));
     setEstimateTargets([]);
-  }, [appendLog, estimateTargets, loadMetadata, loadReport, selectedColumns, tableAssetId]);
+  }, [
+    appendLog,
+    estimateTargets,
+    loadMetadata,
+    loadReport,
+    selectedColumns,
+    tableAssetId,
+  ]);
 
   const handleCancelEstimate = useCallback(() => {
     setEstimateResults(null);
@@ -1101,7 +1312,10 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
   const estimateTotals = useMemo(() => {
     if (!estimateResults) return { totalTokens: 0, columns: 0 };
     return {
-      totalTokens: estimateResults.reduce((sum, item) => sum + (item.total_tokens || 0), 0),
+      totalTokens: estimateResults.reduce(
+        (sum, item) => sum + (item.total_tokens || 0),
+        0
+      ),
       columns: estimateResults.length,
     };
   }, [estimateResults]);
@@ -1155,7 +1369,9 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
               </div>
             )}
             {groupedColumns.map((group) => {
-              const expanded = isFiltering ? true : expandedGroups[group.type] ?? defaultGroupsExpanded;
+              const expanded = isFiltering
+                ? true
+                : expandedGroups[group.type] ?? defaultGroupsExpanded;
               return (
                 <div key={group.type} className="space-y-2">
                   <button
@@ -1175,44 +1391,67 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
                   {expanded && (
                     <div className="space-y-2">
                       {group.columns.map((column) => {
-                        const checked = selectedColumns.includes(column.column_name);
+                        const checked = selectedColumns.includes(
+                          column.column_name
+                        );
                         const hasFeature =
-                          column.semantic_type === 'image' ||
+                          column.semantic_type === "image" ||
                           Boolean(column.overrides?.row_level_instruction);
                         return (
                           <div
                             key={column.column_name}
                             role="button"
                             tabIndex={0}
-                            onClick={() => handleToggleColumn(column.column_name, !checked)}
+                            onClick={() =>
+                              handleToggleColumn(column.column_name, !checked)
+                            }
                             onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
+                              if (event.key === "Enter" || event.key === " ") {
                                 event.preventDefault();
-                                handleToggleColumn(column.column_name, !checked);
+                                handleToggleColumn(
+                                  column.column_name,
+                                  !checked
+                                );
                               }
                             }}
                             className={cn(
-                              'flex items-start gap-3 rounded-lg border border-transparent px-2 py-2 hover:bg-muted/50 cursor-pointer select-none',
-                              checked && 'border-primary/40 bg-primary/5'
+                              "flex items-start gap-3 rounded-lg border border-transparent px-2 py-2 hover:bg-muted/50 cursor-pointer select-none",
+                              checked && "border-primary/40 bg-primary/5"
                             )}
                           >
                             <Checkbox
                               checked={checked}
-                              onCheckedChange={(value) => handleToggleColumn(column.column_name, Boolean(value))}
+                              onCheckedChange={(value) =>
+                                handleToggleColumn(
+                                  column.column_name,
+                                  Boolean(value)
+                                )
+                              }
                               onClick={(event) => event.stopPropagation()}
                               className="mt-0.5"
                             />
                             <div className="flex-1 space-y-1">
-                              <div className="text-sm font-medium text-foreground">{column.column_name}</div>
+                              <div className="text-sm font-medium text-foreground">
+                                {column.column_name}
+                              </div>
                               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
+                                <Badge
+                                  variant="secondary"
+                                  className="text-[10px] uppercase tracking-wide"
+                                >
                                   {column.semantic_type}
                                 </Badge>
-                                <Badge variant="outline" className="text-[10px]">
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px]"
+                                >
                                   {(column.confidence * 100).toFixed(0)}%
                                 </Badge>
                                 {hasFeature && (
-                                  <Badge variant="outline" className="text-[10px] border-emerald-200 text-emerald-700">
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] border-emerald-200 text-emerald-700"
+                                  >
                                     Feature
                                   </Badge>
                                 )}
@@ -1232,7 +1471,10 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
 
       <div className="flex flex-1 flex-col min-h-0">
         <div className="flex items-center justify-between border-b border-border pb-2">
-          <Tabs value={activeBoardIdValue ?? undefined} onValueChange={setActiveBoardId}>
+          <Tabs
+            value={activeBoardIdValue ?? undefined}
+            onValueChange={setActiveBoardId}
+          >
             <TabsList>
               {boards.map((board) => (
                 <TabsTrigger key={board.id} value={board.id}>
@@ -1243,7 +1485,7 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
           </Tabs>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="surface" onClick={handleAddBoard}>
-              Add Board
+              Scrat!
             </Button>
             <Badge variant="outline" className="text-xs">
               {selectedColumns.length} selected
@@ -1251,10 +1493,12 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
           </div>
         </div>
 
-        <div className={cn(
-          'min-h-0 rounded-lg border border-border bg-muted/20 mt-3 overflow-hidden',
-          isLogExpanded ? 'flex-[0.7]' : 'flex-1'
-        )}>
+        <div
+          className={cn(
+            "min-h-0 rounded-lg border border-border bg-muted/20 mt-3 overflow-hidden",
+            isLogExpanded ? "flex-[0.7]" : "flex-1"
+          )}
+        >
           {activeBoard && activeBoard.columnNames.length > 0 ? (
             <EDAWorkflowEditor
               nodes={boardGraph.nodes}
@@ -1263,7 +1507,9 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
               selectedNodeIds={selectedNodeIds}
               onSelectionChange={handleCanvasSelection}
               onRun={handleEstimateSelected}
-              runDisabled={isRunningAny || isEstimating || selectedColumns.length === 0}
+              runDisabled={
+                isRunningAny || isEstimating || selectedColumns.length === 0
+              }
               runLabel="Estimate & Run Selected"
               onWorkflowDataChange={(data) =>
                 updateWorkflowData({
@@ -1288,7 +1534,10 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
         />
       </div>
 
-      <Dialog open={!!estimateResults} onOpenChange={(open) => !open && handleCancelEstimate()}>
+      <Dialog
+        open={!!estimateResults}
+        onOpenChange={(open) => !open && handleCancelEstimate()}
+      >
         <DialogContent className="bg-slate-950 text-slate-100 border-slate-800">
           <DialogHeader className="text-slate-100">
             <DialogTitle className="text-slate-100">Token Estimate</DialogTitle>
@@ -1301,21 +1550,35 @@ const ColumnWorkflowPanel = ({ tableAssetId, tableName }: ColumnWorkflowPanelPro
               </div>
               <div className="flex items-center justify-between rounded-lg border border-slate-800 px-3 py-2">
                 <span className="text-slate-300">Total tokens</span>
-                <span className="font-medium">{estimateTotals.totalTokens}</span>
+                <span className="font-medium">
+                  {estimateTotals.totalTokens}
+                </span>
               </div>
               <div className="space-y-3">
                 {estimateResults.map((estimate) => (
-                  <div key={estimate.column} className="rounded-lg border border-slate-800 px-3 py-2">
+                  <div
+                    key={estimate.column}
+                    className="rounded-lg border border-slate-800 px-3 py-2"
+                  >
                     <div className="flex items-center justify-between">
-                      <span className="font-medium text-slate-100">{estimate.column}</span>
-                      <span className="text-xs text-slate-300">{estimate.total_tokens} tokens</span>
+                      <span className="font-medium text-slate-100">
+                        {estimate.column}
+                      </span>
+                      <span className="text-xs text-slate-300">
+                        {estimate.total_tokens} tokens
+                      </span>
                     </div>
                     <div className="mt-2 space-y-1">
                       {estimate.estimates.map((item, idx) => (
-                        <div key={`${estimate.column}-${item.task}-${idx}`} className="flex items-center justify-between">
-                          <span className="text-xs text-slate-300">{item.task}</span>
+                        <div
+                          key={`${estimate.column}-${item.task}-${idx}`}
+                          className="flex items-center justify-between"
+                        >
                           <span className="text-xs text-slate-300">
-                            {item.row_count ? `${item.row_count} rows · ` : ''}
+                            {item.task}
+                          </span>
+                          <span className="text-xs text-slate-300">
+                            {item.row_count ? `${item.row_count} rows · ` : ""}
                             {item.token_count} tokens
                           </span>
                         </div>
