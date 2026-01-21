@@ -1,6 +1,5 @@
 /**
  * EDA Node Registries
- * EDA 节点注册配置
  */
 
 import { WorkflowNodeRegistry, ValidateTrigger, Field } from '@flowgram.ai/free-layout-editor';
@@ -169,6 +168,275 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
             </Field>
             <div className="text-xs text-slate-700">
               Complete documentation
+            </div>
+          </>
+        ),
+      },
+    },
+
+    // Numeric Distribution
+    {
+      type: 'numeric_distribution',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Numeric Distribution'}
+                </div>
+              )}
+            </Field>
+            <Field name="sample_size">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Sample: {field.value || 10000} rows
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Numeric Correlations
+    {
+      type: 'numeric_correlations',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Correlation Scan'}
+                </div>
+              )}
+            </Field>
+            <Field name="max_columns">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Max columns: {field.value || 12}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Numeric Periodicity
+    {
+      type: 'numeric_periodicity',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Periodicity Scan'}
+                </div>
+              )}
+            </Field>
+            <Field name="bucket">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Bucket: {field.value || 'day'}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Categorical Groups
+    {
+      type: 'categorical_groups',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Category Groups'}
+                </div>
+              )}
+            </Field>
+            <Field name="top_n">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Top N: {field.value || 10}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Null Scan
+    {
+      type: 'scan_nulls',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Null Scan'}
+                </div>
+              )}
+            </Field>
+            <Field name="sample_size">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Sample: {field.value || 20000} rows
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Conflict Scan
+    {
+      type: 'scan_conflicts',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Conflict Scan'}
+                </div>
+              )}
+            </Field>
+            <Field name="group_by_columns">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Groups: {field.value || 'Not set'}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Plan Data Repairs
+    {
+      type: 'plan_data_repairs',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Repair Plan'}
+                </div>
+              )}
+            </Field>
+            <div className="text-xs text-slate-700">
+              Generates a preview plan before applying fixes.
+            </div>
+          </>
+        ),
+      },
+    },
+
+    // Approval Gate
+    {
+      type: 'approval_gate',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Approval Gate'}
+                </div>
+              )}
+            </Field>
+            <Field name="approved">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  {field.value ? '✓ Approved' : 'Pending approval'}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
+    // Apply Data Repairs
+    {
+      type: 'apply_data_repairs',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Apply Repairs'}
+                </div>
+              )}
+            </Field>
+            <div className="text-xs text-slate-700">
+              Applies approved null/conflict fixes.
             </div>
           </>
         ),
@@ -535,6 +803,32 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
               />
             )}
           </Field>
+        ),
+      },
+    },
+    // Agent Step
+    {
+      type: 'agent_step',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="tool_name">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Tool: {field.value || 'agent_step'}
+                </div>
+              )}
+            </Field>
+            <div className="text-[11px] text-slate-500">
+              Strands agent tool invocation.
+            </div>
+          </>
         ),
       },
     },

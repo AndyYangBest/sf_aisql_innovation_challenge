@@ -5,13 +5,16 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useTableStore } from "@/store/tableStore";
 import { useToast } from "@/hooks/use-toast";
 import { tablesApi, SnowflakeTable } from "@/api/tables";
+import { columnMetadataApi } from "@/api/columnMetadata";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import PreviewTable from "@/components/PreviewTable";
+import ColumnNotesEditor, { ColumnNotesMap } from "@/components/ColumnNotesEditor";
 
 interface NewTableDrawerProps {
   open: boolean;
@@ -46,6 +49,12 @@ const NewTableDrawer = ({ open, onOpenChange }: NewTableDrawerProps) => {
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [previewData, setPreviewData] = useState<any>(null);
   const [snowflakeTables, setSnowflakeTables] = useState<SnowflakeTable[]>([]);
+  const [databases, setDatabases] = useState<string[]>([]);
+  const [schemas, setSchemas] = useState<string[]>([]);
+  const [selectedDatabase, setSelectedDatabase] = useState("");
+  const [selectedSchema, setSelectedSchema] = useState("");
+  const [isLoadingDatabases, setIsLoadingDatabases] = useState(false);
+  const [isLoadingSchemas, setIsLoadingSchemas] = useState(false);
   const [isLoadingTables, setIsLoadingTables] = useState(false);
   const [showTableList, setShowTableList] = useState(true);
   const [searchTable, setSearchTable] = useState("");
@@ -54,21 +63,113 @@ const NewTableDrawer = ({ open, onOpenChange }: NewTableDrawerProps) => {
   const [numericColumns, setNumericColumns] = useState<string[]>([]);
   const [isProfilingColumns, setIsProfilingColumns] = useState(false);
   const [colWidth, setColWidth] = useState(200);
+  const [columnNotes, setColumnNotes] = useState<ColumnNotesMap>({});
   const { addTableAsset, setTableResult } = useTableStore();
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  // Fetch Snowflake tables when drawer opens
+  // Fetch Snowflake metadata when drawer opens
   useEffect(() => {
     if (open) {
-      fetchSnowflakeTables();
+      fetchSnowflakeDatabases();
     }
   }, [open]);
 
-  const fetchSnowflakeTables = async () => {
+  useEffect(() => {
+    if (!open || !selectedDatabase) return;
+    fetchSnowflakeSchemas(selectedDatabase);
+  }, [open, selectedDatabase]);
+
+  useEffect(() => {
+    if (!open) return;
+    fetchSnowflakeTables(selectedDatabase || undefined, selectedSchema || undefined);
+  }, [open, selectedDatabase, selectedSchema]);
+
+  useEffect(() => {
+    if (!previewData?.columns) {
+      setColumnNotes({});
+      return;
+    }
+    const columnSet = new Set(previewData.columns.map((col: { name: string }) => col.name));
+    setColumnNotes((current) => {
+      const next: ColumnNotesMap = {};
+      Object.entries(current).forEach(([name, note]) => {
+        if (columnSet.has(name)) {
+          next[name] = note;
+        }
+      });
+      return next;
+    });
+  }, [previewData?.columns]);
+
+  const fetchSnowflakeDatabases = async () => {
+    setIsLoadingDatabases(true);
+    try {
+      const response = await tablesApi.getSnowflakeDatabases();
+      if (response.status === 'success' && response.data) {
+        const names = response.data.map((db) => db.DATABASE_NAME).filter(Boolean);
+        setDatabases(names);
+        if (!selectedDatabase || !names.includes(selectedDatabase)) {
+          const nextDatabase = names[0] || "";
+          if (nextDatabase !== selectedDatabase) {
+            setSelectedDatabase(nextDatabase);
+          }
+        }
+      } else {
+        toast({
+          title: "Failed to load databases",
+          description: response.error || "Unknown error",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Failed to load databases",
+        description: "Could not connect to Snowflake",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingDatabases(false);
+    }
+  };
+
+  const fetchSnowflakeSchemas = async (database: string) => {
+    setIsLoadingSchemas(true);
+    try {
+      const response = await tablesApi.getSnowflakeSchemas(database);
+      if (response.status === 'success' && response.data) {
+        const names = response.data.map((schema) => schema.SCHEMA_NAME).filter(Boolean);
+        setSchemas(names);
+        const preferred = selectedSchema && names.includes(selectedSchema)
+          ? selectedSchema
+          : names.includes("PUBLIC")
+            ? "PUBLIC"
+            : names[0] || "";
+        if (preferred !== selectedSchema) {
+          setSelectedSchema(preferred);
+        }
+      } else {
+        toast({
+          title: "Failed to load schemas",
+          description: response.error || "Unknown error",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Failed to load schemas",
+        description: "Could not connect to Snowflake",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingSchemas(false);
+    }
+  };
+
+  const fetchSnowflakeTables = async (database?: string, schema?: string) => {
     setIsLoadingTables(true);
     try {
-      const response = await tablesApi.getSnowflakeTables();
+      const response = await tablesApi.getSnowflakeTables(database, schema);
       if (response.status === 'success' && response.data) {
         setSnowflakeTables(response.data);
       } else {
@@ -92,6 +193,8 @@ const NewTableDrawer = ({ open, onOpenChange }: NewTableDrawerProps) => {
   const handleTableSelect = (table: SnowflakeTable) => {
     const fullTableName = `${table.DATABASE_NAME}.${table.SCHEMA_NAME}.${table.TABLE_NAME}`;
     setSql(`SELECT * FROM ${fullTableName} LIMIT 100`);
+    setSelectedDatabase(table.DATABASE_NAME);
+    setSelectedSchema(table.SCHEMA_NAME);
 
     // 清除之前的数据
     setPreviewData(null);
@@ -108,10 +211,6 @@ const NewTableDrawer = ({ open, onOpenChange }: NewTableDrawerProps) => {
   };
 
   const filteredTables = snowflakeTables.filter((table) => {
-    // 只显示 PUBLIC schema 的表
-    if (table.SCHEMA_NAME !== 'PUBLIC') {
-      return false;
-    }
     // 搜索过滤
     const searchLower = searchTable.toLowerCase();
     return (
@@ -284,6 +383,31 @@ LIMIT 1;
     }
   };
 
+  const buildColumnNoteOverrides = (): Array<{ column_name: string; overrides: Record<string, string> }> => {
+    return Object.entries(columnNotes)
+      .map(([column_name, note]) => ({ column_name, note: note.trim() }))
+      .filter((entry) => entry.note.length > 0)
+      .map((entry) => ({
+        column_name: entry.column_name,
+        overrides: { user_notes: entry.note },
+      }));
+  };
+
+  const persistColumnNotes = async (tableAssetId: string) => {
+    const overrides = buildColumnNoteOverrides();
+    if (overrides.length === 0) {
+      return;
+    }
+    const numericId = Number.parseInt(tableAssetId, 10);
+    if (Number.isNaN(numericId)) {
+      throw new Error("Invalid table asset id");
+    }
+    const response = await columnMetadataApi.bulkOverride(numericId, overrides);
+    if (response.status === "error") {
+      throw new Error(response.error || "Failed to save column notes");
+    }
+  };
+
   const handleSave = async () => {
     if (!tableName.trim()) {
       toast({
@@ -298,8 +422,8 @@ LIMIT 1;
       const response = await tablesApi.saveTableAsset({
         name: tableName,
         source_sql: sql,
-        database: "AI_SQL_COMP",
-        schema: "PUBLIC",
+        database: selectedDatabase || undefined,
+        schema: selectedSchema || undefined,
         tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
         owner: "current_user",
         ai_summary: aiSummary,
@@ -307,6 +431,15 @@ LIMIT 1;
       });
 
       if (response.status === 'success' && response.data) {
+        try {
+          await persistColumnNotes(response.data.id);
+        } catch (error) {
+          toast({
+            title: "Column notes not saved",
+            description: error instanceof Error ? error.message : "Please try again later",
+            variant: "destructive",
+          });
+        }
         addTableAsset(response.data);
 
         // Store the result if we have preview data
@@ -347,6 +480,7 @@ LIMIT 1;
     setNumericColumns([]);
     setIsProfilingColumns(false);
     setColWidth(200);
+    setColumnNotes({});
     setShowTableList(true);
     setSearchTable("");
     onOpenChange(false);
@@ -382,11 +516,53 @@ LIMIT 1;
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={fetchSnowflakeTables}
+                  onClick={() => fetchSnowflakeTables(selectedDatabase || undefined, selectedSchema || undefined)}
                   disabled={isLoadingTables}
                 >
                   <RefreshCw className={`h-4 w-4 ${isLoadingTables ? 'animate-spin' : ''}`} />
                 </Button>
+              </div>
+
+              <div className="space-y-3 mb-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Database</Label>
+                  <Select
+                    value={selectedDatabase || undefined}
+                    onValueChange={setSelectedDatabase}
+                    disabled={isLoadingDatabases || databases.length === 0}
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder={isLoadingDatabases ? "Loading databases..." : "Select database"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {databases.map((db) => (
+                        <SelectItem key={db} value={db}>
+                          {db}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Schema</Label>
+                  <Select
+                    value={selectedSchema || undefined}
+                    onValueChange={setSelectedSchema}
+                    disabled={!selectedDatabase || isLoadingSchemas || schemas.length === 0}
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder={isLoadingSchemas ? "Loading schemas..." : "Select schema"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {schemas.map((schema) => (
+                        <SelectItem key={schema} value={schema}>
+                          {schema}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <Input
@@ -519,6 +695,11 @@ LIMIT 1;
                 {/* Save Form */}
                 {previewData && (
                   <form autoComplete="off" onSubmit={(e) => { e.preventDefault(); handleSave(); }} className="space-y-4 pt-4 border-t border-border animate-slide-up">
+                    <ColumnNotesEditor
+                      columns={previewData.columns.map((col: { name: string }) => col.name)}
+                      value={columnNotes}
+                      onChange={setColumnNotes}
+                    />
                     <div className="space-y-2">
                       <Label>Table Name</Label>
                       <Input

@@ -69,7 +69,15 @@ export interface EDARunResponse {
 }
 
 export interface WorkflowLogEvent {
-  type: 'log' | 'status' | 'progress' | 'complete' | 'error';
+  type:
+    | 'log'
+    | 'status'
+    | 'progress'
+    | 'complete'
+    | 'error'
+    | 'strands_log'
+    | 'workflow_log'
+    | 'telemetry_log';
   timestamp: string;
   message?: string;
   data?: any;

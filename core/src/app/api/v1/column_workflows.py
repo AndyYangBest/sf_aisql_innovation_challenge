@@ -1,6 +1,6 @@
 """API endpoints for column-level workflows."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.db.database import get_async_db_session
@@ -41,6 +41,7 @@ async def estimate_column_workflow(
 async def run_column_workflow(
     table_asset_id: int,
     column_name: str,
+    focus: str | None = Query(default=None),
     db: AsyncSession = Depends(get_async_db_session),
     sf_service: SnowflakeService = Depends(get_snowflake_service),
     ai_sql_service: ModularAISQLService = Depends(get_ai_sql_service),
@@ -48,6 +49,6 @@ async def run_column_workflow(
     """Run a column workflow using Strands orchestration."""
     orchestrator = ColumnWorkflowOrchestrator(sf_service, ai_sql_service, db)
     try:
-        return await orchestrator.run_column_workflow(table_asset_id, column_name)
+        return await orchestrator.run_column_workflow(table_asset_id, column_name, focus=focus)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

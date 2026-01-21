@@ -247,6 +247,16 @@ async def run_eda_workflow_stream(
                     event_type = "log"
                     data: dict[str, Any] | None = None
 
+                    # Detect strands-specific log patterns
+                    if "strands" in record.name.lower():
+                        # Mark strands logs with a special indicator
+                        if "workflow" in record.name.lower():
+                            event_type = "workflow_log"
+                        elif "telemetry" in record.name.lower():
+                            event_type = "telemetry_log"
+                        else:
+                            event_type = "strands_log"
+
                     workflow_match = re.search(r"Creating workflow '([^']+)'", message)
                     if workflow_match and not workflow_id_event.is_set():
                         workflow_id = workflow_match.group(1)

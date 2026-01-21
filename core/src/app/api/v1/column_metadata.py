@@ -99,6 +99,41 @@ async def override_column_metadata(
     )
 
 
+@router.put("/{table_asset_id}/bulk-override", response_model=ColumnMetadataList)
+async def bulk_override_column_metadata(
+    table_asset_id: int,
+    requests: list[ColumnMetadataOverrideRequest],
+    db: AsyncSession = Depends(get_async_db_session),
+    sf_service: SnowflakeService = Depends(get_snowflake_service),
+    ai_sql_service: ModularAISQLService = Depends(get_ai_sql_service),
+) -> ColumnMetadataList:
+    """Override column metadata in bulk based on user input."""
+    service = ColumnMetadataService(db, sf_service, ai_sql_service)
+    table_meta, columns = await service.get_cached_metadata(table_asset_id)
+    if not columns:
+        try:
+            table_meta, columns = await service.initialize_metadata(table_asset_id, force=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    column_map = {col.column_name: col for col in columns}
+    for request in requests:
+        target = column_map.get(request.column_name)
+        if not target:
+            continue
+        overrides = dict(target.overrides or {})
+        overrides.update(request.overrides)
+        target.overrides = overrides
+        flag_modified(target, "overrides")
+
+    await db.commit()
+
+    return ColumnMetadataList(
+        table=TableAssetMetadataRead.model_validate(table_meta) if table_meta else None,
+        columns=[ColumnMetadataRead.model_validate(col) for col in columns],
+    )
+
+
 @router.put("/{table_asset_id}/table-override", response_model=ColumnMetadataList)
 async def override_table_metadata(
     table_asset_id: int,

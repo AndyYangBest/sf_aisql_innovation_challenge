@@ -20,6 +20,14 @@ export interface SnowflakeTable {
   COMMENT: string;
 }
 
+export interface SnowflakeDatabase {
+  DATABASE_NAME: string;
+}
+
+export interface SnowflakeSchema {
+  SCHEMA_NAME: string;
+}
+
 // API 方法
 export const tablesApi = {
   // 获取所有表格
@@ -224,6 +232,40 @@ export const tablesApi = {
   },
 
   // Get Snowflake tables from backend
+  async getSnowflakeDatabases(): Promise<ApiResponse<SnowflakeDatabase[]>> {
+    return apiRequest(async () => {
+      const response = await fetch('/api/v1/tables/databases');
+      let result: any = null;
+      try {
+        result = await response.json();
+      } catch {
+        result = null;
+      }
+      if (!response.ok) {
+        throw new Error(result?.detail || result?.error || 'Failed to fetch Snowflake databases');
+      }
+      return result?.data ?? [];
+    });
+  },
+
+  async getSnowflakeSchemas(database: string): Promise<ApiResponse<SnowflakeSchema[]>> {
+    return apiRequest(async () => {
+      const params = new URLSearchParams();
+      params.append('database', database);
+      const response = await fetch(`/api/v1/tables/schemas?${params.toString()}`);
+      let result: any = null;
+      try {
+        result = await response.json();
+      } catch {
+        result = null;
+      }
+      if (!response.ok) {
+        throw new Error(result?.detail || result?.error || 'Failed to fetch Snowflake schemas');
+      }
+      return result?.data ?? [];
+    });
+  },
+
   async getSnowflakeTables(database?: string, schema?: string): Promise<ApiResponse<SnowflakeTable[]>> {
     return apiRequest(async () => {
       const params = new URLSearchParams();

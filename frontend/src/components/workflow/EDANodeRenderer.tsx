@@ -1,9 +1,8 @@
 /**
  * EDA Node Renderer
- * EDA 节点渲染组件 - 支持状态动画和流式日志
  */
 
-import type { ComponentType, ReactNode } from 'react';
+import { useState, type ComponentType, type ReactNode } from 'react';
 import { WorkflowNodeProps, WorkflowNodeRenderer, useNodeRender } from '@flowgram.ai/free-layout-editor';
 import {
   Database,
@@ -16,6 +15,12 @@ import {
   Image,
   Sigma,
   PencilLine,
+  Clock,
+  ListTree,
+  AlertTriangle,
+  GitMerge,
+  ClipboardList,
+  ShieldCheck,
   CheckCircle2,
   XCircle,
   Loader2,
@@ -26,6 +31,16 @@ import {
 import { cn } from '@/lib/utils';
 import { EDANodeType, EDA_NODE_DEFINITIONS } from '@/types/eda-workflow';
 import { NodeStatus } from '@/api/eda';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 // Icon mapping
 const iconMap: Record<string, ComponentType<{ className?: string }>> = {
@@ -39,6 +54,12 @@ const iconMap: Record<string, ComponentType<{ className?: string }>> = {
   Image,
   Sigma,
   PencilLine,
+  Clock,
+  ListTree,
+  AlertTriangle,
+  GitMerge,
+  ClipboardList,
+  ShieldCheck,
 };
 
 // Status styles
@@ -129,6 +150,7 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
   const Icon = iconMap[iconName] ?? Database;
   const isComment = nodeType === 'comment';
   const isExpanded = Boolean(nodeData?.expanded);
+  const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
 
   // Determine if node should be dimmed (not yet executed)
   const isDimmed = status === 'skipped';
@@ -235,6 +257,407 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
             </label>
           </div>
         );
+      case 'numeric_distribution':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Sample Size',
+              <input
+                type="number"
+                min={100}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.sample_size ?? 10000}
+                onChange={(event) => setNodeValue('sample_size', Number(event.target.value))}
+                disabled={readonly}
+              />
+            )}
+            {renderDetailField(
+              'Window Days',
+              <input
+                type="number"
+                min={1}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.window_days ?? ''}
+                onChange={(event) => setNodeValue('window_days', event.target.value ? Number(event.target.value) : null)}
+                disabled={readonly}
+              />
+            )}
+          </div>
+        );
+      case 'numeric_correlations':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Sample Size',
+              <input
+                type="number"
+                min={100}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.sample_size ?? 5000}
+                onChange={(event) => setNodeValue('sample_size', Number(event.target.value))}
+                disabled={readonly}
+              />
+            )}
+            {renderDetailField(
+              'Max Columns',
+              <input
+                type="number"
+                min={2}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.max_columns ?? 12}
+                onChange={(event) => setNodeValue('max_columns', Number(event.target.value))}
+                disabled={readonly}
+              />
+            )}
+          </div>
+        );
+      case 'numeric_periodicity':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Bucket',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.bucket ?? 'day'}
+                onChange={(event) => setNodeValue('bucket', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+            {renderDetailField(
+              'Window Days',
+              <input
+                type="number"
+                min={1}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.window_days ?? 180}
+                onChange={(event) => setNodeValue('window_days', Number(event.target.value))}
+                disabled={readonly}
+              />
+            )}
+          </div>
+        );
+      case 'categorical_groups':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Top N',
+              <input
+                type="number"
+                min={3}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.top_n ?? 10}
+                onChange={(event) => setNodeValue('top_n', Number(event.target.value))}
+                disabled={readonly}
+              />
+            )}
+          </div>
+        );
+      case 'scan_nulls':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {nodeData.null_rate !== undefined && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]">
+                Null rate: {Math.round((nodeData.null_rate ?? 0) * 100)}%
+              </div>
+            )}
+            {renderDetailField(
+              'Sample Size',
+              <input
+                type="number"
+                min={100}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.sample_size ?? 20000}
+                onChange={(event) => setNodeValue('sample_size', Number(event.target.value))}
+                disabled={readonly}
+              />
+            )}
+          </div>
+        );
+      case 'scan_conflicts':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Group By Columns',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.group_by_columns ?? ''}
+                onChange={(event) => setNodeValue('group_by_columns', event.target.value)}
+                disabled={readonly}
+                placeholder="column_a, column_b"
+              />
+            )}
+            {nodeData.conflict_rate !== undefined && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]">
+                Conflict rate: {Math.round((nodeData.conflict_rate ?? 0) * 100)}%
+              </div>
+            )}
+          </div>
+        );
+      case 'plan_data_repairs':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Null Strategy',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.null_strategy ?? ''}
+                onChange={(event) => setNodeValue('null_strategy', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+            {renderDetailField(
+              'Conflict Strategy',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.conflict_strategy ?? ''}
+                onChange={(event) => setNodeValue('conflict_strategy', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+            {renderDetailField(
+              'Row ID Column',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.row_id_column ?? ''}
+                onChange={(event) => setNodeValue('row_id_column', event.target.value)}
+                disabled={readonly}
+                placeholder="primary_key_column"
+              />
+            )}
+            {renderDetailField(
+              'Audit Table',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.audit_table ?? ''}
+                onChange={(event) => setNodeValue('audit_table', event.target.value)}
+                disabled={readonly}
+                placeholder="optional_audit_table"
+              />
+            )}
+            {nodeData.apply_ready === false && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+                Missing row ID column or table reference for apply.
+              </div>
+            )}
+            {nodeData.plan_summary && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]">
+                {nodeData.plan_summary}
+              </div>
+            )}
+          </div>
+        );
+      case 'approval_gate':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {nodeData.plan_summary && (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-800">
+                {nodeData.plan_summary}
+              </div>
+            )}
+            {nodeData.token_estimate && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]">
+                Token estimate: {nodeData.token_estimate.token_count ?? 0}
+              </div>
+            )}
+            <label className="flex items-center gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-300 text-emerald-600 focus:ring-emerald-400"
+                checked={Boolean(nodeData.approved)}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  if (checked && !readonly) {
+                    setApprovalDialogOpen(true);
+                    return;
+                  }
+                  setNodeValue('approved', false);
+                }}
+                disabled={readonly}
+              />
+              Approved to apply fixes
+            </label>
+            {renderDetailField(
+              'Note',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.note ?? ''}
+                onChange={(event) => setNodeValue('note', event.target.value)}
+                disabled={readonly}
+                placeholder="Reason for approval"
+              />
+            )}
+            <AlertDialog open={approvalDialogOpen} onOpenChange={setApprovalDialogOpen}>
+              <AlertDialogContent className="bg-slate-950 text-slate-100 border-slate-800">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Approve Data Repairs</AlertDialogTitle>
+                  <AlertDialogDescription className="text-slate-300">
+                    Review the plan and token estimate before applying changes.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-3 text-sm text-slate-200">
+                  {nodeData.plan_summary && (
+                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      {nodeData.plan_summary}
+                    </div>
+                  )}
+                  {nodeData.apply_ready === false && (
+                    <div className="rounded-md border border-amber-500/60 bg-amber-900/30 px-3 py-2 text-amber-200">
+                      Repairs require a row identifier and a writable table.
+                    </div>
+                  )}
+                  {nodeData.row_id_column && (
+                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      Row ID column: {nodeData.row_id_column}
+                    </div>
+                  )}
+                  {nodeData.plan_id && (
+                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      Plan ID: {nodeData.plan_id}
+                    </div>
+                  )}
+                  {nodeData.snapshot_signature && (
+                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      Snapshot signature: {nodeData.snapshot_signature}
+                    </div>
+                  )}
+                  {Array.isArray(nodeData.plan_steps) && nodeData.plan_steps.length > 0 && (
+                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      {nodeData.plan_steps.map((step: any, index: number) => (
+                        <div key={index} className="text-[12px] text-slate-200">
+                          {step.type === "null_repair" && (
+                            <span>
+                              Null repair ({step.strategy}) - ~{step.estimated_rows ?? 0} rows
+                              {nodeData.snapshot?.total_count
+                                ? ` (${Math.round((step.estimated_rows || 0) / nodeData.snapshot.total_count * 100)}%)`
+                                : ""}
+                            </span>
+                          )}
+                          {step.type === "conflict_repair" && (
+                            <span>
+                              Conflict repair ({step.strategy}) - {step.estimated_groups ?? 0} groups
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {nodeData.sql_previews?.null_repair?.update_sql && (
+                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">
+                        Null Repair SQL
+                      </div>
+                      <pre className="max-h-32 overflow-auto text-[11px] text-slate-200">
+                        {nodeData.sql_previews.null_repair.update_sql}
+                      </pre>
+                    </div>
+                  )}
+                  {nodeData.sql_previews?.conflict_repair?.update_sql && (
+                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">
+                        Conflict Repair SQL
+                      </div>
+                      <pre className="max-h-32 overflow-auto text-[11px] text-slate-200">
+                        {nodeData.sql_previews.conflict_repair.update_sql}
+                      </pre>
+                    </div>
+                  )}
+                  {nodeData.rollback?.strategy && (
+                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      Rollback: {nodeData.rollback.strategy}
+                      {nodeData.rollback.audit_table
+                        ? ` (${nodeData.rollback.audit_table})`
+                        : ""}
+                    </div>
+                  )}
+                  {nodeData.token_estimate && (
+                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      Estimated tokens: {nodeData.token_estimate.token_count ?? 0}
+                    </div>
+                  )}
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogCancel
+                    onClick={() => {
+                      setNodeValue('approved', false);
+                      setApprovalDialogOpen(false);
+                    }}
+                  >
+                    Cancel
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => {
+                      setNodeValue('approved', true);
+                      setApprovalDialogOpen(false);
+                      if (typeof window !== 'undefined' && columnName && nodeData.table_asset_id) {
+                        window.dispatchEvent(
+                          new CustomEvent('column-workflow-approval', {
+                            detail: {
+                              tableAssetId: nodeData.table_asset_id,
+                              columnName,
+                              note: nodeData.note ?? '',
+                              planId: nodeData.plan_id,
+                              planHash: nodeData.plan_hash,
+                              snapshotSignature: nodeData.snapshot_signature,
+                            },
+                          })
+                        );
+                      }
+                    }}
+                  >
+                    Confirm & Run Repairs
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        );
+      case 'apply_data_repairs':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {nodeData.plan_summary && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]">
+                {nodeData.plan_summary}
+              </div>
+            )}
+            {nodeData.apply_skipped_reason && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+                Skipped: {nodeData.apply_skipped_reason}
+              </div>
+            )}
+            {nodeData.token_estimate && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]">
+                Estimated tokens: {nodeData.token_estimate.token_count ?? 0}
+              </div>
+            )}
+            {renderDetailField(
+              'Null Strategy',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.null_strategy ?? ''}
+                onChange={(event) => setNodeValue('null_strategy', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+            {renderDetailField(
+              'Conflict Strategy',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.conflict_strategy ?? ''}
+                onChange={(event) => setNodeValue('conflict_strategy', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+            {renderDetailField(
+              'Approval Key',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.approval_key ?? 'data_fix_approved'}
+                onChange={(event) => setNodeValue('approval_key', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+          </div>
+        );
       case 'generate_insights':
         return (
           <div className="mt-3 space-y-2 text-xs text-slate-700">
@@ -287,6 +710,71 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
               />
               Use semantic type hints
             </label>
+          </div>
+        );
+      case 'generate_visuals':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Chart Type',
+              <select
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.chart_type ?? ''}
+                onChange={(event) => setNodeValue('chart_type', event.target.value)}
+                disabled={readonly}
+              >
+                <option value="">Auto (AI will choose)</option>
+                <option value="line">Line</option>
+                <option value="bar">Bar</option>
+                <option value="area">Area</option>
+                <option value="pie">Pie</option>
+              </select>
+            )}
+            {renderDetailField(
+              'X Column',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="Auto (leave empty for AI selection)"
+                value={nodeData.x_column ?? ''}
+                onChange={(event) => setNodeValue('x_column', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+            {renderDetailField(
+              'Y Column',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="Auto (leave empty for AI selection)"
+                value={nodeData.y_column ?? ''}
+                onChange={(event) => setNodeValue('y_column', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+            <div className="flex items-start gap-1.5 rounded-md bg-indigo-50 p-2 text-[10px] text-indigo-700">
+              <Sparkles className="h-3 w-3 shrink-0 mt-0.5" />
+              <span>
+                Leave fields empty for AI auto-selection. Or specify columns for custom charts.
+              </span>
+            </div>
+          </div>
+        );
+      case 'agent_step':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Tool Name',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.tool_name ?? ''}
+                onChange={(event) => setNodeValue('tool_name', event.target.value)}
+                disabled={readonly}
+              />
+            )}
+            {nodeData.tool_input && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
+                Input: {JSON.stringify(nodeData.tool_input)}
+              </div>
+            )}
           </div>
         );
       case 'generate_documentation':
@@ -423,17 +911,17 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
         </div>
 
         {!isComment && columnName && (
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <span className="inline-flex max-w-full truncate rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-700">
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <span className="inline-flex max-w-full truncate rounded-md border-2 border-indigo-300 bg-indigo-100 px-2.5 py-1 text-xs font-bold uppercase tracking-wide text-indigo-900 shadow-sm">
               {columnName}
             </span>
             {columnType && (
-              <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
+              <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
                 {columnType}
               </span>
             )}
             {typeof columnNullRate === 'number' && (
-              <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-500">
+              <span className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-500">
                 Nulls {(columnNullRate * 100).toFixed(0)}%
               </span>
             )}

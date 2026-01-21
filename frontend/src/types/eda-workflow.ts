@@ -12,10 +12,20 @@ import { WorkflowNodeRegistry } from '@flowgram.ai/free-layout-editor';
 export type EDANodeType =
   | 'data_source'
   | 'profile_table'
+  | 'numeric_distribution'
+  | 'numeric_correlations'
+  | 'numeric_periodicity'
+  | 'categorical_groups'
+  | 'scan_nulls'
+  | 'scan_conflicts'
+  | 'plan_data_repairs'
+  | 'approval_gate'
+  | 'apply_data_repairs'
   | 'generate_insights'
   | 'generate_charts'
   | 'generate_documentation'
   | 'generate_visuals'
+  | 'agent_step'
   | 'summarize_text'
   | 'row_level_extract'
   | 'describe_images'
@@ -101,6 +111,150 @@ export const EDA_NODE_DEFINITIONS: Record<EDANodeType, EDANodeDefinition> = {
       include_recommendations: true,
     },
   },
+  numeric_distribution: {
+    type: 'numeric_distribution',
+    name: 'Numeric Distribution',
+    description: 'Compute percentiles and distribution stats',
+    icon: 'Sigma',
+    category: 'analysis',
+    defaultData: {
+      title: 'Numeric Distribution',
+      sample_size: 10000,
+      window_days: null,
+      time_column: '',
+    },
+  },
+  numeric_correlations: {
+    type: 'numeric_correlations',
+    name: 'Correlation Scan',
+    description: 'Detect positive/negative correlations',
+    icon: 'BarChart3',
+    category: 'analysis',
+    defaultData: {
+      title: 'Correlation Scan',
+      sample_size: 5000,
+      max_columns: 12,
+      window_days: null,
+    },
+  },
+  numeric_periodicity: {
+    type: 'numeric_periodicity',
+    name: 'Periodicity Scan',
+    description: 'Check seasonality against time buckets',
+    icon: 'Clock',
+    category: 'analysis',
+    defaultData: {
+      title: 'Periodicity Scan',
+      bucket: 'day',
+      sample_size: 10000,
+      window_days: 180,
+      time_column: '',
+    },
+  },
+  categorical_groups: {
+    type: 'categorical_groups',
+    name: 'Category Groups',
+    description: 'Head/tail grouping for categorical values',
+    icon: 'ListTree',
+    category: 'analysis',
+    defaultData: {
+      title: 'Category Groups',
+      top_n: 10,
+      sample_size: 20000,
+    },
+  },
+  scan_nulls: {
+    type: 'scan_nulls',
+    name: 'Null Scan',
+    description: 'Measure null counts and rates',
+    icon: 'AlertTriangle',
+    category: 'analysis',
+    defaultData: {
+      title: 'Null Scan',
+      sample_size: 20000,
+      window_days: null,
+      time_column: '',
+    },
+  },
+  scan_conflicts: {
+    type: 'scan_conflicts',
+    name: 'Conflict Scan',
+    description: 'Detect conflicting values within groups',
+    icon: 'GitMerge',
+    category: 'analysis',
+    defaultData: {
+      title: 'Conflict Scan',
+      group_by_columns: '',
+      sample_size: 20000,
+      window_days: null,
+      time_column: '',
+    },
+  },
+  plan_data_repairs: {
+    type: 'plan_data_repairs',
+    name: 'Repair Plan',
+    description: 'Plan null/conflict fixes',
+    icon: 'ClipboardList',
+    category: 'analysis',
+    defaultData: {
+      title: 'Repair Plan',
+      null_strategy: '',
+      conflict_strategy: '',
+      plan_id: '',
+      plan_hash: '',
+      snapshot_signature: '',
+      plan_steps: [],
+      sql_previews: {},
+      rollback: {},
+      row_id_column: '',
+      audit_table: '',
+      apply_ready: false,
+    },
+  },
+  approval_gate: {
+    type: 'approval_gate',
+    name: 'Approval Gate',
+    description: 'Require user approval before applying fixes',
+    icon: 'ShieldCheck',
+    category: 'output',
+    defaultData: {
+      title: 'Approval Gate',
+      approved: false,
+      approval_key: 'data_fix_approved',
+      note: '',
+      plan_id: '',
+      plan_hash: '',
+      snapshot_signature: '',
+      plan_steps: [],
+      sql_previews: {},
+      rollback: {},
+      row_id_column: '',
+      audit_table: '',
+      apply_ready: false,
+    },
+  },
+  apply_data_repairs: {
+    type: 'apply_data_repairs',
+    name: 'Apply Repairs',
+    description: 'Apply approved null/conflict fixes',
+    icon: 'ShieldCheck',
+    category: 'output',
+    defaultData: {
+      title: 'Apply Repairs',
+      null_strategy: '',
+      conflict_strategy: '',
+      approval_key: 'data_fix_approved',
+      plan_id: '',
+      plan_hash: '',
+      snapshot_signature: '',
+      plan_steps: [],
+      sql_previews: {},
+      rollback: {},
+      row_id_column: '',
+      audit_table: '',
+      apply_ready: false,
+    },
+  },
   generate_visuals: {
     type: 'generate_visuals',
     name: 'Generate Visuals',
@@ -109,7 +263,21 @@ export const EDA_NODE_DEFINITIONS: Record<EDANodeType, EDANodeDefinition> = {
     category: 'analysis',
     defaultData: {
       title: 'Generate Visuals',
-      chart_count: 2,
+      chart_type: '',
+      x_column: '',
+      y_column: '',
+    },
+  },
+  agent_step: {
+    type: 'agent_step',
+    name: 'Agent Step',
+    description: 'Strands agent tool call',
+    icon: 'Sparkles',
+    category: 'analysis',
+    defaultData: {
+      title: 'Agent Step',
+      tool_name: '',
+      tool_input: {},
     },
   },
   summarize_text: {

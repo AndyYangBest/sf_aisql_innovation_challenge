@@ -83,6 +83,23 @@ export const columnMetadataApi = {
     });
   },
 
+  async bulkOverride(
+    tableAssetId: number,
+    overrides: Array<{ column_name: string; overrides: Record<string, any> }>,
+  ): Promise<ApiResponse<ColumnMetadataListResponse>> {
+    return apiRequest(async () => {
+      const response = await fetch(`/api/v1/column-metadata/${tableAssetId}/bulk-override`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(overrides),
+      });
+      if (!response.ok) {
+        throw new Error('Failed to override column metadata');
+      }
+      return await response.json();
+    });
+  },
+
   async overrideTable(tableAssetId: number, overrides: Record<string, any>): Promise<ApiResponse<ColumnMetadataListResponse>> {
     return apiRequest(async () => {
       const response = await fetch(`/api/v1/column-metadata/${tableAssetId}/table-override`, {

@@ -62,9 +62,23 @@ class SnowflakeConnection:
         conn = self.get_connection()
         # Disable TIMESTAMP_TYPE_MAPPING to return timestamps as strings
         cursor = conn.cursor()
-        cursor.execute("ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_NTZ'")
-        cursor.execute("ALTER SESSION SET TIMESTAMP_OUTPUT_FORMAT = 'AUTO'")
-        cursor.execute("ALTER SESSION SET ERROR_ON_NONDETERMINISTIC_MERGE = FALSE")
+        try:
+            cursor.execute("ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_NTZ'")
+        except ProgrammingError:
+            pass
+        try:
+            cursor.execute("ALTER SESSION SET TIMESTAMP_OUTPUT_FORMAT = 'AUTO'")
+        except ProgrammingError:
+            try:
+                cursor.execute(
+                    "ALTER SESSION SET TIMESTAMP_OUTPUT_FORMAT = 'YYYY-MM-DD\"T\"HH24:MI:SS.FF3'"
+                )
+            except ProgrammingError:
+                pass
+        try:
+            cursor.execute("ALTER SESSION SET ERROR_ON_NONDETERMINISTIC_MERGE = FALSE")
+        except ProgrammingError:
+            pass
         try:
             cursor.execute("ALTER SESSION SET ERROR_ON_NONDETERMINISTIC_TIME = FALSE")
         except ProgrammingError:

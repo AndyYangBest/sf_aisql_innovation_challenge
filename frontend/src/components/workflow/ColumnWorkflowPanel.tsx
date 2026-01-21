@@ -8,8 +8,8 @@ import {
   columnWorkflowsApi,
   ColumnWorkflowEstimate,
 } from "@/api/columnWorkflows";
-import { EDAWorkflowEditor } from "@/components/workflow/EDAWorkflowEditor";
 import { WorkflowLogPanel } from "@/components/workflow/WorkflowLogPanel";
+import { EDAWorkflowEditor } from "@/components/workflow/EDAWorkflowEditor";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -57,7 +57,6 @@ type WorkflowGraphPayload = {
 const COLUMN_NODE_WIDTH = 240;
 const WORKFLOW_COLUMNS = 2;
 const WORKFLOW_SPAN_X = COLUMN_NODE_WIDTH * 4 + 240;
-const FEATURE_LANE_OFFSET = 170;
 const WORKFLOW_SPAN_Y = 360;
 
 function normalizeId(value: string) {
@@ -80,12 +79,12 @@ function getNullRateSortValue(column: ColumnMetadataRecord): number {
 function collectOverrides(nodes: WorkflowNode[]) {
   const overrides: Record<string, any> = {};
   const hintNode = nodes.find((node) => node.type === "column_hint");
-  if (hintNode) {
-    overrides.hint = hintNode.data?.hint ?? "";
+  if (hintNode && hintNode.data?.hint) {
+    overrides.hint = hintNode.data.hint;
   }
   const rowLevelNode = nodes.find((node) => node.type === "row_level_extract");
-  if (rowLevelNode) {
-    overrides.row_level_instruction = rowLevelNode.data?.instruction ?? "";
+  if (rowLevelNode && rowLevelNode.data?.instruction) {
+    overrides.row_level_instruction = rowLevelNode.data.instruction;
     if (rowLevelNode.data?.output_column) {
       overrides.row_level_output_column = rowLevelNode.data.output_column;
     }
@@ -111,6 +110,125 @@ function collectOverrides(nodes: WorkflowNode[]) {
       overrides.image_model = imageNode.data.image_model;
     }
   }
+  const conflictNode = nodes.find((node) => node.type === "scan_conflicts");
+  if (conflictNode && conflictNode.data?.group_by_columns) {
+    overrides.conflict_group_columns = conflictNode.data.group_by_columns;
+  }
+  const nullsNode = nodes.find((node) => node.type === "scan_nulls");
+  if (nullsNode) {
+    if (nullsNode.data?.sample_size !== undefined && nullsNode.data?.sample_size !== null) {
+      overrides.scan_nulls_sample_size = nullsNode.data.sample_size;
+    }
+  }
+  const distributionNode = nodes.find((node) => node.type === "numeric_distribution");
+  if (distributionNode) {
+    if (
+      distributionNode.data?.sample_size !== undefined &&
+      distributionNode.data?.sample_size !== null
+    ) {
+      overrides.numeric_distribution_sample_size = distributionNode.data.sample_size;
+    }
+    if (
+      distributionNode.data?.window_days !== undefined &&
+      distributionNode.data?.window_days !== null
+    ) {
+      overrides.numeric_distribution_window_days = distributionNode.data.window_days;
+    }
+  }
+  const correlationsNode = nodes.find((node) => node.type === "numeric_correlations");
+  if (correlationsNode) {
+    if (
+      correlationsNode.data?.sample_size !== undefined &&
+      correlationsNode.data?.sample_size !== null
+    ) {
+      overrides.numeric_correlations_sample_size = correlationsNode.data.sample_size;
+    }
+    if (
+      correlationsNode.data?.max_columns !== undefined &&
+      correlationsNode.data?.max_columns !== null
+    ) {
+      overrides.numeric_correlations_max_columns = correlationsNode.data.max_columns;
+    }
+  }
+  const periodicityNode = nodes.find((node) => node.type === "numeric_periodicity");
+  if (periodicityNode) {
+    if (periodicityNode.data?.bucket) {
+      overrides.numeric_periodicity_bucket = periodicityNode.data.bucket;
+    }
+    if (
+      periodicityNode.data?.window_days !== undefined &&
+      periodicityNode.data?.window_days !== null
+    ) {
+      overrides.numeric_periodicity_window_days = periodicityNode.data.window_days;
+    }
+  }
+  const categoricalNode = nodes.find((node) => node.type === "categorical_groups");
+  if (categoricalNode) {
+    if (categoricalNode.data?.top_n !== undefined && categoricalNode.data?.top_n !== null) {
+      overrides.categorical_groups_top_n = categoricalNode.data.top_n;
+    }
+  }
+  const visualsNode = nodes.find((node) => node.type === "generate_visuals");
+  if (visualsNode) {
+    if (visualsNode.data?.chart_type) {
+      overrides.visual_chart_type = visualsNode.data.chart_type;
+    }
+    if (visualsNode.data?.x_column) {
+      overrides.visual_x_column = visualsNode.data.x_column;
+    }
+    if (visualsNode.data?.y_column) {
+      overrides.visual_y_column = visualsNode.data.y_column;
+    }
+  }
+  const insightsNode = nodes.find((node) => node.type === "generate_insights");
+  if (insightsNode) {
+    if (insightsNode.data?.focus) {
+      overrides.insights_focus = insightsNode.data.focus;
+    }
+    if (insightsNode.data?.user_notes) {
+      overrides.insights_user_notes = insightsNode.data.user_notes;
+    }
+  }
+  const planNode = nodes.find((node) => node.type === "plan_data_repairs");
+  if (planNode) {
+    if (planNode.data?.null_strategy) {
+      overrides.null_strategy = planNode.data.null_strategy;
+    }
+    if (planNode.data?.conflict_strategy) {
+      overrides.conflict_strategy = planNode.data.conflict_strategy;
+    }
+    if (planNode.data?.row_id_column) {
+      overrides.row_id_column = planNode.data.row_id_column;
+    }
+    if (planNode.data?.audit_table) {
+      overrides.repair_audit_table = planNode.data.audit_table;
+    }
+  }
+  const approvalNode = nodes.find((node) => node.type === "approval_gate");
+  if (approvalNode) {
+    overrides.data_fix_approved = Boolean(approvalNode.data?.approved);
+    if (approvalNode.data?.note) {
+      overrides.data_fix_note = approvalNode.data.note;
+    }
+    if (approvalNode.data?.plan_id) {
+      overrides.data_fix_plan_id = approvalNode.data.plan_id;
+    }
+    if (approvalNode.data?.plan_hash) {
+      overrides.data_fix_plan_hash = approvalNode.data.plan_hash;
+    }
+    if (approvalNode.data?.snapshot_signature) {
+      overrides.data_fix_snapshot_signature = approvalNode.data.snapshot_signature;
+    }
+  }
+  const applyNode = nodes.find((node) => node.type === "apply_data_repairs");
+  if (applyNode) {
+    if (!overrides.null_strategy && applyNode.data?.null_strategy) {
+      overrides.null_strategy = applyNode.data.null_strategy;
+    }
+    if (!overrides.conflict_strategy && applyNode.data?.conflict_strategy) {
+      overrides.conflict_strategy = applyNode.data.conflict_strategy;
+    }
+  }
   return overrides;
 }
 
@@ -123,263 +241,106 @@ function getWorkflowBasePosition(index: number) {
   };
 }
 
-function coercePosition(position?: { x?: number; y?: number }) {
-  return {
-    x: typeof position?.x === "number" ? position.x : 0,
-    y: typeof position?.y === "number" ? position.y : 0,
-  };
+const TOOL_CALL_NODE_MAP: Record<string, EDANodeType> = {
+  analyze_numeric_distribution: "numeric_distribution",
+  analyze_numeric_correlations: "numeric_correlations",
+  analyze_numeric_periodicity: "numeric_periodicity",
+  analyze_categorical_groups: "categorical_groups",
+  scan_nulls: "scan_nulls",
+  scan_conflicts: "scan_conflicts",
+  plan_data_repairs: "plan_data_repairs",
+  require_user_approval: "approval_gate",
+  apply_data_repairs: "apply_data_repairs",
+  generate_numeric_visuals: "generate_visuals",
+  generate_categorical_visuals: "generate_visuals",
+  generate_numeric_insights: "generate_insights",
+  generate_categorical_insights: "generate_insights",
+  summarize_text_column: "summarize_text",
+  row_level_extract_text: "row_level_extract",
+  describe_image_column: "describe_images",
+  basic_column_stats: "basic_stats",
+};
+
+function mapToolStatus(status?: string | null): WorkflowNode["data"]["status"] {
+  if (status === "success") return "success";
+  if (status === "error") return "error";
+  if (status === "running") return "running";
+  return "idle";
 }
 
-function sanitizeWorkflowGraph(
-  graph: WorkflowGraphPayload
-): WorkflowGraphPayload {
-  return {
-    nodes: graph.nodes.map((node) => ({
-      ...node,
-      position: coercePosition(node.position),
-      data: {
-        ...node.data,
-        status: node.data?.status ?? "idle",
-      },
-    })),
-    edges: graph.edges.map((edge) => ({
-      sourceNodeID: edge.sourceNodeID,
-      targetNodeID: edge.targetNodeID,
-    })),
-  };
-}
-
-function buildColumnWorkflowGraph(
+function buildGraphFromToolCalls(
+  toolCalls: Array<Record<string, any>>,
   column: ColumnMetadataRecord,
   tableAssetId: number,
   tableName: string,
-  layoutIndex: number,
-  temporalColumns: string[],
-  numericColumns: string[]
-) {
+  layoutIndex: number
+): WorkflowGraphPayload {
   const nodes: WorkflowNode[] = [];
   const edges: WorkflowEdge[] = [];
   const colId = normalizeId(column.column_name);
   const basePosition = getWorkflowBasePosition(layoutIndex);
-  const columnNullRate = getNullRate(column);
-  let analysisX = basePosition.x;
-  let featureX = basePosition.x;
-  const analysisY = basePosition.y;
-  const featureY = basePosition.y + FEATURE_LANE_OFFSET;
+  const sortedCalls = [...toolCalls].sort((a, b) => {
+    const aSeq = typeof a.sequence === "number" ? a.sequence : 0;
+    const bSeq = typeof b.sequence === "number" ? b.sequence : 0;
+    if (aSeq !== bSeq) return aSeq - bSeq;
+    return String(a.timestamp || "").localeCompare(String(b.timestamp || ""));
+  });
 
-  const addNode = (
-    type: EDANodeType,
-    data?: Record<string, any>,
-    lane: "analysis" | "feature" = "analysis",
-    idSuffix?: string
-  ) => {
-    const definition = EDA_NODE_DEFINITIONS[type];
-    const suffix = idSuffix ? `_${idSuffix}` : "";
-    const nodeId = `${type}_${colId}${suffix}`;
-    const positionX = lane === "feature" ? featureX : analysisX;
-    const positionY = lane === "feature" ? featureY : analysisY;
+  let x = basePosition.x;
+  const y = basePosition.y;
+  let prevId: string | null = null;
+  sortedCalls.forEach((call, index) => {
+    const toolName = String(call.tool_name || "");
+    if (!toolName) return;
+    let nodeType = TOOL_CALL_NODE_MAP[toolName];
+    if (!nodeType && toolName.endsWith("_agent")) {
+      nodeType = "agent_step";
+    }
+    if (!nodeType) return;
+    const definition = EDA_NODE_DEFINITIONS[nodeType];
+    const nodeId = `${nodeType}_${colId}_${call.sequence ?? index}`;
+    const title = nodeType === "agent_step" ? toolName : definition?.name || nodeType;
+    const data = {
+      ...definition?.defaultData,
+      ...(call.input ?? {}),
+      title,
+      status: mapToolStatus(call.status),
+      column_name: column.column_name,
+      column_type: column.semantic_type,
+      column_null_rate: getNullRate(column),
+      table_asset_id: tableAssetId,
+      tool_name: toolName,
+      tool_input: call.input ?? {},
+    };
     nodes.push({
       id: nodeId,
-      type,
-      position: { x: positionX, y: positionY },
+      type: nodeType,
+      position: { x, y },
+      data,
+    });
+    if (prevId) {
+      edges.push({ sourceNodeID: prevId, targetNodeID: nodeId });
+    }
+    prevId = nodeId;
+    x += COLUMN_NODE_WIDTH + 80;
+  });
+
+  if (nodes.length === 0) {
+    nodes.push({
+      id: `data_source_${colId}`,
+      type: "data_source",
+      position: { x: basePosition.x, y: basePosition.y },
       data: {
-        ...definition?.defaultData,
-        ...(data || {}),
-        title: data?.title || definition?.name || type,
+        ...EDA_NODE_DEFINITIONS.data_source.defaultData,
+        title: "Data Source",
         status: "idle",
-        column_type: column.semantic_type,
-        column_null_rate: columnNullRate ?? undefined,
+        table_name: tableName,
         column_name: column.column_name,
+        column_type: column.semantic_type,
+        column_null_rate: getNullRate(column),
         table_asset_id: tableAssetId,
       },
     });
-    if (lane === "feature") {
-      featureX += COLUMN_NODE_WIDTH;
-    } else {
-      analysisX += COLUMN_NODE_WIDTH;
-    }
-    return nodeId;
-  };
-
-  const dataNodeId = addNode("data_source", {
-    table_asset_id: tableAssetId,
-    table_name: tableName,
-    column_name: column.column_name,
-  });
-
-  let previousId = dataNodeId;
-
-  if (column.confidence < 0.6) {
-    const hintNodeId = addNode("column_hint", {
-      hint: column.overrides?.hint || "",
-    });
-    edges.push({ sourceNodeID: previousId, targetNodeID: hintNodeId });
-    previousId = hintNodeId;
-  }
-
-  const semantic = column.semantic_type;
-  if (semantic === "numeric" || semantic === "temporal") {
-    const plannedVisuals: Array<{
-      id: string;
-      title: string;
-      chartType: string;
-      xColumn: string;
-      yColumn: string;
-    }> = [];
-
-    if (semantic === "numeric") {
-      plannedVisuals.push({
-        id: "distribution",
-        title: `Histogram: ${column.column_name}`,
-        chartType: "bar",
-        xColumn: column.column_name,
-        yColumn: "count",
-      });
-      temporalColumns
-        .filter((name) => name !== column.column_name)
-        .forEach((name) => {
-          plannedVisuals.push({
-            id: `time_${normalizeId(name)}`,
-            title: `Line: ${column.column_name} by ${name}`,
-            chartType: "line",
-            xColumn: name,
-            yColumn: column.column_name,
-          });
-        });
-    } else {
-      plannedVisuals.push({
-        id: "time",
-        title: `Line: ${column.column_name} over time`,
-        chartType: "line",
-        xColumn: column.column_name,
-        yColumn: "count",
-      });
-    }
-
-    const visualNodeIds = plannedVisuals.map((visual, index) =>
-      addNode(
-        "generate_visuals",
-        {
-          title: visual.title,
-          chart_type: visual.chartType,
-          x_column: visual.xColumn,
-          y_column: visual.yColumn,
-          chart_count: 1,
-        },
-        "analysis",
-        index === 0 ? undefined : visual.id
-      )
-    );
-    visualNodeIds.forEach((nodeId) => {
-      edges.push({ sourceNodeID: previousId, targetNodeID: nodeId });
-    });
-    const insightsNode = addNode("generate_insights", { focus: "column" });
-    visualNodeIds.forEach((nodeId) => {
-      edges.push({ sourceNodeID: nodeId, targetNodeID: insightsNode });
-    });
-  } else if (semantic === "categorical") {
-    const plannedVisuals: Array<{
-      id: string;
-      title: string;
-      chartType: string;
-      xColumn: string;
-      yColumn: string;
-    }> = [
-      {
-        id: "bar",
-        title: `Bar: ${column.column_name} distribution`,
-        chartType: "bar",
-        xColumn: column.column_name,
-        yColumn: "count",
-      },
-    ];
-    const uniqueCount = (column.metadata as any)?.unique_count;
-    if (typeof uniqueCount === "number" && uniqueCount <= 6) {
-      plannedVisuals.push({
-        id: "pie",
-        title: `Pie: ${column.column_name} share`,
-        chartType: "pie",
-        xColumn: column.column_name,
-        yColumn: "count",
-      });
-    }
-    temporalColumns
-      .filter((name) => name !== column.column_name)
-      .forEach((name) => {
-        plannedVisuals.push({
-          id: `time_${normalizeId(name)}`,
-          title: `Line: ${column.column_name} count by ${name}`,
-          chartType: "line",
-          xColumn: name,
-          yColumn: "count",
-        });
-      });
-
-    numericColumns
-      .filter((name) => name !== column.column_name)
-      .slice(0, 2)
-      .forEach((name) => {
-        plannedVisuals.push({
-          id: `metric_${normalizeId(name)}`,
-          title: `Bar: Avg ${name} by ${column.column_name}`,
-          chartType: "bar",
-          xColumn: column.column_name,
-          yColumn: name,
-        });
-      });
-
-    const visualNodeIds = plannedVisuals.map((visual, index) =>
-      addNode(
-        "generate_visuals",
-        {
-          title: visual.title,
-          chart_type: visual.chartType,
-          x_column: visual.xColumn,
-          y_column: visual.yColumn,
-          chart_count: 1,
-        },
-        "analysis",
-        index === 0 ? undefined : visual.id
-      )
-    );
-    visualNodeIds.forEach((nodeId) => {
-      edges.push({ sourceNodeID: previousId, targetNodeID: nodeId });
-    });
-    const insightsNode = addNode("generate_insights", { focus: "column" });
-    visualNodeIds.forEach((nodeId) => {
-      edges.push({ sourceNodeID: nodeId, targetNodeID: insightsNode });
-    });
-  } else if (semantic === "text") {
-    const summaryNode = addNode("summarize_text");
-    edges.push({ sourceNodeID: previousId, targetNodeID: summaryNode });
-    if (column.overrides?.row_level_instruction) {
-      const extractNode = addNode(
-        "row_level_extract",
-        {
-          instruction: column.overrides?.row_level_instruction,
-          output_column: column.overrides?.row_level_output_column,
-          response_schema: column.overrides?.row_level_schema,
-        },
-        "feature"
-      );
-      edges.push({ sourceNodeID: summaryNode, targetNodeID: extractNode });
-    }
-  } else if (semantic === "image") {
-    const imageNode = addNode(
-      "describe_images",
-      {
-        output_column: column.overrides?.image_output_column,
-        image_stage: column.overrides?.image_stage,
-        image_path_prefix: column.overrides?.image_path_prefix,
-        image_path_suffix: column.overrides?.image_path_suffix,
-        image_model: column.overrides?.image_model,
-      },
-      "feature"
-    );
-    edges.push({ sourceNodeID: previousId, targetNodeID: imageNode });
-  } else {
-    const statsNode = addNode("basic_stats");
-    edges.push({ sourceNodeID: previousId, targetNodeID: statsNode });
   }
 
   return { nodes, edges };
@@ -389,94 +350,280 @@ function hydrateColumnWorkflowGraph(
   column: ColumnMetadataRecord,
   tableAssetId: number,
   tableName: string,
-  layoutIndex: number,
-  temporalColumns: string[],
-  numericColumns: string[]
+  layoutIndex: number
 ): WorkflowGraphPayload {
-  const baseGraph = buildColumnWorkflowGraph(
+  const toolCalls =
+    ((column.metadata as any)?.workflow?.tool_calls as Array<Record<string, any>>) ??
+    [];
+  const graph = buildGraphFromToolCalls(
+    toolCalls,
     column,
     tableAssetId,
     tableName,
-    layoutIndex,
-    temporalColumns,
-    numericColumns
+    layoutIndex
   );
-  const storedGraph = (column.overrides as any)?.workflow_graph as
-    | WorkflowGraphPayload
-    | undefined;
-  if (
-    !storedGraph ||
-    !Array.isArray(storedGraph.nodes) ||
-    !Array.isArray(storedGraph.edges)
-  ) {
-    return baseGraph;
+  const basePosition = getWorkflowBasePosition(layoutIndex);
+  return ensureApprovalGate(graph, column, basePosition);
+}
+
+function ensureApprovalGate(
+  graph: WorkflowGraphPayload,
+  column: ColumnMetadataRecord,
+  basePosition?: { x: number; y: number }
+): WorkflowGraphPayload {
+  const analysis = column.metadata?.analysis ?? {};
+  const repairPlan = analysis.repair_plan ?? {};
+  const nullRate =
+    analysis.nulls?.null_rate ??
+    column.metadata?.null_rate ??
+    column.metadata?.analysis?.null_rate;
+  const conflictRate =
+    analysis.conflicts?.conflict_rate ??
+    column.metadata?.analysis?.conflicts?.conflict_rate ??
+    column.metadata?.conflicts?.conflict_rate;
+  const hasIssues =
+    (Array.isArray(repairPlan.steps) && repairPlan.steps.length > 0) ||
+    (typeof nullRate === "number" && nullRate > 0) ||
+    (typeof conflictRate === "number" && conflictRate > 0);
+
+  if (!hasIssues) {
+    return graph;
   }
 
-  const baseById = new Map(baseGraph.nodes.map((node) => [node.id, node]));
-  const storedById = new Map(storedGraph.nodes.map((node) => [node.id, node]));
-  const mergedNodes: WorkflowNode[] = baseGraph.nodes.map((node) => {
-    const storedNode = storedById.get(node.id);
-    const definition = EDA_NODE_DEFINITIONS[node.type];
-    const data = {
-      ...definition?.defaultData,
-      ...node.data,
-      ...(storedNode?.data ?? {}),
-      title:
-        storedNode?.data?.title ||
-        node.data.title ||
-        definition?.name ||
-        node.type,
-      status: storedNode?.data?.status || node.data.status || "idle",
+  const hasPlan = graph.nodes.some((node) => node.type === "plan_data_repairs");
+  const hasApproval = graph.nodes.some((node) => node.type === "approval_gate");
+  const planNode = graph.nodes.find((node) => node.type === "plan_data_repairs");
+  const maxX = graph.nodes.reduce(
+    (acc, node) => Math.max(acc, node.position.x),
+    basePosition?.x ?? 0
+  );
+  const maxY = graph.nodes.reduce(
+    (acc, node) => Math.max(acc, node.position.y),
+    basePosition?.y ?? 0
+  );
+  const colId = normalizeId(column.column_name);
+  const edges = [...graph.edges];
+  const nextNodes = [...graph.nodes];
+  let planNodeId = planNode?.id;
+  if (!hasPlan) {
+    planNodeId = `plan_data_repairs_${colId}`;
+    nextNodes.push({
+      id: planNodeId,
+      type: "plan_data_repairs",
+      position: { x: maxX + COLUMN_NODE_WIDTH, y: maxY },
+      data: {
+        ...EDA_NODE_DEFINITIONS.plan_data_repairs.defaultData,
+        title: "Repair Plan",
+        status: "idle",
+        column_name: column.column_name,
+        column_type: column.semantic_type,
+        column_null_rate: getNullRate(column),
+        table_asset_id: column.table_asset_id,
+      },
+    });
+
+    const anchorNode =
+      graph.nodes.find((node) => node.type === "scan_conflicts") ||
+      graph.nodes.find((node) => node.type === "scan_nulls") ||
+      graph.nodes[graph.nodes.length - 1];
+    if (anchorNode) {
+      edges.push({ sourceNodeID: anchorNode.id, targetNodeID: planNodeId });
+    }
+  }
+
+  const approvalNode: WorkflowNode = {
+    id: `approval_gate_${colId}`,
+    type: "approval_gate",
+    position: { x: maxX + COLUMN_NODE_WIDTH * 2, y: maxY },
+    data: {
+      ...EDA_NODE_DEFINITIONS.approval_gate.defaultData,
+      title: "Approval Gate",
+      status: "idle",
+      approved: Boolean(repairPlan.approved ?? column.overrides?.data_fix_approved),
       column_name: column.column_name,
       column_type: column.semantic_type,
       column_null_rate: getNullRate(column),
-      table_asset_id: tableAssetId,
-      ...(node.type === "data_source"
-        ? {
-            table_name: tableName,
-            column_name: column.column_name,
-            table_asset_id: tableAssetId,
-          }
-        : {}),
-    };
-    return {
-      ...node,
-      position: storedNode?.position ?? node.position,
-      data,
-    };
-  });
+      table_asset_id: column.table_asset_id,
+    },
+  };
+  if (!hasApproval) {
+    if (planNodeId) {
+      edges.push({ sourceNodeID: planNodeId, targetNodeID: approvalNode.id });
+    }
+    nextNodes.push(approvalNode);
+  }
 
-  const extraNodes: WorkflowNode[] = storedGraph.nodes
-    .filter((node) => !baseById.has(node.id))
-    .map((node) => {
-      const definition = EDA_NODE_DEFINITIONS[node.type as EDANodeType];
-      return {
-        id: node.id,
-        type: node.type as EDANodeType,
-        position: coercePosition(node.position),
-        data: {
-          ...definition?.defaultData,
-          ...node.data,
-          title: node.data?.title || definition?.name || node.type,
-          status: node.data?.status || "idle",
-          column_name: column.column_name,
-          column_type: column.semantic_type,
-          column_null_rate: getNullRate(column),
-          table_asset_id: tableAssetId,
-        },
-      };
-    });
-
-  const nodeIds = new Set(
-    [...mergedNodes, ...extraNodes].map((node) => node.id)
-  );
-  const mergedEdges = storedGraph.edges.filter(
-    (edge) => nodeIds.has(edge.sourceNodeID) && nodeIds.has(edge.targetNodeID)
-  );
+  const hasApply = nextNodes.some((node) => node.type === "apply_data_repairs");
+  if (!hasApply) {
+    const applyNode: WorkflowNode = {
+      id: `apply_data_repairs_${colId}`,
+      type: "apply_data_repairs",
+      position: { x: maxX + COLUMN_NODE_WIDTH * 3, y: maxY },
+      data: {
+        ...EDA_NODE_DEFINITIONS.apply_data_repairs.defaultData,
+        title: "Apply Repairs",
+        status: "idle",
+        column_name: column.column_name,
+        column_type: column.semantic_type,
+        column_null_rate: getNullRate(column),
+        table_asset_id: column.table_asset_id,
+      },
+    };
+    const approvalId = hasApproval
+      ? nextNodes.find((node) => node.type === "approval_gate")?.id
+      : approvalNode.id;
+    if (approvalId) {
+      edges.push({ sourceNodeID: approvalId, targetNodeID: applyNode.id });
+    }
+    nextNodes.push(applyNode);
+  }
 
   return {
-    nodes: [...mergedNodes, ...extraNodes],
-    edges: mergedEdges.length > 0 ? mergedEdges : baseGraph.edges,
+    nodes: nextNodes,
+    edges,
+  };
+}
+
+function applyWorkflowMetadataToNodes(
+  column: ColumnMetadataRecord,
+  nodes: WorkflowNode[]
+): WorkflowNode[] {
+  const workflowMeta = column.metadata?.workflow ?? {};
+  const taskResults = workflowMeta.task_results ?? {};
+  const analysis = column.metadata?.analysis ?? {};
+  const repairPlan = analysis.repair_plan ?? {};
+  const repairResults = analysis.repair_results ?? [];
+  const planSteps = Array.isArray(repairPlan.steps) ? repairPlan.steps : [];
+  const planSnapshot = repairPlan.snapshot ?? {};
+  const sqlPreviews = repairPlan.sql_previews ?? {};
+  const rollback = repairPlan.rollback ?? {};
+  const nullRate = analysis.nulls?.null_rate;
+  const conflictRate = analysis.conflicts?.conflict_rate;
+
+  return nodes.map((node) => {
+    const taskResult = taskResults[node.id];
+    const taskStatus = taskResult?.status;
+    let status = node.data?.status ?? "idle";
+    if (taskStatus === "completed") {
+      status = "success";
+    } else if (taskStatus === "failed" || taskStatus === "error") {
+      status = "error";
+    } else if (taskStatus === "running") {
+      status = "running";
+    }
+    const nextData = { ...node.data, status };
+    if (node.type === "scan_nulls" && nullRate !== undefined) {
+      nextData.null_rate = nullRate;
+    }
+    if (node.type === "scan_conflicts" && conflictRate !== undefined) {
+      nextData.conflict_rate = conflictRate;
+    }
+    if (
+      node.type === "plan_data_repairs" ||
+      node.type === "approval_gate" ||
+      node.type === "apply_data_repairs"
+    ) {
+      if (repairPlan.summary) {
+        nextData.plan_summary = repairPlan.summary;
+      }
+      if (repairPlan.token_estimate) {
+        nextData.token_estimate = repairPlan.token_estimate;
+      }
+      if (repairPlan.plan_id) {
+        nextData.plan_id = repairPlan.plan_id;
+      }
+      if (repairPlan.plan_hash) {
+        nextData.plan_hash = repairPlan.plan_hash;
+      }
+      if (planSnapshot?.signature) {
+        nextData.snapshot_signature = planSnapshot.signature;
+      }
+      if (planSnapshot && Object.keys(planSnapshot).length > 0) {
+        nextData.snapshot = planSnapshot;
+      }
+      if (planSteps.length > 0) {
+        nextData.plan_steps = planSteps;
+      }
+      if (Object.keys(sqlPreviews).length > 0) {
+        nextData.sql_previews = sqlPreviews;
+      }
+      if (Object.keys(rollback).length > 0) {
+        nextData.rollback = rollback;
+      }
+      if (repairPlan.row_id_column) {
+        nextData.row_id_column = repairPlan.row_id_column;
+      }
+      if (rollback?.audit_table) {
+        nextData.audit_table = rollback.audit_table;
+      }
+      if (repairPlan.apply_ready !== undefined) {
+        nextData.apply_ready = repairPlan.apply_ready;
+      }
+      if (repairPlan.approval_match !== undefined) {
+        nextData.approval_match = repairPlan.approval_match;
+      }
+      if (repairPlan.apply_skipped_reason) {
+        nextData.apply_skipped_reason = repairPlan.apply_skipped_reason;
+      }
+      const nullStep = planSteps.find((step) => step.type === "null_repair");
+      const conflictStep = planSteps.find((step) => step.type === "conflict_repair");
+      if (nullStep?.strategy) {
+        nextData.null_strategy = nullStep.strategy;
+      }
+      if (conflictStep?.strategy) {
+        nextData.conflict_strategy = conflictStep.strategy;
+      }
+      if (repairPlan.approved !== undefined && node.type === "approval_gate") {
+        nextData.approved = repairPlan.approved;
+        if (repairPlan.approved && status === "idle") {
+          nextData.status = "success";
+        }
+      }
+      if (node.type === "plan_data_repairs" && repairPlan.plan_id) {
+        nextData.status = nextData.status === "idle" ? "success" : nextData.status;
+      }
+    }
+    if (node.type === "apply_data_repairs" && Array.isArray(repairResults)) {
+      if (repairResults.length > 0) {
+        const applied = repairResults.some((item: any) => item.status === "applied");
+        const failed = repairResults.some((item: any) => item.status === "failed");
+        const skipped = repairResults.some((item: any) => item.status === "skipped");
+        const dryRun = repairResults.some((item: any) => item.status === "dry_run");
+        nextData.status = applied
+          ? "success"
+          : failed
+          ? "error"
+          : skipped || dryRun
+          ? "skipped"
+          : status;
+      }
+    }
+    return {
+      ...node,
+      data: nextData,
+    };
+  });
+}
+
+function buildColumnWorkflowState(
+  column: ColumnMetadataRecord,
+  tableAssetId: number,
+  tableName: string,
+  layoutIndex: number,
+  isRunning: boolean
+): ColumnWorkflowState {
+  const graph = hydrateColumnWorkflowGraph(
+    column,
+    tableAssetId,
+    tableName,
+    layoutIndex
+  );
+  const nodes = applyWorkflowMetadataToNodes(column, graph.nodes);
+  return {
+    column,
+    nodes,
+    edges: graph.edges,
+    isRunning,
   };
 }
 
@@ -512,12 +659,7 @@ const ColumnWorkflowPanel = ({
   );
   const selectionSourceRef = useRef<"list" | "canvas" | null>(null);
   const selectionResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const workflowPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
-  const pendingWorkflowPersistRef = useRef<
-    Record<string, WorkflowGraphPayload>
-  >({});
+  const logCursorRef = useRef<Record<string, number>>({});
 
   const appendLog = useCallback(
     (type: WorkflowLogEvent["type"], message: string, data?: any) => {
@@ -526,6 +668,21 @@ const ColumnWorkflowPanel = ({
           ...prev,
           { type, timestamp: new Date().toISOString(), message, data },
         ];
+        return next.slice(-200);
+      });
+    },
+    []
+  );
+
+  const appendWorkflowLogsDelta = useCallback(
+    (columnName: string, events?: WorkflowLogEvent[]) => {
+      if (!events || events.length === 0) return;
+      const prevCount = logCursorRef.current[columnName] || 0;
+      if (events.length <= prevCount) return;
+      const nextBatch = events.slice(prevCount);
+      logCursorRef.current[columnName] = events.length;
+      setLogs((prev) => {
+        const next = [...prev, ...nextBatch];
         return next.slice(-200);
       });
     },
@@ -591,32 +748,6 @@ const ColumnWorkflowPanel = ({
     [appendLog, boardExtras, buildBoardsPayload, tableAssetId]
   );
 
-  const persistWorkflowGraphs = useCallback(async () => {
-    const pending = { ...pendingWorkflowPersistRef.current };
-    pendingWorkflowPersistRef.current = {};
-    const entries = Object.entries(pending);
-    if (entries.length === 0) return;
-
-    const results = await Promise.allSettled(
-      entries.map(async ([columnName, graph]) => {
-        const sanitized = sanitizeWorkflowGraph(graph);
-        await columnMetadataApi.override(tableAssetId, columnName, {
-          workflow_graph: sanitized,
-        });
-      })
-    );
-
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        const [columnName] = entries[index];
-        appendLog("error", "Failed to save workflow layout", {
-          column: columnName,
-          error: result.reason,
-        });
-      }
-    });
-  }, [appendLog, tableAssetId]);
-
   const loadMetadata = useCallback(async () => {
     setLoading(true);
     try {
@@ -631,63 +762,16 @@ const ColumnWorkflowPanel = ({
       }
 
       const columns = data.columns;
-      const temporalColumns = columns
-        .filter((column) => column.semantic_type === "temporal")
-        .map((column) => column.column_name);
-      const numericColumns = columns
-        .filter((column) => column.semantic_type === "numeric")
-        .sort((a, b) => {
-          const aRate = getNullRateSortValue(a);
-          const bRate = getNullRateSortValue(b);
-          if (aRate !== bRate) {
-            return aRate - bRate;
-          }
-          return a.column_name.localeCompare(b.column_name);
-        })
-        .map((column) => column.column_name);
       setWorkflows((prev) => {
         const nextWorkflows: Record<string, ColumnWorkflowState> = {};
         columns.forEach((column, index) => {
-          const existing = prev[column.column_name];
-          if (existing) {
-            const nodes = existing.nodes.map((node) => ({
-              ...node,
-              data: {
-                ...node.data,
-                column_name: column.column_name,
-                table_asset_id: tableAssetId,
-                column_null_rate: getNullRate(column),
-                ...(node.type === "data_source"
-                  ? {
-                      table_name: tableName,
-                      column_name: column.column_name,
-                      table_asset_id: tableAssetId,
-                    }
-                  : {}),
-              },
-            }));
-            nextWorkflows[column.column_name] = {
-              ...existing,
-              column,
-              nodes,
-              edges: existing.edges,
-            };
-            return;
-          }
-          const graph = hydrateColumnWorkflowGraph(
+          nextWorkflows[column.column_name] = buildColumnWorkflowState(
             column,
             tableAssetId,
             tableName,
             index,
-            temporalColumns,
-            numericColumns
+            prev[column.column_name]?.isRunning ?? false
           );
-          nextWorkflows[column.column_name] = {
-            column,
-            nodes: graph.nodes,
-            edges: graph.edges,
-            isRunning: false,
-          };
         });
         return nextWorkflows;
       });
@@ -872,6 +956,17 @@ const ColumnWorkflowPanel = ({
         }, 0);
         return updatedBoards;
       });
+
+      columns.forEach((column) => {
+        const columnLogs = (column.metadata as any)?.workflow?.logs ?? [];
+        logCursorRef.current[column.column_name] = columnLogs.length;
+      });
+      const storedLogs = columns.flatMap(
+        (column) => (column.metadata as any)?.workflow?.logs ?? []
+      );
+      if (storedLogs.length > 0) {
+        setLogs((prev) => (prev.length > 0 ? prev : storedLogs.slice(-200)));
+      }
     } catch (error) {
       toast({
         title: "Failed to load column metadata",
@@ -882,6 +977,37 @@ const ColumnWorkflowPanel = ({
       setLoading(false);
     }
   }, [createBoard, tableAssetId, tableName, toast]);
+
+  const refreshWorkflowSnapshots = useCallback(async () => {
+    try {
+      const response = await columnMetadataApi.get(tableAssetId);
+      if (response.status !== "success" || !response.data) {
+        return;
+      }
+      const columns = response.data.columns;
+      setWorkflows((prev) => {
+        const nextWorkflows: Record<string, ColumnWorkflowState> = {};
+        columns.forEach((column, index) => {
+          const previous = prev[column.column_name];
+          nextWorkflows[column.column_name] = buildColumnWorkflowState(
+            column,
+            tableAssetId,
+            tableName,
+            index,
+            previous?.isRunning ?? false
+          );
+        });
+        return nextWorkflows;
+      });
+
+      columns.forEach((column) => {
+        const columnLogs = (column.metadata as any)?.workflow?.logs ?? [];
+        appendWorkflowLogsDelta(column.column_name, columnLogs);
+      });
+    } catch (error) {
+      appendLog("error", "Failed to refresh workflow logs", { error });
+    }
+  }, [appendLog, appendWorkflowLogsDelta, tableAssetId, tableName]);
 
   useEffect(() => {
     if (tableAssetId) {
@@ -1167,22 +1293,8 @@ const ColumnWorkflowPanel = ({
         return next;
       });
 
-      if (nodesByColumn.size > 0) {
-        nodesByColumn.forEach((nodes, columnName) => {
-          pendingWorkflowPersistRef.current[columnName] = {
-            nodes,
-            edges: edgesByColumn.get(columnName) ?? [],
-          };
-        });
-        if (workflowPersistTimerRef.current) {
-          clearTimeout(workflowPersistTimerRef.current);
-        }
-        workflowPersistTimerRef.current = setTimeout(() => {
-          void persistWorkflowGraphs();
-        }, 800);
-      }
     },
-    [activeBoard, persistWorkflowGraphs]
+    [activeBoard]
   );
 
   const handleCanvasSelection = useCallback(
@@ -1304,6 +1416,21 @@ const ColumnWorkflowPanel = ({
     [workflows]
   );
 
+  useEffect(() => {
+    if (!isRunningAny) return;
+    let active = true;
+    const poll = async () => {
+      if (!active) return;
+      await refreshWorkflowSnapshots();
+    };
+    void poll();
+    const intervalId = setInterval(poll, 1200);
+    return () => {
+      active = false;
+      clearInterval(intervalId);
+    };
+  }, [isRunningAny, refreshWorkflowSnapshots]);
+
   const handleEstimateSelected = useCallback(async () => {
     if (!activeBoard) return;
     if (selectedColumns.length === 0) {
@@ -1322,13 +1449,9 @@ const ColumnWorkflowPanel = ({
         const workflow = workflows[columnName];
         if (workflow) {
           const overrides = collectOverrides(workflow.nodes);
-          if (Object.keys(overrides).length > 0) {
-            await columnMetadataApi.override(
-              tableAssetId,
-              columnName,
-              overrides
-            );
-          }
+          await columnMetadataApi.override(tableAssetId, columnName, {
+            ...overrides,
+          });
         }
         const response = await columnWorkflowsApi.estimate(
           tableAssetId,
@@ -1397,6 +1520,13 @@ const ColumnWorkflowPanel = ({
     const results = await Promise.allSettled(
       targets.map(async (columnName) => {
         try {
+          const workflow = workflows[columnName];
+          if (workflow) {
+            const overrides = collectOverrides(workflow.nodes);
+            await columnMetadataApi.override(tableAssetId, columnName, {
+              ...overrides,
+            });
+          }
           const response = await columnWorkflowsApi.run(
             tableAssetId,
             columnName
@@ -1446,10 +1576,12 @@ const ColumnWorkflowPanel = ({
 
     results.forEach((result) => {
       if (result.status === "fulfilled") {
+        const payload = result.value.response.data;
+        appendWorkflowLogsDelta(result.value.columnName, payload?.workflow_logs);
         appendLog(
           "complete",
           `Workflow completed for ${result.value.columnName}`,
-          result.value.response.data
+          payload
         );
       } else {
         const columnName = (result as PromiseRejectedResult).reason?.columnName;
@@ -1466,12 +1598,138 @@ const ColumnWorkflowPanel = ({
     setEstimateTargets([]);
   }, [
     appendLog,
+    appendWorkflowLogsDelta,
     estimateTargets,
     loadMetadata,
     loadReport,
     selectedColumns,
     tableAssetId,
   ]);
+
+  const runSingleColumn = useCallback(
+    async (
+      columnName: string,
+      focus?: string,
+      overridePatch?: Record<string, any>
+    ) => {
+      appendLog("status", `Running workflow for ${columnName}...`);
+      setWorkflows((prev) => {
+        const next = { ...prev };
+        const workflow = next[columnName];
+        if (!workflow) return next;
+        next[columnName] = {
+          ...workflow,
+          isRunning: true,
+          nodes: workflow.nodes.map((node) => ({
+            ...node,
+            data: { ...node.data, status: "running" },
+          })),
+        };
+        return next;
+      });
+
+      try {
+        const workflow = workflows[columnName];
+        if (workflow) {
+          const overrides = {
+            ...collectOverrides(workflow.nodes),
+            ...(overridePatch || {}),
+          };
+          await columnMetadataApi.override(tableAssetId, columnName, {
+            ...overrides,
+          });
+        }
+        const response = await columnWorkflowsApi.run(tableAssetId, columnName, {
+          focus,
+        });
+        appendWorkflowLogsDelta(columnName, response.data.workflow_logs);
+        appendLog(
+          "complete",
+          `Workflow completed for ${columnName}`,
+          response.data
+        );
+        setWorkflows((prev) => {
+          const next = { ...prev };
+          const current = next[columnName];
+          if (!current) return next;
+          next[columnName] = {
+            ...current,
+            isRunning: false,
+            nodes: current.nodes.map((node) => ({
+              ...node,
+              data: { ...node.data, status: "success" },
+            })),
+          };
+          return next;
+        });
+      } catch (error) {
+        appendLog("error", `Workflow failed for ${columnName}`, error);
+        setWorkflows((prev) => {
+          const next = { ...prev };
+          const current = next[columnName];
+          if (!current) return next;
+          next[columnName] = {
+            ...current,
+            isRunning: false,
+            nodes: current.nodes.map((node) => ({
+              ...node,
+              data: {
+                ...node.data,
+                status: node.data.status === "running" ? "error" : node.data.status,
+              },
+            })),
+          };
+          return next;
+        });
+      }
+
+      await loadMetadata();
+      await loadReport(String(tableAssetId));
+    },
+    [
+      appendLog,
+      appendWorkflowLogsDelta,
+      loadMetadata,
+      loadReport,
+      tableAssetId,
+      workflows,
+    ]
+  );
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        tableAssetId: number;
+        columnName: string;
+        note?: string;
+        planId?: string;
+        planHash?: string;
+        snapshotSignature?: string;
+      }>).detail;
+      if (!detail || detail.tableAssetId !== tableAssetId) return;
+      appendLog(
+        "status",
+        `Approval received. Running repairs for ${detail.columnName}...`
+      );
+      void runSingleColumn(detail.columnName, "repairs", {
+        data_fix_approved: true,
+        data_fix_note: detail.note || "",
+        ...(detail.planId ? { data_fix_plan_id: detail.planId } : {}),
+        ...(detail.planHash ? { data_fix_plan_hash: detail.planHash } : {}),
+        ...(detail.snapshotSignature
+          ? { data_fix_snapshot_signature: detail.snapshotSignature }
+          : {}),
+      });
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("column-workflow-approval", handler as EventListener);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("column-workflow-approval", handler as EventListener);
+      }
+    };
+  }, [appendLog, runSingleColumn, tableAssetId]);
 
   const handleCancelEstimate = useCallback(() => {
     setEstimateResults(null);
@@ -1673,27 +1931,20 @@ const ColumnWorkflowPanel = ({
           )}
         >
           {activeBoard && activeBoard.columnNames.length > 0 ? (
-            <EDAWorkflowEditor
-              nodes={boardGraph.nodes}
-              edges={boardGraph.edges}
-              isRunning={isRunningAny}
-              selectedNodeIds={selectedNodeIds}
-              defaultColumnName={
-                selectedColumns.length === 1 ? selectedColumns[0] : undefined
-              }
-              onSelectionChange={handleCanvasSelection}
-              onRun={handleEstimateSelected}
-              runDisabled={
-                isRunningAny || isEstimating || selectedColumns.length === 0
-              }
-              runLabel="Estimate & Run Selected"
-              onWorkflowDataChange={(data) =>
-                updateWorkflowData({
-                  nodes: data.nodes,
-                  edges: data.edges,
-                })
-              }
-            />
+            <div className="relative h-full">
+              <EDAWorkflowEditor
+                nodes={boardGraph.nodes}
+                edges={boardGraph.edges}
+                selectedNodeIds={selectedNodeIds}
+                onWorkflowDataChange={updateWorkflowData}
+                onSelectionChange={handleCanvasSelection}
+                onRun={handleEstimateSelected}
+                runLabel="Estimate & Run Selected"
+                runDisabled={isRunningAny || isEstimating || selectedColumns.length === 0}
+                isRunning={isRunningAny || isEstimating}
+                className="h-full"
+              />
+            </div>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               Add columns to this board to build workflows.

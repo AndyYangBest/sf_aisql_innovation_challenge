@@ -29,6 +29,7 @@ import {
   ZoomIn,
   ZoomOut,
   Play,
+  Map,
 } from 'lucide-react';
 import { createEDANodeRegistries } from './EDANodeRegistries';
 import { EDANodeRenderer } from './EDANodeRenderer';
@@ -58,6 +59,8 @@ const EDAWorkflowToolbar = ({
   onPlaceComment,
   isPlacingComment,
   defaultColumnName,
+  minimapVisible,
+  onToggleMinimap,
 }: {
   isRunning?: boolean;
   onRun?: () => void;
@@ -66,6 +69,8 @@ const EDAWorkflowToolbar = ({
   onPlaceComment?: () => void;
   isPlacingComment?: boolean;
   defaultColumnName?: string;
+  minimapVisible?: boolean;
+  onToggleMinimap?: () => void;
 }) => {
   const { history, document, playground } = useClientContext();
   const selectService = useService(SelectionService);
@@ -276,31 +281,45 @@ const EDAWorkflowToolbar = ({
       >
         <Scan className={iconClassName} strokeWidth={2.5} />
       </Button>
+      <div className="h-5 w-px bg-slate-200 mx-1" aria-hidden="true" />
+      <Button
+        variant="ghost"
+        size="icon"
+        className={buttonClassName}
+        onClick={onToggleMinimap}
+        aria-label={minimapVisible ? 'Hide minimap' : 'Show minimap'}
+      >
+        <Map className={cn(iconClassName, minimapVisible && 'text-blue-600')} strokeWidth={2.5} />
+      </Button>
     </div>
   );
 };
 
-const EDAMinimap = () => (
-  <div className="absolute bottom-4 right-4 z-20 w-[200px] rounded-lg border border-slate-200 bg-white/95 shadow-md backdrop-blur pointer-events-auto">
-    <MinimapRender
-      panelStyles={{}}
-      containerStyles={{
-        pointerEvents: 'auto',
-        position: 'relative',
-        top: 'unset',
-        right: 'unset',
-        bottom: 'unset',
-        left: 'unset',
-      }}
-      inactiveStyle={{
-        opacity: 1,
-        scale: 1,
-        translateX: 0,
-        translateY: 0,
-      }}
-    />
-  </div>
-);
+const EDAMinimap = ({ visible }: { visible: boolean }) => {
+  if (!visible) return null;
+
+  return (
+    <div className="absolute bottom-4 right-4 z-20 w-[200px] rounded-lg border border-slate-200 bg-white/95 shadow-md backdrop-blur pointer-events-auto">
+      <MinimapRender
+        panelStyles={{}}
+        containerStyles={{
+          pointerEvents: 'auto',
+          position: 'relative',
+          top: 'unset',
+          right: 'unset',
+          bottom: 'unset',
+          left: 'unset',
+        }}
+        inactiveStyle={{
+          opacity: 1,
+          scale: 1,
+          translateX: 0,
+          translateY: 0,
+        }}
+      />
+    </div>
+  );
+};
 
 export const EDAWorkflowEditor = ({
   nodes,
@@ -318,6 +337,7 @@ export const EDAWorkflowEditor = ({
   const editorRef = useRef<FreeLayoutPluginContext | undefined>();
   const [editorReady, setEditorReady] = useState(false);
   const [placingComment, setPlacingComment] = useState(false);
+  const [minimapVisible, setMinimapVisible] = useState(true);
   const applyingRef = useRef(false);
   const lastEditorJsonRef = useRef<string | null>(null);
 
@@ -479,8 +499,10 @@ export const EDAWorkflowEditor = ({
             onPlaceComment={() => setPlacingComment((prev) => !prev)}
             isPlacingComment={placingComment}
             defaultColumnName={defaultColumnName}
+            minimapVisible={minimapVisible}
+            onToggleMinimap={() => setMinimapVisible((prev) => !prev)}
           />
-          <EDAMinimap />
+          <EDAMinimap visible={minimapVisible} />
         </FreeLayoutEditorProvider>
       </div>
     </div>

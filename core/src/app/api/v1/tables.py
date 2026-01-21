@@ -31,6 +31,38 @@ async def get_tables(
 
 
 @router.get(
+    "/databases",
+    summary="Get Snowflake Databases",
+    description="Fetch list of available Snowflake databases",
+)
+async def get_databases():
+    """Get list of Snowflake databases."""
+    try:
+        service = await get_snowflake_service()
+        databases = await service.get_databases()
+        return {"success": True, "data": databases, "count": len(databases)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/schemas",
+    summary="Get Snowflake Schemas",
+    description="Fetch list of schemas in a database",
+)
+async def get_schemas(
+    database: str = Query(..., description="Database name"),
+):
+    """Get list of schemas for a database."""
+    try:
+        service = await get_snowflake_service()
+        schemas = await service.get_schemas(database=database)
+        return {"success": True, "data": schemas, "count": len(schemas)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
     "/{table_name}/columns",
     summary="Get Table Columns",
     description="Fetch column metadata for a specific table",

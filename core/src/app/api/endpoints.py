@@ -83,6 +83,18 @@ TABLES_ENDPOINTS = {
         description="Get all Snowflake tables",
         tags=["tables", "snowflake"],
     ),
+    "databases": APIEndpoint(
+        path="/api/v1/tables/databases",
+        method=APIMethod.GET,
+        description="Get all Snowflake databases",
+        tags=["tables", "snowflake"],
+    ),
+    "schemas": APIEndpoint(
+        path="/api/v1/tables/schemas",
+        method=APIMethod.GET,
+        description="Get schemas for a Snowflake database",
+        tags=["tables", "snowflake"],
+    ),
     "columns": APIEndpoint(
         path="/api/v1/tables/{table_name}/columns",
         method=APIMethod.GET,
@@ -191,6 +203,12 @@ COLUMN_METADATA_ENDPOINTS = {
         path="/api/v1/column-metadata/{table_asset_id}/override",
         method=APIMethod.PUT,
         description="Override column metadata with user-provided hints",
+        tags=["column-metadata", "override"],
+    ),
+    "bulk_override": APIEndpoint(
+        path="/api/v1/column-metadata/{table_asset_id}/bulk-override",
+        method=APIMethod.PUT,
+        description="Override column metadata in bulk with user-provided hints",
         tags=["column-metadata", "override"],
     ),
     "table_override": APIEndpoint(

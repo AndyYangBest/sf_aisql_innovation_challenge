@@ -71,6 +71,12 @@ export const WorkflowLogPanel = ({
         return <Badge variant="default" className="text-xs bg-emerald-500">COMPLETE</Badge>;
       case 'error':
         return <Badge variant="destructive" className="text-xs">ERROR</Badge>;
+      case 'strands_log':
+        return <Badge variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-200">STRANDS</Badge>;
+      case 'workflow_log':
+        return <Badge variant="outline" className="text-xs bg-indigo-50 text-indigo-700 border-indigo-200">WORKFLOW</Badge>;
+      case 'telemetry_log':
+        return <Badge variant="outline" className="text-xs bg-slate-50 text-slate-600 border-slate-200">TELEMETRY</Badge>;
       default:
         return <Badge variant="outline" className="text-xs">{type.toUpperCase()}</Badge>;
     }
@@ -87,6 +93,12 @@ export const WorkflowLogPanel = ({
         return 'text-amber-500';
       case 'status':
         return 'text-blue-500';
+      case 'strands_log':
+        return 'text-purple-700';
+      case 'workflow_log':
+        return 'text-indigo-700';
+      case 'telemetry_log':
+        return 'text-slate-600';
       default:
         return 'text-foreground';
     }

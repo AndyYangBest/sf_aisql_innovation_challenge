@@ -4,6 +4,7 @@
 
 import { apiRequest } from './client';
 import { ApiResponse } from './types';
+import type { WorkflowLogEvent } from './eda';
 
 export interface ColumnWorkflowEstimate {
   column: string;
@@ -16,12 +17,27 @@ export interface ColumnWorkflowEstimate {
   }>;
 }
 
+export interface ColumnWorkflowToolCall {
+  tool_use_id?: string | null;
+  tool_name?: string | null;
+  agent_name?: string | null;
+  input?: Record<string, any>;
+  status?: string | null;
+  timestamp?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  sequence?: number | null;
+  error?: string | null;
+}
+
 export interface ColumnWorkflowRunResponse {
   workflow_id: string;
   status: any;
   workflow_state?: string | null;
   column: string;
   semantic_type: string;
+  workflow_logs?: WorkflowLogEvent[];
+  workflow_tool_calls?: ColumnWorkflowToolCall[];
 }
 
 export const columnWorkflowsApi = {
@@ -37,9 +53,18 @@ export const columnWorkflowsApi = {
     });
   },
 
-  async run(tableAssetId: number, columnName: string): Promise<ApiResponse<ColumnWorkflowRunResponse>> {
+  async run(
+    tableAssetId: number,
+    columnName: string,
+    options?: { focus?: string }
+  ): Promise<ApiResponse<ColumnWorkflowRunResponse>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/run`, {
+      const params = new URLSearchParams();
+      if (options?.focus) {
+        params.set('focus', options.focus);
+      }
+      const query = params.toString();
+      const response = await fetch(`/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/run${query ? `?${query}` : ''}`, {
         method: 'POST',
       });
       if (!response.ok) {
