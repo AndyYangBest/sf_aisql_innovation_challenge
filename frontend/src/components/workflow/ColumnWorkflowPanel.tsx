@@ -58,6 +58,7 @@ const COLUMN_NODE_WIDTH = 240;
 const WORKFLOW_COLUMNS = 2;
 const WORKFLOW_SPAN_X = COLUMN_NODE_WIDTH * 4 + 240;
 const WORKFLOW_SPAN_Y = 360;
+const PARALLEL_STACK_GAP = 120;
 
 function normalizeId(value: string) {
   return value.replace(/[^a-z0-9]/gi, "_").toLowerCase();
@@ -261,6 +262,24 @@ const TOOL_CALL_NODE_MAP: Record<string, EDANodeType> = {
   basic_column_stats: "basic_stats",
 };
 
+const NODE_TYPE_TOOL_MAP: Record<string, string> = {
+  numeric_distribution: "analyze_numeric_distribution",
+  numeric_correlations: "analyze_numeric_correlations",
+  numeric_periodicity: "analyze_numeric_periodicity",
+  categorical_groups: "analyze_categorical_groups",
+  scan_nulls: "scan_nulls",
+  scan_conflicts: "scan_conflicts",
+  plan_data_repairs: "plan_data_repairs",
+  approval_gate: "require_user_approval",
+  apply_data_repairs: "apply_data_repairs",
+  generate_visuals: "generate_numeric_visuals",
+  generate_insights: "generate_numeric_insights",
+  summarize_text: "summarize_text_column",
+  row_level_extract: "row_level_extract_text",
+  describe_images: "describe_image_column",
+  basic_stats: "basic_column_stats",
+};
+
 function mapToolStatus(status?: string | null): WorkflowNode["data"]["status"] {
   if (status === "success") return "success";
   if (status === "error") return "error";
@@ -286,42 +305,72 @@ function buildGraphFromToolCalls(
     return String(a.timestamp || "").localeCompare(String(b.timestamp || ""));
   });
 
-  let x = basePosition.x;
-  const y = basePosition.y;
-  let prevId: string | null = null;
+  const batches: Array<{ id: string; calls: Array<Record<string, any>> }> = [];
+  const batchMap = new Map<string, Array<Record<string, any>>>();
   sortedCalls.forEach((call, index) => {
-    const toolName = String(call.tool_name || "");
-    if (!toolName) return;
-    let nodeType = TOOL_CALL_NODE_MAP[toolName];
-    if (!nodeType && toolName.endsWith("_agent")) {
-      nodeType = "agent_step";
+    const batchId = String(call.batch_id || call.tool_use_id || call.sequence || index);
+    if (!batchMap.has(batchId)) {
+      batchMap.set(batchId, []);
+      batches.push({ id: batchId, calls: batchMap.get(batchId)! });
     }
-    if (!nodeType) return;
-    const definition = EDA_NODE_DEFINITIONS[nodeType];
-    const nodeId = `${nodeType}_${colId}_${call.sequence ?? index}`;
-    const title = nodeType === "agent_step" ? toolName : definition?.name || nodeType;
-    const data = {
-      ...definition?.defaultData,
-      ...(call.input ?? {}),
-      title,
-      status: mapToolStatus(call.status),
-      column_name: column.column_name,
-      column_type: column.semantic_type,
-      column_null_rate: getNullRate(column),
-      table_asset_id: tableAssetId,
-      tool_name: toolName,
-      tool_input: call.input ?? {},
-    };
-    nodes.push({
-      id: nodeId,
-      type: nodeType,
-      position: { x, y },
-      data,
+    batchMap.get(batchId)!.push(call);
+  });
+
+  let x = basePosition.x;
+  let prevGroupIds: string[] = [];
+  batches.forEach((batch, batchIndex) => {
+    const groupIds: string[] = [];
+    batch.calls.forEach((call, index) => {
+      const toolName = String(call.tool_name || "");
+      if (!toolName) return;
+      let nodeType = TOOL_CALL_NODE_MAP[toolName];
+      if (!nodeType && toolName.endsWith("_agent")) {
+        nodeType = "agent_step";
+      }
+      if (!nodeType) return;
+      const definition = EDA_NODE_DEFINITIONS[nodeType];
+      const nodeId = `${nodeType}_${colId}_${call.sequence ?? batchIndex}_${index}`;
+      const title = nodeType === "agent_step" ? toolName : definition?.name || nodeType;
+      const data = {
+        ...definition?.defaultData,
+        ...(call.input ?? {}),
+        title,
+        status: mapToolStatus(call.status),
+        column_name: column.column_name,
+        column_type: column.semantic_type,
+        column_null_rate: getNullRate(column),
+        table_asset_id: tableAssetId,
+        tool_name: toolName,
+        tool_input: call.input ?? {},
+      };
+      const y = basePosition.y + index * PARALLEL_STACK_GAP;
+      nodes.push({
+        id: nodeId,
+        type: nodeType,
+        position: { x, y },
+        data,
+      });
+      groupIds.push(nodeId);
     });
-    if (prevId) {
-      edges.push({ sourceNodeID: prevId, targetNodeID: nodeId });
+
+    if (prevGroupIds.length > 0 && groupIds.length > 0) {
+      if (prevGroupIds.length * groupIds.length <= 9) {
+        prevGroupIds.forEach((sourceId) => {
+          groupIds.forEach((targetId) => {
+            edges.push({ sourceNodeID: sourceId, targetNodeID: targetId });
+          });
+        });
+      } else {
+        const sourceId = prevGroupIds[prevGroupIds.length - 1];
+        groupIds.forEach((targetId) => {
+          edges.push({ sourceNodeID: sourceId, targetNodeID: targetId });
+        });
+      }
     }
-    prevId = nodeId;
+
+    if (groupIds.length > 0) {
+      prevGroupIds = groupIds;
+    }
     x += COLUMN_NODE_WIDTH + 80;
   });
 
@@ -381,7 +430,11 @@ function ensureApprovalGate(
     analysis.conflicts?.conflict_rate ??
     column.metadata?.analysis?.conflicts?.conflict_rate ??
     column.metadata?.conflicts?.conflict_rate;
+  const hasPlanCall = graph.nodes.some(
+    (node) => node.type === "plan_data_repairs"
+  );
   const hasIssues =
+    hasPlanCall ||
     (Array.isArray(repairPlan.steps) && repairPlan.steps.length > 0) ||
     (typeof nullRate === "number" && nullRate > 0) ||
     (typeof conflictRate === "number" && conflictRate > 0);
@@ -401,6 +454,12 @@ function ensureApprovalGate(
     (acc, node) => Math.max(acc, node.position.y),
     basePosition?.y ?? 0
   );
+  const anchorNode =
+    planNode ||
+    graph.nodes.find((node) => node.type === "scan_conflicts") ||
+    graph.nodes.find((node) => node.type === "scan_nulls") ||
+    graph.nodes[graph.nodes.length - 1];
+  const anchorY = anchorNode?.position.y ?? maxY;
   const colId = normalizeId(column.column_name);
   const edges = [...graph.edges];
   const nextNodes = [...graph.nodes];
@@ -410,7 +469,7 @@ function ensureApprovalGate(
     nextNodes.push({
       id: planNodeId,
       type: "plan_data_repairs",
-      position: { x: maxX + COLUMN_NODE_WIDTH, y: maxY },
+      position: { x: maxX + COLUMN_NODE_WIDTH, y: anchorY },
       data: {
         ...EDA_NODE_DEFINITIONS.plan_data_repairs.defaultData,
         title: "Repair Plan",
@@ -422,10 +481,6 @@ function ensureApprovalGate(
       },
     });
 
-    const anchorNode =
-      graph.nodes.find((node) => node.type === "scan_conflicts") ||
-      graph.nodes.find((node) => node.type === "scan_nulls") ||
-      graph.nodes[graph.nodes.length - 1];
     if (anchorNode) {
       edges.push({ sourceNodeID: anchorNode.id, targetNodeID: planNodeId });
     }
@@ -434,7 +489,7 @@ function ensureApprovalGate(
   const approvalNode: WorkflowNode = {
     id: `approval_gate_${colId}`,
     type: "approval_gate",
-    position: { x: maxX + COLUMN_NODE_WIDTH * 2, y: maxY },
+    position: { x: maxX + COLUMN_NODE_WIDTH * 2, y: anchorY },
     data: {
       ...EDA_NODE_DEFINITIONS.approval_gate.defaultData,
       title: "Approval Gate",
@@ -458,7 +513,7 @@ function ensureApprovalGate(
     const applyNode: WorkflowNode = {
       id: `apply_data_repairs_${colId}`,
       type: "apply_data_repairs",
-      position: { x: maxX + COLUMN_NODE_WIDTH * 3, y: maxY },
+      position: { x: maxX + COLUMN_NODE_WIDTH * 3, y: anchorY },
       data: {
         ...EDA_NODE_DEFINITIONS.apply_data_repairs.defaultData,
         title: "Apply Repairs",
@@ -657,6 +712,8 @@ const ColumnWorkflowPanel = ({
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
     {}
   );
+  const [canvasSelectionIds, setCanvasSelectionIds] = useState<string[]>([]);
+  const [selectionMode, setSelectionMode] = useState<"list" | "canvas" | "none">("none");
   const selectionSourceRef = useRef<"list" | "canvas" | null>(null);
   const selectionResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logCursorRef = useRef<Record<string, number>>({});
@@ -815,6 +872,7 @@ const ColumnWorkflowPanel = ({
       setBoards((prev) => {
         hydratingRef.current = true;
         const columnNames = columns.map((column) => column.column_name);
+        const preferredActiveId = activeBoardIdRef.current ?? activeBoardId ?? null;
         if (persistedBoards) {
           const prevSelections = new Map(
             prev.map((board) => [board.id, board.selectedColumns])
@@ -872,7 +930,9 @@ const ColumnWorkflowPanel = ({
               ),
             };
           }
-          if (
+          if (preferredActiveId && ensured.some((board) => board.id === preferredActiveId)) {
+            setActiveBoardId(preferredActiveId);
+          } else if (
             persistedActiveBoardId &&
             ensured.some((board) => board.id === persistedActiveBoardId)
           ) {
@@ -883,7 +943,10 @@ const ColumnWorkflowPanel = ({
           lastBoardsPayloadRef.current = JSON.stringify({
             boards: buildBoardsPayload(ensured),
             extras: sanitizedExtras || {},
-            activeBoardId: persistedActiveBoardId,
+            activeBoardId:
+              (preferredActiveId && ensured.some((board) => board.id === preferredActiveId))
+                ? preferredActiveId
+                : persistedActiveBoardId,
           });
           setTimeout(() => {
             hydratingRef.current = false;
@@ -931,7 +994,7 @@ const ColumnWorkflowPanel = ({
         if (unassigned.length === 0) {
           return nextBoards;
         }
-        const targetId = activeBoardIdRef.current || nextBoards[0]?.id;
+        const targetId = activeBoardIdRef.current || activeBoardId || nextBoards[0]?.id;
         if (!targetId) {
           return nextBoards;
         }
@@ -1211,16 +1274,7 @@ const ColumnWorkflowPanel = ({
     return mapping;
   }, [activeBoard, workflows]);
 
-  const selectedNodeIds = useMemo(() => {
-    if (!activeBoard) return [];
-    const ids: string[] = [];
-    activeBoard.selectedColumns.forEach((columnName) => {
-      const workflow = workflows[columnName];
-      if (!workflow) return;
-      workflow.nodes.forEach((node) => ids.push(node.id));
-    });
-    return ids;
-  }, [activeBoard, workflows]);
+  const selectedNodeIds = canvasSelectionIds;
 
   const updateWorkflowData = useCallback(
     (data: { nodes: any[]; edges: any[] }) => {
@@ -1301,6 +1355,8 @@ const ColumnWorkflowPanel = ({
     (nodeIds: string[]) => {
       if (!activeBoard) return;
       if (nodeIds.length === 0) {
+        setCanvasSelectionIds([]);
+        setSelectionMode("none");
         return;
       }
       if (selectionSourceRef.current === "list") {
@@ -1308,6 +1364,8 @@ const ColumnWorkflowPanel = ({
         return;
       }
       selectionSourceRef.current = "canvas";
+      setSelectionMode("canvas");
+      setCanvasSelectionIds(nodeIds);
       const selected = new Set<string>();
       nodeIds.forEach((id) => {
         const columnName = nodeIdToColumn.get(id);
@@ -1329,6 +1387,7 @@ const ColumnWorkflowPanel = ({
   const handleToggleColumn = useCallback(
     (columnName: string, checked: boolean) => {
       selectionSourceRef.current = "list";
+      setSelectionMode("list");
       if (selectionResetRef.current) {
         clearTimeout(selectionResetRef.current);
       }
@@ -1352,11 +1411,213 @@ const ColumnWorkflowPanel = ({
 
   const handleClearSelection = useCallback(() => {
     if (!activeBoard) return;
+    setCanvasSelectionIds([]);
+    setSelectionMode("none");
     updateActiveBoard(
       (board) => ({ ...board, selectedColumns: [] }),
       activeBoard.id
     );
   }, [activeBoard, updateActiveBoard]);
+
+  useEffect(() => {
+    if (selectionMode !== "list") {
+      return;
+    }
+    if (!activeBoard) {
+      setCanvasSelectionIds([]);
+      return;
+    }
+    const ids: string[] = [];
+    activeBoard.selectedColumns.forEach((columnName) => {
+      const workflow = workflows[columnName];
+      if (!workflow) return;
+      workflow.nodes.forEach((node) => ids.push(node.id));
+    });
+    setCanvasSelectionIds(ids);
+  }, [activeBoard, selectionMode, workflows]);
+
+  useEffect(() => {
+    if (selectionMode !== "canvas") {
+      return;
+    }
+    const nodeIdSet = new Set(boardGraph.nodes.map((node) => node.id));
+    setCanvasSelectionIds((prev) => prev.filter((id) => nodeIdSet.has(id)));
+  }, [boardGraph.nodes, selectionMode]);
+
+  const buildToolCallsFromNodes = useCallback(
+    (nodes: WorkflowNode[]) => {
+      return nodes
+        .map((node) => {
+          const nodeType = node.type as string;
+          let toolName = NODE_TYPE_TOOL_MAP[nodeType];
+          if (nodeType === "generate_visuals") {
+            toolName =
+              node.data?.column_type === "categorical"
+                ? "generate_categorical_visuals"
+                : "generate_numeric_visuals";
+          }
+          if (nodeType === "generate_insights") {
+            toolName =
+              node.data?.column_type === "categorical"
+                ? "generate_categorical_insights"
+                : "generate_numeric_insights";
+          }
+          if (!toolName) {
+            return null;
+          }
+          return {
+            tool_name: toolName,
+            input: {
+              ...(node.data ?? {}),
+              table_asset_id: node.data?.table_asset_id,
+              column_name: node.data?.column_name,
+              approved: node.data?.approved,
+            },
+          };
+        })
+        .filter(Boolean) as Array<{ tool_name: string; input: Record<string, any> }>;
+    },
+    []
+  );
+
+  const runSelectedNodes = useCallback(async () => {
+    if (!activeBoard || canvasSelectionIds.length === 0) {
+      return;
+    }
+    const selectedNodes = boardGraph.nodes.filter((node) =>
+      canvasSelectionIds.includes(node.id)
+    );
+    const toolNodes = selectedNodes.filter((node) =>
+      NODE_TYPE_TOOL_MAP[node.type as string] ||
+      node.type === "generate_visuals" ||
+      node.type === "generate_insights"
+    );
+    if (toolNodes.length === 0) {
+      toast({ title: "Select tool nodes to run." });
+      return;
+    }
+    appendLog("status", `Running ${toolNodes.length} selected nodes...`);
+
+    const nodesByColumn = new Map<string, WorkflowNode[]>();
+    toolNodes.forEach((node) => {
+      const columnName = node.data?.column_name;
+      if (!columnName) return;
+      const list = nodesByColumn.get(columnName) ?? [];
+      list.push(node);
+      nodesByColumn.set(columnName, list);
+    });
+
+    setWorkflows((prev) => {
+      const next = { ...prev };
+      nodesByColumn.forEach((nodes, columnName) => {
+        const workflow = next[columnName];
+        if (!workflow) return;
+        const selectedIds = new Set(nodes.map((node) => node.id));
+        next[columnName] = {
+          ...workflow,
+          isRunning: true,
+          nodes: workflow.nodes.map((node) => ({
+            ...node,
+            data: {
+              ...node.data,
+              status: selectedIds.has(node.id) ? "running" : node.data.status,
+            },
+          })),
+        };
+      });
+      return next;
+    });
+
+    const results = await Promise.allSettled(
+      Array.from(nodesByColumn.entries()).map(async ([columnName, nodes]) => {
+        const workflow = workflows[columnName];
+        if (workflow) {
+          const overrides = collectOverrides(workflow.nodes);
+          await columnMetadataApi.override(tableAssetId, columnName, {
+            ...overrides,
+          });
+        }
+        const toolCalls = buildToolCallsFromNodes(nodes);
+        const response = await columnWorkflowsApi.runSelected(
+          tableAssetId,
+          columnName,
+          {
+            tool_calls: toolCalls,
+          }
+        );
+        return { columnName, response };
+      })
+    );
+
+    setWorkflows((prev) => {
+      const next = { ...prev };
+      results.forEach((result) => {
+        if (result.status === "fulfilled") {
+          const workflow = next[result.value.columnName];
+          if (!workflow) return;
+          next[result.value.columnName] = {
+            ...workflow,
+            isRunning: false,
+            nodes: workflow.nodes.map((node) => ({
+              ...node,
+              data: { ...node.data, status: node.data.status === "running" ? "success" : node.data.status },
+            })),
+          };
+        } else {
+          const columnName = (result as PromiseRejectedResult).reason
+            ?.columnName;
+          if (columnName && next[columnName]) {
+            next[columnName] = {
+              ...next[columnName],
+              isRunning: false,
+              nodes: next[columnName].nodes.map((node) => ({
+                ...node,
+                data: {
+                  ...node.data,
+                  status: node.data.status === "running" ? "error" : node.data.status,
+                },
+              })),
+            };
+          }
+        }
+      });
+      return next;
+    });
+
+    results.forEach((result) => {
+      if (result.status === "fulfilled") {
+        const payload = result.value.response.data;
+        appendWorkflowLogsDelta(result.value.columnName, payload?.workflow_logs);
+        appendLog(
+          "complete",
+          `Workflow completed for ${result.value.columnName}`,
+          payload
+        );
+      } else {
+        const columnName = (result as PromiseRejectedResult).reason?.columnName;
+        appendLog(
+          "error",
+          `Workflow failed${columnName ? ` for ${columnName}` : ""}`,
+          (result as PromiseRejectedResult).reason
+        );
+      }
+    });
+
+    await loadMetadata();
+    await loadReport(String(tableAssetId));
+  }, [
+    activeBoard,
+    appendLog,
+    appendWorkflowLogsDelta,
+    boardGraph.nodes,
+    buildToolCallsFromNodes,
+    canvasSelectionIds,
+    loadMetadata,
+    loadReport,
+    tableAssetId,
+    toast,
+    workflows,
+  ]);
 
   const handleAddBoard = useCallback(() => {
     if (!activeBoard) return;
@@ -1433,6 +1694,10 @@ const ColumnWorkflowPanel = ({
 
   const handleEstimateSelected = useCallback(async () => {
     if (!activeBoard) return;
+    if (selectionMode === "canvas" && canvasSelectionIds.length > 0) {
+      await runSelectedNodes();
+      return;
+    }
     if (selectedColumns.length === 0) {
       toast({ title: "Select at least one workflow to run." });
       return;
@@ -1487,7 +1752,17 @@ const ColumnWorkflowPanel = ({
     setEstimateResults(estimates);
     setEstimateTargets(estimates.map((item) => item.column));
     setIsEstimating(false);
-  }, [activeBoard, appendLog, selectedColumns, tableAssetId, toast, workflows]);
+  }, [
+    activeBoard,
+    appendLog,
+    canvasSelectionIds,
+    runSelectedNodes,
+    selectedColumns,
+    selectionMode,
+    tableAssetId,
+    toast,
+    workflows,
+  ]);
 
   const handleRunSelected = useCallback(async () => {
     const targets =
@@ -1939,8 +2214,18 @@ const ColumnWorkflowPanel = ({
                 onWorkflowDataChange={updateWorkflowData}
                 onSelectionChange={handleCanvasSelection}
                 onRun={handleEstimateSelected}
-                runLabel="Estimate & Run Selected"
-                runDisabled={isRunningAny || isEstimating || selectedColumns.length === 0}
+                runLabel={
+                  selectionMode === "canvas" && canvasSelectionIds.length > 0
+                    ? "Run Selected Nodes"
+                    : "Estimate & Run Selected"
+                }
+                runDisabled={
+                  isRunningAny ||
+                  isEstimating ||
+                  (selectionMode === "canvas"
+                    ? canvasSelectionIds.length === 0
+                    : selectedColumns.length === 0)
+                }
                 isRunning={isRunningAny || isEstimating}
                 className="h-full"
               />

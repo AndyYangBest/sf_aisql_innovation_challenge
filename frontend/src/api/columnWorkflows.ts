@@ -40,6 +40,14 @@ export interface ColumnWorkflowRunResponse {
   workflow_tool_calls?: ColumnWorkflowToolCall[];
 }
 
+export interface ColumnWorkflowSelectedRunRequest {
+  tool_calls: Array<{
+    tool_name: string;
+    input?: Record<string, any>;
+  }>;
+  focus?: string;
+}
+
 export const columnWorkflowsApi = {
   async estimate(tableAssetId: number, columnName: string): Promise<ApiResponse<ColumnWorkflowEstimate>> {
     return apiRequest(async () => {
@@ -69,6 +77,27 @@ export const columnWorkflowsApi = {
       });
       if (!response.ok) {
         throw new Error('Failed to run column workflow');
+      }
+      return await response.json();
+    });
+  },
+
+  async runSelected(
+    tableAssetId: number,
+    columnName: string,
+    payload: ColumnWorkflowSelectedRunRequest
+  ): Promise<ApiResponse<ColumnWorkflowRunResponse>> {
+    return apiRequest(async () => {
+      const response = await fetch(
+        `/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/run-selected`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
+      if (!response.ok) {
+        throw new Error("Failed to run selected workflow nodes");
       }
       return await response.json();
     });

@@ -476,6 +476,14 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
               />
               Approved to apply fixes
             </label>
+            <button
+              type="button"
+              className="w-full rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-800 hover:bg-emerald-100"
+              onClick={() => setApprovalDialogOpen(true)}
+              disabled={readonly}
+            >
+              {nodeData.approved ? "Review Plan" : "Review & Approve"}
+            </button>
             {renderDetailField(
               'Note',
               <input

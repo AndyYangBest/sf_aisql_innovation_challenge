@@ -340,6 +340,7 @@ export const EDAWorkflowEditor = ({
   const [minimapVisible, setMinimapVisible] = useState(true);
   const applyingRef = useRef(false);
   const lastEditorJsonRef = useRef<string | null>(null);
+  const lastLayoutSignatureRef = useRef<string | null>(null);
 
   // Node registries
   const nodeRegistries = useMemo(() => createEDANodeRegistries(), []);
@@ -366,6 +367,14 @@ export const EDAWorkflowEditor = ({
   const runningNodeIds = useMemo(() => {
     return new Set(nodes.filter((node) => node.data.status === 'running').map((node) => node.id));
   }, [nodes]);
+
+  const layoutSignature = useMemo(
+    () => nodes.map((node) => node.id).sort().join('|'),
+    [nodes]
+  );
+  const layoutNodeCountRef = useRef(0);
+  const pendingLayoutRef = useRef(false);
+  const wasRunningRef = useRef(false);
 
   const handleAllLayersRendered = () => {
     setEditorReady(true);
@@ -397,6 +406,46 @@ export const EDAWorkflowEditor = ({
       applyingRef.current = false;
     }, 0);
   }, [editorReady, workflowData]);
+
+  useEffect(() => {
+    if (!editorReady) {
+      return;
+    }
+    if (nodes.length > layoutNodeCountRef.current) {
+      layoutNodeCountRef.current = nodes.length;
+      if (isRunning) {
+        pendingLayoutRef.current = true;
+      }
+    }
+  }, [editorReady, isRunning, nodes.length]);
+
+  useEffect(() => {
+    if (!editorReady) {
+      return;
+    }
+    const ctx = editorRef.current;
+    if (!ctx?.tools?.autoLayout) {
+      wasRunningRef.current = isRunning;
+      return;
+    }
+    if (wasRunningRef.current && !isRunning && pendingLayoutRef.current) {
+      pendingLayoutRef.current = false;
+      const runLayout = async () => {
+        await delay(120);
+        await ctx.tools.autoLayout({
+          enableAnimation: true,
+          animationDuration: 520,
+          layoutConfig: {
+            rankdir: 'LR',
+            nodesep: 80,
+            ranksep: 120,
+          },
+        });
+      };
+      void runLayout();
+    }
+    wasRunningRef.current = isRunning;
+  }, [editorReady, isRunning, layoutSignature]);
 
   if (nodes.length === 0) {
     return (

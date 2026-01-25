@@ -32,6 +32,7 @@ type OutputGroup = {
   charts: ChartArtifact[];
   insights: InsightArtifact[];
   features: FeatureOutput[];
+  repairs: RepairPlanOutput[];
 };
 
 type FeatureOutput = {
@@ -41,6 +42,79 @@ type FeatureOutput = {
   kind: string;
   instruction?: string;
   model?: string;
+};
+
+type RepairPlanOutput = {
+  id: string;
+  columnName: string;
+  tableId: string;
+  plan: Record<string, any>;
+};
+
+const buildRepairPlanArtifact = (repair: RepairPlanOutput): Artifact => {
+  const plan = repair.plan || {};
+  const steps = Array.isArray(plan.steps) ? plan.steps : [];
+  const sqlPreviews = plan.sql_previews || {};
+  const rollback = plan.rollback || {};
+  const snapshot = plan.snapshot || {};
+  const lines = [
+    `**Column:** ${repair.columnName}`,
+    plan.summary ? `**Summary:** ${plan.summary}` : null,
+    plan.plan_id ? `**Plan ID:** ${plan.plan_id}` : null,
+    plan.plan_hash ? `**Plan Hash:** ${plan.plan_hash}` : null,
+    snapshot.signature ? `**Snapshot:** ${snapshot.signature}` : null,
+    snapshot.total_count ? `**Snapshot Rows:** ${snapshot.total_count}` : null,
+    plan.token_estimate?.token_count
+      ? `**Token Estimate:** ${plan.token_estimate.token_count}`
+      : null,
+  ].filter(Boolean) as string[];
+
+  if (steps.length > 0) {
+    lines.push("**Steps:**");
+    steps.forEach((step: any) => {
+      if (step.type === "null_repair") {
+        lines.push(
+          `- Null repair (${step.strategy}) · ~${step.estimated_rows ?? 0} rows`
+        );
+      } else if (step.type === "conflict_repair") {
+        lines.push(
+          `- Conflict repair (${step.strategy}) · ${step.estimated_groups ?? 0} groups`
+        );
+      } else {
+        lines.push(`- ${step.type}`);
+      }
+    });
+  }
+
+  if (sqlPreviews?.null_repair?.update_sql) {
+    lines.push("**Null Repair SQL Preview:**");
+    lines.push("```sql");
+    lines.push(sqlPreviews.null_repair.update_sql);
+    lines.push("```");
+  }
+  if (sqlPreviews?.conflict_repair?.update_sql) {
+    lines.push("**Conflict Repair SQL Preview:**");
+    lines.push("```sql");
+    lines.push(sqlPreviews.conflict_repair.update_sql);
+    lines.push("```");
+  }
+  if (rollback?.strategy) {
+    lines.push(`**Rollback Strategy:** ${rollback.strategy}`);
+    if (rollback.audit_table) {
+      lines.push(`**Audit Table:** ${rollback.audit_table}`);
+    }
+  }
+
+  return {
+    type: "doc",
+    id: `repair_plan_${repair.tableId}_${repair.columnName}`,
+    tableId: repair.tableId,
+    content: {
+      title: `${repair.columnName} repair plan`,
+      markdown: lines.join("\n"),
+    },
+    createdAt: new Date().toISOString(),
+  };
 };
 
 const normalizeChartType = (value?: string): ChartArtifact["content"]["chartType"] => {
@@ -105,6 +179,13 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
       if (!bullets.length && typeof analysis.summary === "string" && analysis.summary.trim()) {
         bullets = [analysis.summary.trim()];
       }
+      if (
+        !bullets.length &&
+        typeof analysis.agent_summary === "string" &&
+        analysis.agent_summary.trim()
+      ) {
+        bullets = [analysis.agent_summary.trim()];
+      }
       const caveats = Array.isArray(analysis.caveats)
         ? analysis.caveats
         : Array.isArray((analysis.insights as any)?.caveats)
@@ -158,7 +239,23 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
         });
       }
 
-      if (charts.length === 0 && insights.length === 0 && featureOutputs.length === 0) {
+      const repairs: RepairPlanOutput[] = [];
+      const plan = analysis.repair_plan;
+      if (plan && (plan.summary || (Array.isArray(plan.steps) && plan.steps.length > 0))) {
+        repairs.push({
+          id: plan.plan_id || `repair_${tableId}_${column.column_name}`,
+          columnName: column.column_name,
+          tableId,
+          plan,
+        });
+      }
+
+      if (
+        charts.length === 0 &&
+        insights.length === 0 &&
+        featureOutputs.length === 0 &&
+        repairs.length === 0
+      ) {
         return null;
       }
 
@@ -167,6 +264,7 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
         charts,
         insights,
         features: featureOutputs,
+        repairs,
       };
     })
     .filter(Boolean) as OutputGroup[];
@@ -264,7 +362,11 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
       <div className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground min-w-0 max-w-full gap-2">
         <span className="truncate">{outputGroups.length} columns with outputs</span>
         <span className="shrink-0">
-          {outputGroups.reduce((sum, group) => sum + group.charts.length + group.insights.length, 0)} items
+          {outputGroups.reduce(
+            (sum, group) =>
+              sum + group.charts.length + group.insights.length + group.repairs.length,
+            0
+          )} items
         </span>
       </div>
 
@@ -296,7 +398,7 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium truncate">{group.columnName}</div>
                     <div className="text-[11px] text-muted-foreground truncate">
-                      {group.charts.length} charts · {group.insights.length} insights · {group.features.length} features
+                      {group.charts.length} charts · {group.insights.length} insights · {group.features.length} features · {group.repairs.length} repair plans
                     </div>
                   </div>
                   <Button
@@ -425,6 +527,57 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                             >
                               {isSaved ? "Saved" : "Save"}
                             </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {group.repairs.length > 0 && (
+                  <div className="space-y-2 max-w-full">
+                    {group.repairs.map((repair) => {
+                      const plan = repair.plan || {};
+                      const planSteps = Array.isArray(plan.steps) ? plan.steps : [];
+                      const tokenCount = plan.token_estimate?.token_count ?? 0;
+                      const repairArtifact = buildRepairPlanArtifact(repair);
+                      const isSaved = savedIds.has(repairArtifact.id);
+                      return (
+                        <div
+                          key={repair.id}
+                          className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 text-xs"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="text-[12px] font-medium text-foreground">
+                                Repair plan ready
+                              </div>
+                              {plan.summary && (
+                                <div className="text-[11px] text-muted-foreground">
+                                  {plan.summary}
+                                </div>
+                              )}
+                              {plan.snapshot?.total_count && (
+                                <div className="text-[10px] text-muted-foreground">
+                                  Snapshot rows: {plan.snapshot.total_count}
+                                </div>
+                              )}
+                              {tokenCount > 0 && (
+                                <div className="text-[10px] text-muted-foreground">
+                                  Token estimate: {tokenCount}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-col gap-2">
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                disabled={isSaved}
+                                onClick={() => handleSave(repairArtifact)}
+                              >
+                                <Save className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </div>
                         </div>
                       );
