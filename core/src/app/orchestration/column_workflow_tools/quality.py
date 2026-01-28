@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import uuid
 from typing import Any
 from strands import tool
@@ -92,6 +93,25 @@ class ColumnWorkflowQualityMixin:
             conflicts = {"skipped": True, "reason": "group_by_columns_missing"}
             await self._update_column_analysis(ctx, {"conflicts": conflicts})
             return {"column": column_name, "conflicts": conflicts}
+        try:
+            available_columns = {name.lower() for name in await self._list_all_columns(ctx.table_asset_id)}
+        except Exception:
+            available_columns = set()
+        if available_columns:
+            invalid_columns = [name for name in group_by if name.lower() not in available_columns]
+            group_by = [name for name in group_by if name.lower() in available_columns]
+            if invalid_columns:
+                conflicts = {
+                    "skipped": True,
+                    "reason": "group_by_columns_invalid",
+                    "invalid_columns": invalid_columns,
+                }
+                await self._update_column_analysis(ctx, {"conflicts": conflicts})
+                return {"column": column_name, "conflicts": conflicts}
+            if not group_by:
+                conflicts = {"skipped": True, "reason": "group_by_columns_missing"}
+                await self._update_column_analysis(ctx, {"conflicts": conflicts})
+                return {"column": column_name, "conflicts": conflicts}
 
         target_time_column = time_column or ctx.time_column
         base_query = self._build_windowed_query(ctx, sample_size, window_days, target_time_column)
@@ -182,6 +202,25 @@ class ColumnWorkflowQualityMixin:
         )
         conflict_rows = snapshot.get("conflict_rows")
 
+        existing_plan = analysis.get("repair_plan")
+        if isinstance(existing_plan, dict):
+            existing_signature = (existing_plan.get("snapshot") or {}).get("signature")
+            if existing_signature and existing_signature == snapshot.get("signature"):
+                existing_null_strategy = None
+                existing_conflict_strategy = None
+                for step in existing_plan.get("steps", []):
+                    if step.get("type") == "null_repair":
+                        existing_null_strategy = step.get("strategy")
+                    if step.get("type") == "conflict_repair":
+                        existing_conflict_strategy = step.get("strategy")
+                if (
+                    (existing_null_strategy == strategy or null_count == 0)
+                    and (existing_conflict_strategy == conflict_plan or conflict_groups == 0)
+                    and existing_plan.get("plan_id")
+                    and existing_plan.get("plan_hash")
+                ):
+                    return {"column": column_name, "repair_plan": existing_plan}
+
         row_id_column = self._resolve_row_id_column(ctx)
         audit_table = (
             overrides.get("repair_audit_table")
@@ -189,7 +228,14 @@ class ColumnWorkflowQualityMixin:
             or table_overrides.get("repair_audit_table")
             or table_overrides.get("audit_table")
         )
-        apply_ready = bool(ctx.table_ref) and bool(row_id_column)
+        apply_mode = (
+            overrides.get("data_fix_target")
+            or overrides.get("apply_mode")
+            or "fixing_table"
+        )
+        apply_ready = bool(ctx.table_ref) and (
+            apply_mode == "fixing_table" or bool(row_id_column)
+        )
         rollback = (
             {"strategy": "audit_table", "audit_table": audit_table}
             if audit_table
@@ -324,6 +370,7 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             "steps": plan_steps,
             "snapshot": snapshot,
             "row_id_column": row_id_column,
+            "apply_mode": apply_mode,
             "apply_ready": apply_ready,
             "rollback": rollback,
             "sql_previews": sql_previews,
@@ -352,12 +399,23 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         """Gate data optimization steps behind explicit user approval."""
         ctx = await self._load_context(table_asset_id, column_name)
         overrides = ctx.column_meta.overrides or {}
-        is_approved = bool(approved if approved is not None else overrides.get(approval_key))
         analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
         plan = dict(analysis.get("repair_plan", {}))
-        approved_plan_id = overrides.get("data_fix_plan_id")
-        approved_plan_hash = overrides.get("data_fix_plan_hash")
-        approved_snapshot = overrides.get("data_fix_snapshot_signature")
+        is_approved = bool(approved if approved is not None else overrides.get(approval_key) or plan.get("approved"))
+        if not plan or not plan.get("plan_id") or not plan.get("plan_hash"):
+            return {
+                "column": column_name,
+                "approved": False,
+                "approval_key": approval_key,
+                "skipped": True,
+                "reason": "plan_missing",
+            }
+        approved_plan_id = overrides.get("data_fix_plan_id") or plan.get("plan_id")
+        approved_plan_hash = overrides.get("data_fix_plan_hash") or plan.get("plan_hash")
+        approved_snapshot = (
+            overrides.get("data_fix_snapshot_signature")
+            or (plan.get("snapshot") or {}).get("signature")
+        )
         approval_match = True
         if approved_plan_id or approved_plan_hash or approved_snapshot:
             approval_match = (
@@ -372,6 +430,18 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         plan["approved_snapshot_signature"] = approved_snapshot
         plan["approval_match"] = approval_match
         await self._update_column_analysis(ctx, {"repair_plan": plan})
+        if is_approved:
+            updated_overrides = dict(overrides)
+            updated_overrides[approval_key] = True
+            if approved_plan_id:
+                updated_overrides["data_fix_plan_id"] = approved_plan_id
+            if approved_plan_hash:
+                updated_overrides["data_fix_plan_hash"] = approved_plan_hash
+            if approved_snapshot:
+                updated_overrides["data_fix_snapshot_signature"] = approved_snapshot
+            ctx.column_meta.overrides = updated_overrides
+            flag_modified(ctx.column_meta, "overrides")
+            await self.db.commit()
         return {"column": column_name, "approved": is_approved, "approval_key": approval_key}
 
 
@@ -382,25 +452,55 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         column_name: str,
         null_strategy: str | None = None,
         conflict_strategy: str | None = None,
+        plan_id: str | None = None,
+        plan_hash: str | None = None,
+        snapshot_signature: str | None = None,
         approval_key: str = "data_fix_approved",
     ) -> dict[str, Any]:
         """Apply approved null/conflict repair strategies to the source table."""
         ctx = await self._load_context(table_asset_id, column_name)
         overrides = ctx.column_meta.overrides or {}
-        approved = bool(overrides.get(approval_key))
-        if not approved:
-            return {"column": column_name, "skipped": True, "reason": "approval_required"}
-        if not ctx.table_ref:
-            return {"column": column_name, "skipped": True, "reason": "table_ref_missing"}
+        if plan_id or plan_hash or snapshot_signature:
+            overrides = dict(overrides)
+            if plan_id:
+                overrides["data_fix_plan_id"] = plan_id
+            if plan_hash:
+                overrides["data_fix_plan_hash"] = plan_hash
+            if snapshot_signature:
+                overrides["data_fix_snapshot_signature"] = snapshot_signature
 
         analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
         nulls = analysis.get("nulls", {})
         conflicts = analysis.get("conflicts", {})
         plan = analysis.get("repair_plan", {})
+        if isinstance(plan, str):
+            try:
+                plan = json.loads(plan)
+            except json.JSONDecodeError:
+                plan = {}
+        if isinstance(plan, str):
+            try:
+                plan = json.loads(plan)
+            except json.JSONDecodeError:
+                plan = {}
+        approved = bool(overrides.get(approval_key) or (isinstance(plan, dict) and plan.get("approved")))
+        if not approved:
+            return {"column": column_name, "skipped": True, "reason": "approval_required"}
+        if not ctx.table_ref:
+            return {"column": column_name, "skipped": True, "reason": "table_ref_missing"}
 
         async def record_skip(reason: str) -> dict[str, Any]:
             plan_update = dict(plan) if isinstance(plan, dict) else {}
+            plan_update["apply_mode"] = "source_table"
             plan_update["apply_skipped_reason"] = reason
+            plan_update["apply_skipped_details"] = {
+                "approved_plan_id": overrides.get("data_fix_plan_id"),
+                "approved_plan_hash": overrides.get("data_fix_plan_hash"),
+                "approved_snapshot": overrides.get("data_fix_snapshot_signature"),
+                "plan_id": plan.get("plan_id") if isinstance(plan, dict) else None,
+                "plan_hash": plan.get("plan_hash") if isinstance(plan, dict) else None,
+                "plan_snapshot": (plan.get("snapshot") or {}).get("signature") if isinstance(plan, dict) else None,
+            }
             await self._update_column_analysis(
                 ctx,
                 {
@@ -412,20 +512,15 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             )
             return {"column": column_name, "skipped": True, "reason": reason}
 
-        if not plan:
+        if not plan or not plan.get("plan_id") or not plan.get("plan_hash"):
+            refreshed = await self.plan_data_repairs(
+                table_asset_id, column_name, null_strategy, conflict_strategy
+            )
+            plan = refreshed.get("repair_plan") if isinstance(refreshed, dict) else None
+            if not plan or not plan.get("plan_id") or not plan.get("plan_hash"):
+                return await record_skip("plan_missing")
+        if not plan.get("plan_id") or not plan.get("plan_hash"):
             return await record_skip("plan_missing")
-
-        approved_plan_id = overrides.get("data_fix_plan_id")
-        approved_plan_hash = overrides.get("data_fix_plan_hash")
-        approved_snapshot = overrides.get("data_fix_snapshot_signature")
-        if not (approved_plan_id and approved_plan_hash and approved_snapshot):
-            return await record_skip("approval_missing_plan_info")
-        if (
-            approved_plan_id != plan.get("plan_id")
-            or approved_plan_hash != plan.get("plan_hash")
-            or approved_snapshot != (plan.get("snapshot") or {}).get("signature")
-        ):
-            return await record_skip("approval_plan_mismatch")
 
         group_by = (plan.get("snapshot") or {}).get("group_by_columns") or conflicts.get(
             "group_by_columns"
@@ -433,13 +528,109 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         if isinstance(group_by, str):
             group_by = [item.strip() for item in group_by.split(",") if item.strip()]
         group_by = [str(item) for item in group_by if item]
+
+        if isinstance(plan, dict) and not (plan.get("snapshot") or {}).get("signature"):
+            snapshot = await self._compute_snapshot(ctx, column_name, group_by)
+            plan = dict(plan)
+            plan["snapshot"] = snapshot
+            await self._update_column_analysis(ctx, {"repair_plan": plan})
+
+        group_by = (plan.get("snapshot") or {}).get("group_by_columns") or conflicts.get(
+            "group_by_columns"
+        ) or overrides.get("conflict_group_columns") or []
+        if isinstance(group_by, str):
+            group_by = [item.strip() for item in group_by.split(",") if item.strip()]
+        group_by = [str(item) for item in group_by if item]
+
+        if isinstance(plan, dict) and not (plan.get("snapshot") or {}).get("signature"):
+            snapshot = await self._compute_snapshot(ctx, column_name, group_by)
+            plan = dict(plan)
+            plan["snapshot"] = snapshot
+            await self._update_column_analysis(ctx, {"repair_plan": plan})
+
+        approval_signature_present = bool(
+            overrides.get("data_fix_plan_id")
+            or overrides.get("data_fix_plan_hash")
+            or overrides.get("data_fix_snapshot_signature")
+            or plan.get("approved_plan_id")
+            or plan.get("approved_plan_hash")
+            or plan.get("approved_snapshot_signature")
+        )
+        approved_plan_id = (
+            overrides.get("data_fix_plan_id")
+            or plan.get("approved_plan_id")
+            or plan.get("plan_id")
+        )
+        approved_plan_hash = (
+            overrides.get("data_fix_plan_hash")
+            or plan.get("approved_plan_hash")
+            or plan.get("plan_hash")
+        )
+        approved_snapshot = (
+            overrides.get("data_fix_snapshot_signature")
+            or plan.get("approved_snapshot_signature")
+            or (plan.get("snapshot") or {}).get("signature")
+        )
+        if not approved_snapshot:
+            snapshot = await self._compute_snapshot(ctx, column_name, group_by)
+            if snapshot.get("signature"):
+                plan = dict(plan)
+                plan["snapshot"] = snapshot
+                await self._update_column_analysis(ctx, {"repair_plan": plan})
+                approved_snapshot = snapshot.get("signature")
+        if isinstance(plan, dict):
+            approved_plan_id = approved_plan_id or plan.get("plan_id")
+            approved_plan_hash = approved_plan_hash or plan.get("plan_hash")
+            approved_snapshot = approved_snapshot or (plan.get("snapshot") or {}).get("signature")
+
+        if not (approved_plan_id and approved_plan_hash and approved_snapshot):
+            refreshed = await self.plan_data_repairs(
+                table_asset_id, column_name, null_strategy, conflict_strategy
+            )
+            plan = refreshed.get("repair_plan") if isinstance(refreshed, dict) else plan
+            approved_plan_id = approved_plan_id or (plan.get("plan_id") if isinstance(plan, dict) else None)
+            approved_plan_hash = approved_plan_hash or (plan.get("plan_hash") if isinstance(plan, dict) else None)
+            approved_snapshot = approved_snapshot or (
+                (plan.get("snapshot") or {}).get("signature") if isinstance(plan, dict) else None
+            )
+        if isinstance(plan, dict):
+            approved_plan_id = approved_plan_id or plan.get("plan_id")
+            approved_plan_hash = approved_plan_hash or plan.get("plan_hash")
+            approved_snapshot = approved_snapshot or (plan.get("snapshot") or {}).get("signature")
+
+        if not (approved_plan_id and approved_plan_hash and approved_snapshot):
+            return await record_skip("approval_missing_plan_info")
+        if approval_signature_present and (
+            approved_plan_id != plan.get("plan_id")
+            or approved_plan_hash != plan.get("plan_hash")
+            or approved_snapshot != (plan.get("snapshot") or {}).get("signature")
+        ):
+            return await record_skip("approval_plan_mismatch")
+
+        expected_snapshot = approved_snapshot or (plan.get("snapshot") or {}).get("signature")
         current_snapshot = await self._compute_snapshot(ctx, column_name, group_by)
-        if current_snapshot.get("signature") != (plan.get("snapshot") or {}).get("signature"):
+        if expected_snapshot and current_snapshot.get("signature") != expected_snapshot:
+            refreshed = await self.plan_data_repairs(
+                table_asset_id, column_name, null_strategy, conflict_strategy
+            )
+            plan = (
+                refreshed.get("repair_plan") if isinstance(refreshed, dict) else plan
+            )
             return await record_skip("snapshot_mismatch")
 
-        row_id_column = plan.get("row_id_column") or self._resolve_row_id_column(ctx)
-        if not row_id_column:
-            return await record_skip("row_id_column_missing")
+        if approved and (
+            overrides.get("data_fix_plan_id") is None
+            or overrides.get("data_fix_plan_hash") is None
+            or overrides.get("data_fix_snapshot_signature") is None
+        ):
+            updated_overrides = dict(overrides)
+            updated_overrides.setdefault("data_fix_plan_id", approved_plan_id)
+            updated_overrides.setdefault("data_fix_plan_hash", approved_plan_hash)
+            updated_overrides.setdefault("data_fix_snapshot_signature", approved_snapshot)
+            updated_overrides.setdefault(approval_key, True)
+            ctx.column_meta.overrides = updated_overrides
+            flag_modified(ctx.column_meta, "overrides")
+            await self.db.commit()
 
         planned_null_strategy = null_strategy or overrides.get("null_strategy")
         planned_conflict_strategy = conflict_strategy or overrides.get("conflict_strategy")
@@ -549,6 +740,7 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                 if applied_any:
                     plan_update["applied"] = True
                     plan_update["applied_at"] = datetime.utcnow().isoformat()
+                plan_update["apply_mode"] = "source_table"
                 analysis_update = {"repair_results": repair_results, "repair_plan": plan_update}
                 await self._update_column_analysis(ctx, analysis_update)
                 return {
@@ -661,6 +853,7 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         if applied_any:
             plan_update["applied"] = True
             plan_update["applied_at"] = datetime.utcnow().isoformat()
+        plan_update["apply_mode"] = "source_table"
         analysis_update = {"repair_results": repair_results, "repair_plan": plan_update}
         await self._update_column_analysis(ctx, analysis_update)
         return {
@@ -669,3 +862,297 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             "approved": approved,
         }
 
+
+    @tool
+    async def apply_data_repairs_to_fixing_table(
+        self,
+        table_asset_id: int,
+        column_name: str,
+        null_strategy: str | None = None,
+        conflict_strategy: str | None = None,
+        plan_id: str | None = None,
+        plan_hash: str | None = None,
+        snapshot_signature: str | None = None,
+        approval_key: str = "data_fix_approved",
+    ) -> dict[str, Any]:
+        """Apply approved repairs by writing to a fixing table (does not mutate source table)."""
+        ctx = await self._load_context(table_asset_id, column_name)
+        overrides = ctx.column_meta.overrides or {}
+        if plan_id or plan_hash or snapshot_signature:
+            overrides = dict(overrides)
+            if plan_id:
+                overrides["data_fix_plan_id"] = plan_id
+            if plan_hash:
+                overrides["data_fix_plan_hash"] = plan_hash
+            if snapshot_signature:
+                overrides["data_fix_snapshot_signature"] = snapshot_signature
+
+        analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
+        nulls = analysis.get("nulls", {})
+        conflicts = analysis.get("conflicts", {})
+        plan = analysis.get("repair_plan", {})
+        if isinstance(plan, str):
+            try:
+                plan = json.loads(plan)
+            except json.JSONDecodeError:
+                plan = {}
+        approved = bool(overrides.get(approval_key) or (isinstance(plan, dict) and plan.get("approved")))
+        if not approved:
+            return {"column": column_name, "skipped": True, "reason": "approval_required"}
+        if not ctx.table_ref:
+            return {"column": column_name, "skipped": True, "reason": "table_ref_missing"}
+
+        async def record_skip(reason: str) -> dict[str, Any]:
+            plan_update = dict(plan) if isinstance(plan, dict) else {}
+            plan_update["apply_mode"] = "fixing_table"
+            plan_update["apply_skipped_reason"] = reason
+            plan_update["apply_skipped_details"] = {
+                "approved_plan_id": overrides.get("data_fix_plan_id"),
+                "approved_plan_hash": overrides.get("data_fix_plan_hash"),
+                "approved_snapshot": overrides.get("data_fix_snapshot_signature"),
+                "plan_id": plan.get("plan_id") if isinstance(plan, dict) else None,
+                "plan_hash": plan.get("plan_hash") if isinstance(plan, dict) else None,
+                "plan_snapshot": (plan.get("snapshot") or {}).get("signature") if isinstance(plan, dict) else None,
+            }
+            await self._update_column_analysis(
+                ctx,
+                {
+                    "repair_results": [
+                        {"type": "repair_apply", "status": "skipped", "reason": reason}
+                    ],
+                    "repair_plan": plan_update,
+                },
+            )
+            return {"column": column_name, "skipped": True, "reason": reason}
+
+        if not plan or not plan.get("plan_id") or not plan.get("plan_hash"):
+            refreshed = await self.plan_data_repairs(
+                table_asset_id, column_name, null_strategy, conflict_strategy
+            )
+            plan = refreshed.get("repair_plan") if isinstance(refreshed, dict) else None
+            if not plan or not plan.get("plan_id") or not plan.get("plan_hash"):
+                return await record_skip("plan_missing")
+        if not plan.get("plan_id") or not plan.get("plan_hash"):
+            return await record_skip("plan_missing")
+
+        group_by = (plan.get("snapshot") or {}).get("group_by_columns") or conflicts.get(
+            "group_by_columns"
+        ) or overrides.get("conflict_group_columns") or []
+        if isinstance(group_by, str):
+            group_by = [item.strip() for item in group_by.split(",") if item.strip()]
+        group_by = [str(item) for item in group_by if item]
+
+        if isinstance(plan, dict) and not (plan.get("snapshot") or {}).get("signature"):
+            snapshot = await self._compute_snapshot(ctx, column_name, group_by)
+            plan = dict(plan)
+            plan["snapshot"] = snapshot
+            await self._update_column_analysis(ctx, {"repair_plan": plan})
+
+        approval_signature_present = bool(
+            overrides.get("data_fix_plan_id")
+            or overrides.get("data_fix_plan_hash")
+            or overrides.get("data_fix_snapshot_signature")
+            or plan.get("approved_plan_id")
+            or plan.get("approved_plan_hash")
+            or plan.get("approved_snapshot_signature")
+        )
+        approved_plan_id = (
+            overrides.get("data_fix_plan_id")
+            or plan.get("approved_plan_id")
+            or plan.get("plan_id")
+        )
+        approved_plan_hash = (
+            overrides.get("data_fix_plan_hash")
+            or plan.get("approved_plan_hash")
+            or plan.get("plan_hash")
+        )
+        approved_snapshot = (
+            overrides.get("data_fix_snapshot_signature")
+            or plan.get("approved_snapshot_signature")
+            or (plan.get("snapshot") or {}).get("signature")
+        )
+        if not approved_snapshot:
+            snapshot = await self._compute_snapshot(ctx, column_name, group_by)
+            if snapshot.get("signature"):
+                plan = dict(plan)
+                plan["snapshot"] = snapshot
+                await self._update_column_analysis(ctx, {"repair_plan": plan})
+                approved_snapshot = snapshot.get("signature")
+        if isinstance(plan, dict):
+            approved_plan_id = approved_plan_id or plan.get("plan_id")
+            approved_plan_hash = approved_plan_hash or plan.get("plan_hash")
+            approved_snapshot = approved_snapshot or (plan.get("snapshot") or {}).get("signature")
+
+        if not (approved_plan_id and approved_plan_hash and approved_snapshot):
+            refreshed = await self.plan_data_repairs(
+                table_asset_id, column_name, null_strategy, conflict_strategy
+            )
+            plan = refreshed.get("repair_plan") if isinstance(refreshed, dict) else plan
+            approved_plan_id = approved_plan_id or (plan.get("plan_id") if isinstance(plan, dict) else None)
+            approved_plan_hash = approved_plan_hash or (plan.get("plan_hash") if isinstance(plan, dict) else None)
+            approved_snapshot = approved_snapshot or (
+                (plan.get("snapshot") or {}).get("signature") if isinstance(plan, dict) else None
+            )
+        if isinstance(plan, dict):
+            approved_plan_id = approved_plan_id or plan.get("plan_id")
+            approved_plan_hash = approved_plan_hash or plan.get("plan_hash")
+            approved_snapshot = approved_snapshot or (plan.get("snapshot") or {}).get("signature")
+
+        if not (approved_plan_id and approved_plan_hash and approved_snapshot):
+            return await record_skip("approval_missing_plan_info")
+        if approval_signature_present and (
+            approved_plan_id != plan.get("plan_id")
+            or approved_plan_hash != plan.get("plan_hash")
+            or approved_snapshot != (plan.get("snapshot") or {}).get("signature")
+        ):
+            return await record_skip("approval_plan_mismatch")
+
+        expected_snapshot = approved_snapshot or (plan.get("snapshot") or {}).get("signature")
+        current_snapshot = await self._compute_snapshot(ctx, column_name, group_by)
+        if expected_snapshot and current_snapshot.get("signature") != expected_snapshot:
+            refreshed = await self.plan_data_repairs(
+                table_asset_id, column_name, null_strategy, conflict_strategy
+            )
+            plan = (
+                refreshed.get("repair_plan") if isinstance(refreshed, dict) else plan
+            )
+            return await record_skip("snapshot_mismatch")
+
+        if approved and (
+            overrides.get("data_fix_plan_id") is None
+            or overrides.get("data_fix_plan_hash") is None
+            or overrides.get("data_fix_snapshot_signature") is None
+        ):
+            updated_overrides = dict(overrides)
+            updated_overrides.setdefault("data_fix_plan_id", approved_plan_id)
+            updated_overrides.setdefault("data_fix_plan_hash", approved_plan_hash)
+            updated_overrides.setdefault("data_fix_snapshot_signature", approved_snapshot)
+            updated_overrides.setdefault(approval_key, True)
+            ctx.column_meta.overrides = updated_overrides
+            flag_modified(ctx.column_meta, "overrides")
+            await self.db.commit()
+
+        row_id_column = plan.get("row_id_column") or self._resolve_row_id_column(ctx)
+
+        planned_null_strategy = null_strategy or overrides.get("null_strategy")
+        planned_conflict_strategy = conflict_strategy or overrides.get("conflict_strategy")
+        if not planned_null_strategy:
+            for step in plan.get("steps", []):
+                if step.get("type") == "null_repair":
+                    planned_null_strategy = step.get("strategy")
+                    break
+        if not planned_conflict_strategy:
+            for step in plan.get("steps", []):
+                if step.get("type") == "conflict_repair":
+                    planned_conflict_strategy = step.get("strategy")
+                    break
+
+        col = self._quote_ident(column_name)
+        target_table = self._build_fixing_table_ref(ctx.table_ref, column_name)
+        dry_run = bool(overrides.get("data_fix_dry_run") or overrides.get("repair_dry_run"))
+
+        repair_results: list[dict[str, Any]] = []
+        sql_previews = plan.get("sql_previews") or {}
+
+        if dry_run:
+            plan_update = dict(plan) if isinstance(plan, dict) else {}
+            plan_update["apply_mode"] = "fixing_table"
+            plan_update["target_table"] = target_table
+            await self._update_column_analysis(
+                ctx,
+                {"repair_results": [{"type": "repair_apply", "status": "dry_run"}], "repair_plan": plan_update},
+            )
+            return {
+                "column": column_name,
+                "repairs": repair_results,
+                "approved": approved,
+                "target_table": target_table,
+                "dry_run": True,
+            }
+
+        await self.sf.execute_query(
+            f"CREATE OR REPLACE TABLE {target_table} AS SELECT * FROM {ctx.table_ref}"
+        )
+
+        null_count = self._coerce_int(nulls.get("null_count"))
+        if null_count and planned_null_strategy:
+            null_step = next(
+                (step for step in plan.get("steps", []) if step.get("type") == "null_repair"),
+                {},
+            )
+            fill_expr = null_step.get("fill_expr")
+            fill_value = null_step.get("fill_value")
+            if fill_expr is None:
+                repair_results.append(
+                    {
+                        "type": "null_repair",
+                        "status": "skipped",
+                        "strategy": planned_null_strategy,
+                        "reason": "fill_value_unavailable",
+                    }
+                )
+            else:
+                update_query = (
+                    f"UPDATE {target_table} SET {col} = {fill_expr} WHERE {col} IS NULL"
+                )
+                await self.sf.execute_query(update_query)
+                repair_results.append(
+                    {
+                        "type": "null_repair",
+                        "status": "applied",
+                        "strategy": planned_null_strategy,
+                        "fill_value": fill_value,
+                        "targeted_rows": null_count,
+                    }
+                )
+
+        conflict_groups = self._coerce_int(conflicts.get("conflict_groups"))
+        if conflict_groups and group_by and planned_conflict_strategy:
+            strategy_key = str(planned_conflict_strategy).lower()
+            if strategy_key in {"manual_review", "manual"}:
+                repair_results.append(
+                    {
+                        "type": "conflict_repair",
+                        "status": "skipped",
+                        "strategy": planned_conflict_strategy,
+                        "reason": "manual_review",
+                    }
+                )
+            else:
+                preview = sql_previews.get("conflict_repair") or {}
+                update_query = preview.get("update_sql")
+                if update_query:
+                    update_query = update_query.replace(ctx.table_ref, target_table, 1)
+                    await self.sf.execute_query(update_query)
+                    repair_results.append(
+                        {
+                            "type": "conflict_repair",
+                            "status": "applied",
+                            "strategy": planned_conflict_strategy,
+                        }
+                    )
+                else:
+                    repair_results.append(
+                        {
+                            "type": "conflict_repair",
+                            "status": "skipped",
+                            "strategy": planned_conflict_strategy,
+                            "reason": "update_sql_missing",
+                        }
+                    )
+
+        plan_update = dict(plan) if isinstance(plan, dict) else {}
+        if any(item.get("status") == "applied" for item in repair_results):
+            plan_update["applied"] = True
+            plan_update["applied_at"] = datetime.utcnow().isoformat()
+        plan_update["apply_mode"] = "fixing_table"
+        plan_update["target_table"] = target_table
+        analysis_update = {"repair_results": repair_results, "repair_plan": plan_update}
+        await self._update_column_analysis(ctx, analysis_update)
+
+        return {
+            "column": column_name,
+            "repairs": repair_results,
+            "approved": approved,
+            "target_table": target_table,
+        }

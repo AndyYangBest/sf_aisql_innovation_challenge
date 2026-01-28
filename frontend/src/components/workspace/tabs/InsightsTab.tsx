@@ -96,13 +96,13 @@ const InsightCard = ({ artifact, onPin, onDelete, formatDate }: InsightCardProps
   if (artifact.type !== "insight") return null;
 
   return (
-    <div className="p-5 rounded-xl glass animate-slide-up">
+    <div className="p-5 rounded-xl glass animate-slide-up break-words min-w-0">
       <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded bg-warning/10">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="p-1.5 rounded bg-warning/10 flex-shrink-0">
             <Lightbulb className="h-4 w-4 text-warning" />
           </div>
-          <h3 className="font-medium">{artifact.content.title}</h3>
+          <h3 className="font-medium break-words min-w-0">{artifact.content.title}</h3>
           {artifact.pinned && (
             <Badge variant="outline" className="text-xs text-primary border-primary/30">
               Pinned
@@ -133,26 +133,26 @@ const InsightCard = ({ artifact, onPin, onDelete, formatDate }: InsightCardProps
       </div>
 
       {artifact.content.summary && (
-        <p className="text-sm text-muted-foreground mb-3">{artifact.content.summary}</p>
+        <p className="text-sm text-muted-foreground mb-3 break-words">{artifact.content.summary}</p>
       )}
 
       <ul className="space-y-2 mb-4">
         {artifact.content.bullets.map((bullet: string, i: number) => (
-          <li key={i} className="flex items-start gap-2 text-sm">
-            <span className="text-primary mt-1">•</span>
-            <span>{bullet}</span>
+          <li key={i} className="flex items-start gap-2 text-sm break-words min-w-0">
+            <span className="text-primary mt-1 flex-shrink-0">•</span>
+            <span className="break-words min-w-0">{bullet}</span>
           </li>
         ))}
       </ul>
 
-      <div className="flex items-center gap-4 text-xs text-muted-foreground pt-3 border-t border-border/50">
-        <span className="flex items-center gap-1">
+      <div className="flex items-center gap-4 text-xs text-muted-foreground pt-3 border-t border-border/50 flex-wrap break-words">
+        <span className="flex items-center gap-1 flex-shrink-0">
           <Clock className="h-3 w-3" />
           {formatDate(artifact.createdAt)}
         </span>
-        {artifact.author && <span>by {artifact.author}</span>}
+        {artifact.author && <span className="break-words">by {artifact.author}</span>}
         {artifact.content.sourceColumns && artifact.content.sourceColumns.length > 0 && (
-          <span>from {artifact.content.sourceColumns.join(", ")}</span>
+          <span className="break-words">from {artifact.content.sourceColumns.join(", ")}</span>
         )}
       </div>
     </div>

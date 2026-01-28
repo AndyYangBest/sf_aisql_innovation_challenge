@@ -171,6 +171,14 @@ function collectOverrides(nodes: WorkflowNode[]) {
   }
   const visualsNode = nodes.find((node) => node.type === "generate_visuals");
   if (visualsNode) {
+    const isLegacyDefaultVisual =
+      visualsNode.data?.time_limit === 500 &&
+      !visualsNode.data?.chart_type &&
+      !visualsNode.data?.x_column &&
+      !visualsNode.data?.y_column;
+    const normalizedTimeLimit = isLegacyDefaultVisual
+      ? "all"
+      : visualsNode.data?.time_limit;
     if (visualsNode.data?.chart_type) {
       overrides.visual_chart_type = visualsNode.data.chart_type;
     }
@@ -179,6 +187,39 @@ function collectOverrides(nodes: WorkflowNode[]) {
     }
     if (visualsNode.data?.y_column) {
       overrides.visual_y_column = visualsNode.data.y_column;
+    }
+    if (
+      visualsNode.data?.category_limit !== undefined &&
+      visualsNode.data?.category_limit !== null
+    ) {
+      overrides.visual_category_limit =
+        visualsNode.data.category_limit === "" ? "all" : visualsNode.data.category_limit;
+    } else {
+      overrides.visual_category_limit = "all";
+    }
+    if (normalizedTimeLimit !== undefined && normalizedTimeLimit !== null) {
+      overrides.visual_time_limit =
+        normalizedTimeLimit === "" ? "all" : normalizedTimeLimit;
+    } else {
+      overrides.visual_time_limit = "all";
+    }
+    if (visualsNode.data?.time_bucket) {
+      overrides.visual_time_bucket = visualsNode.data.time_bucket;
+    }
+  } else {
+    overrides.visual_category_limit = "all";
+    overrides.visual_time_limit = "all";
+    overrides.visual_chart_type = null;
+    overrides.visual_x_column = null;
+    overrides.visual_y_column = null;
+  }
+  const summaryNode = nodes.find((node) => node.type === "generate_summary");
+  if (summaryNode) {
+    if (summaryNode.data?.focus) {
+      overrides.summary_focus = summaryNode.data.focus;
+    }
+    if (summaryNode.data?.user_notes) {
+      overrides.summary_user_notes = summaryNode.data.user_notes;
     }
   }
   const insightsNode = nodes.find((node) => node.type === "generate_insights");
@@ -207,7 +248,9 @@ function collectOverrides(nodes: WorkflowNode[]) {
   }
   const approvalNode = nodes.find((node) => node.type === "approval_gate");
   if (approvalNode) {
-    overrides.data_fix_approved = Boolean(approvalNode.data?.approved);
+    if (approvalNode.data?.approved === true) {
+      overrides.data_fix_approved = true;
+    }
     if (approvalNode.data?.note) {
       overrides.data_fix_note = approvalNode.data.note;
     }
@@ -229,8 +272,24 @@ function collectOverrides(nodes: WorkflowNode[]) {
     if (!overrides.conflict_strategy && applyNode.data?.conflict_strategy) {
       overrides.conflict_strategy = applyNode.data.conflict_strategy;
     }
+    if (applyNode.data?.apply_mode) {
+      overrides.data_fix_target = applyNode.data.apply_mode;
+    }
   }
   return overrides;
+}
+
+function mergeOverrides(
+  base: Record<string, any> | null | undefined,
+  updates: Record<string, any>
+) {
+  const next: Record<string, any> = { ...(base ?? {}) };
+  Object.entries(updates).forEach(([key, value]) => {
+    if (value !== undefined) {
+      next[key] = value;
+    }
+  });
+  return next;
 }
 
 function getWorkflowBasePosition(index: number) {
@@ -252,10 +311,12 @@ const TOOL_CALL_NODE_MAP: Record<string, EDANodeType> = {
   plan_data_repairs: "plan_data_repairs",
   require_user_approval: "approval_gate",
   apply_data_repairs: "apply_data_repairs",
+  apply_data_repairs_to_fixing_table: "apply_data_repairs",
   generate_numeric_visuals: "generate_visuals",
   generate_categorical_visuals: "generate_visuals",
   generate_numeric_insights: "generate_insights",
   generate_categorical_insights: "generate_insights",
+  generate_column_summary: "generate_summary",
   summarize_text_column: "summarize_text",
   row_level_extract_text: "row_level_extract",
   describe_image_column: "describe_images",
@@ -274,6 +335,7 @@ const NODE_TYPE_TOOL_MAP: Record<string, string> = {
   apply_data_repairs: "apply_data_repairs",
   generate_visuals: "generate_numeric_visuals",
   generate_insights: "generate_numeric_insights",
+  generate_summary: "generate_column_summary",
   summarize_text: "summarize_text_column",
   row_level_extract: "row_level_extract_text",
   describe_images: "describe_image_column",
@@ -342,6 +404,8 @@ function buildGraphFromToolCalls(
         table_asset_id: tableAssetId,
         tool_name: toolName,
         tool_input: call.input ?? {},
+        tool_output: call.output_preview ?? "",
+        tool_error: call.error ?? "",
       };
       const y = basePosition.y + index * PARALLEL_STACK_GAP;
       nodes.push({
@@ -518,6 +582,9 @@ function ensureApprovalGate(
         ...EDA_NODE_DEFINITIONS.apply_data_repairs.defaultData,
         title: "Apply Repairs",
         status: "idle",
+        apply_mode:
+          column.overrides?.data_fix_target ??
+          EDA_NODE_DEFINITIONS.apply_data_repairs.defaultData.apply_mode,
         column_name: column.column_name,
         column_type: column.semantic_type,
         column_null_rate: getNullRate(column),
@@ -545,6 +612,34 @@ function applyWorkflowMetadataToNodes(
 ): WorkflowNode[] {
   const workflowMeta = column.metadata?.workflow ?? {};
   const taskResults = workflowMeta.task_results ?? {};
+  const toolCallsRaw = Array.isArray(workflowMeta.tool_calls)
+    ? (workflowMeta.tool_calls as Array<Record<string, any>>)
+    : [];
+  const filteredToolCalls = toolCallsRaw.filter((call) => {
+    const input = call.input;
+    if (!input || typeof input !== "object") return true;
+    if (input.column_name && input.column_name !== column.column_name) return false;
+    if (
+      input.table_asset_id &&
+      column.table_asset_id &&
+      Number(input.table_asset_id) !== Number(column.table_asset_id)
+    ) {
+      return false;
+    }
+    return true;
+  });
+  const sortedToolCalls = [...filteredToolCalls].sort((a, b) => {
+    const aSeq = typeof a.sequence === "number" ? a.sequence : 0;
+    const bSeq = typeof b.sequence === "number" ? b.sequence : 0;
+    if (aSeq !== bSeq) return aSeq - bSeq;
+    return String(a.timestamp || "").localeCompare(String(b.timestamp || ""));
+  });
+  const toolCallByName = new Map<string, Record<string, any>>();
+  sortedToolCalls.forEach((call) => {
+    const name = call.tool_name;
+    if (!name) return;
+    toolCallByName.set(name, call);
+  });
   const analysis = column.metadata?.analysis ?? {};
   const repairPlan = analysis.repair_plan ?? {};
   const repairResults = analysis.repair_results ?? [];
@@ -556,6 +651,7 @@ function applyWorkflowMetadataToNodes(
   const conflictRate = analysis.conflicts?.conflict_rate;
 
   return nodes.map((node) => {
+    const nodeType = node.type as string;
     const taskResult = taskResults[node.id];
     const taskStatus = taskResult?.status;
     let status = node.data?.status ?? "idle";
@@ -567,6 +663,65 @@ function applyWorkflowMetadataToNodes(
       status = "running";
     }
     const nextData = { ...node.data, status };
+    const resolveToolCall = (): Record<string, any> | undefined => {
+      if (nodeType === "generate_visuals") {
+        const semantic = node.data?.column_type || column.semantic_type;
+        const preferred =
+          semantic === "categorical"
+            ? ["generate_categorical_visuals", "generate_numeric_visuals"]
+            : ["generate_numeric_visuals", "generate_categorical_visuals"];
+        return preferred.map((name) => toolCallByName.get(name)).find(Boolean);
+      }
+      if (nodeType === "generate_insights") {
+        const semantic = node.data?.column_type || column.semantic_type;
+        const preferred =
+          semantic === "categorical"
+            ? ["generate_categorical_insights", "generate_numeric_insights"]
+            : ["generate_numeric_insights", "generate_categorical_insights"];
+        return preferred.map((name) => toolCallByName.get(name)).find(Boolean);
+      }
+      if (nodeType === "apply_data_repairs") {
+        const applyMode =
+          node.data?.apply_mode ||
+          repairPlan.apply_mode ||
+          column.overrides?.data_fix_target;
+        const preferred =
+          applyMode === "fixing_table"
+            ? ["apply_data_repairs_to_fixing_table", "apply_data_repairs"]
+            : ["apply_data_repairs", "apply_data_repairs_to_fixing_table"];
+        return preferred.map((name) => toolCallByName.get(name)).find(Boolean);
+      }
+      if (nodeType === "agent_step") {
+        const toolName = node.data?.tool_name;
+        if (toolName) return toolCallByName.get(toolName);
+      }
+      const toolName = NODE_TYPE_TOOL_MAP[nodeType];
+      return toolName ? toolCallByName.get(toolName) : undefined;
+    };
+    const toolCall = resolveToolCall();
+    if (toolCall) {
+      if (!taskStatus) {
+        const toolStatus = mapToolStatus(toolCall.status);
+        if (toolStatus !== "idle") {
+          nextData.status = toolStatus;
+        }
+      }
+      if (toolCall.input && !nextData.tool_call_input) {
+        nextData.tool_call_input = toolCall.input;
+      }
+      if (toolCall.output_preview && !nextData.tool_output) {
+        nextData.tool_output = toolCall.output_preview;
+      }
+      if (toolCall.error) {
+        nextData.tool_error = toolCall.error;
+      }
+      if (toolCall.tool_name && !nextData.tool_name) {
+        nextData.tool_name = toolCall.tool_name;
+      }
+      if (toolCall.tool_use_id && !nextData.tool_use_id) {
+        nextData.tool_use_id = toolCall.tool_use_id;
+      }
+    }
     if (node.type === "scan_nulls" && nullRate !== undefined) {
       nextData.null_rate = nullRate;
     }
@@ -619,6 +774,9 @@ function applyWorkflowMetadataToNodes(
       }
       if (repairPlan.apply_skipped_reason) {
         nextData.apply_skipped_reason = repairPlan.apply_skipped_reason;
+      }
+      if (repairPlan.apply_mode && node.type === "apply_data_repairs") {
+        nextData.apply_mode = repairPlan.apply_mode;
       }
       const nullStep = planSteps.find((step) => step.type === "null_repair");
       const conflictStep = planSteps.find((step) => step.type === "conflict_repair");
@@ -1275,12 +1433,50 @@ const ColumnWorkflowPanel = ({
   }, [activeBoard, workflows]);
 
   const selectedNodeIds = canvasSelectionIds;
+  const invalidEdgeCountRef = useRef(0);
+  const invalidEdgeSignatureRef = useRef<string | null>(null);
 
   const updateWorkflowData = useCallback(
     (data: { nodes: any[]; edges: any[] }) => {
       if (!activeBoard) return;
 
       const nodeColumnMap = new Map<string, string>();
+      const nodeLookup = new Map<string, any>();
+      data.nodes.forEach((node) => {
+        nodeLookup.set(node.id, node);
+        const columnName = node.data?.column_name;
+        if (columnName) {
+          nodeColumnMap.set(node.id, columnName);
+        }
+      });
+
+      const inferredColumns = new Map<string, Set<string>>();
+      data.edges.forEach((edge) => {
+        const sourceColumn = nodeColumnMap.get(edge.sourceNodeID);
+        const targetColumn = nodeColumnMap.get(edge.targetNodeID);
+        if (sourceColumn && !targetColumn) {
+          const set = inferredColumns.get(edge.targetNodeID) ?? new Set<string>();
+          set.add(sourceColumn);
+          inferredColumns.set(edge.targetNodeID, set);
+        }
+        if (targetColumn && !sourceColumn) {
+          const set = inferredColumns.get(edge.sourceNodeID) ?? new Set<string>();
+          set.add(targetColumn);
+          inferredColumns.set(edge.sourceNodeID, set);
+        }
+      });
+
+      let inferredCount = 0;
+      inferredColumns.forEach((columns, nodeId) => {
+        if (columns.size !== 1) return;
+        const inferredColumn = Array.from(columns)[0];
+        const node = nodeLookup.get(nodeId);
+        if (!node || node.data?.column_name) return;
+        node.data = { ...node.data, column_name: inferredColumn };
+        nodeColumnMap.set(nodeId, inferredColumn);
+        inferredCount += 1;
+      });
+
       const extraNodes: WorkflowNode[] = [];
       const extraNodeIds = new Set<string>();
       const nodesByColumn = new Map<string, WorkflowNode[]>();
@@ -1312,6 +1508,16 @@ const ColumnWorkflowPanel = ({
           extraNodeIds.has(edge.sourceNodeID) &&
           extraNodeIds.has(edge.targetNodeID)
       );
+      const invalidEdges = data.edges.filter((edge) => {
+        const sourceColumn = nodeColumnMap.get(edge.sourceNodeID);
+        const targetColumn = nodeColumnMap.get(edge.targetNodeID);
+        return Boolean(sourceColumn && targetColumn && sourceColumn !== targetColumn);
+      });
+      const missingColumnEdges = data.edges.filter((edge) => {
+        const sourceColumn = nodeColumnMap.get(edge.sourceNodeID);
+        const targetColumn = nodeColumnMap.get(edge.targetNodeID);
+        return Boolean((sourceColumn && !targetColumn) || (!sourceColumn && targetColumn));
+      });
       const edgesByColumn = new Map<string, WorkflowEdge[]>();
       data.edges.forEach((edge) => {
         const sourceColumn = nodeColumnMap.get(edge.sourceNodeID);
@@ -1347,8 +1553,42 @@ const ColumnWorkflowPanel = ({
         return next;
       });
 
+      const invalidCount = invalidEdges.length + missingColumnEdges.length;
+      const invalidSignature = invalidCount
+        ? [...invalidEdges, ...missingColumnEdges]
+            .map((edge) => `${edge.sourceNodeID}->${edge.targetNodeID}`)
+            .sort()
+            .join("|")
+        : "";
+      if (
+        invalidCount > 0 &&
+        invalidSignature &&
+        invalidEdgeSignatureRef.current !== invalidSignature
+      ) {
+        invalidEdgeSignatureRef.current = invalidSignature;
+        invalidEdgeCountRef.current = invalidCount;
+        toast({
+          title: "Connection not allowed",
+          description:
+            missingColumnEdges.length > 0
+              ? "Both nodes must belong to the same column. Set a column on the new node before connecting."
+              : "Nodes from different columns can’t be connected.",
+          variant: "destructive",
+        });
+      } else if (invalidCount === 0) {
+        invalidEdgeCountRef.current = 0;
+        invalidEdgeSignatureRef.current = null;
+      }
+
+      if (inferredCount > 0) {
+        toast({
+          title: "Column assigned",
+          description: `Assigned ${inferredCount} node${inferredCount > 1 ? "s" : ""} to the connected column.`,
+        });
+      }
+
     },
-    [activeBoard]
+    [activeBoard, toast]
   );
 
   const handleCanvasSelection = useCallback(
@@ -1462,17 +1702,35 @@ const ColumnWorkflowPanel = ({
                 ? "generate_categorical_insights"
                 : "generate_numeric_insights";
           }
+          if (nodeType === "apply_data_repairs" && node.data?.apply_mode === "fixing_table") {
+            toolName = "apply_data_repairs_to_fixing_table";
+          }
           if (!toolName) {
             return null;
           }
+          const input = { ...(node.data ?? {}) } as Record<string, any>;
+          [
+            "table_asset_id",
+            "column_name",
+            "column_type",
+            "column_null_rate",
+            "tool_output",
+            "tool_error",
+            "tool_input",
+            "tool_name",
+            "tool_use_id",
+            "status",
+            "title",
+            "expanded",
+            "progress",
+          ].forEach((key) => {
+            if (key in input) {
+              delete input[key];
+            }
+          });
           return {
             tool_name: toolName,
-            input: {
-              ...(node.data ?? {}),
-              table_asset_id: node.data?.table_asset_id,
-              column_name: node.data?.column_name,
-              approved: node.data?.approved,
-            },
+            input,
           };
         })
         .filter(Boolean) as Array<{ tool_name: string; input: Record<string, any> }>;
@@ -1490,7 +1748,8 @@ const ColumnWorkflowPanel = ({
     const toolNodes = selectedNodes.filter((node) =>
       NODE_TYPE_TOOL_MAP[node.type as string] ||
       node.type === "generate_visuals" ||
-      node.type === "generate_insights"
+      node.type === "generate_insights" ||
+      node.type === "generate_summary"
     );
     if (toolNodes.length === 0) {
       toast({ title: "Select tool nodes to run." });
@@ -1533,9 +1792,8 @@ const ColumnWorkflowPanel = ({
         const workflow = workflows[columnName];
         if (workflow) {
           const overrides = collectOverrides(workflow.nodes);
-          await columnMetadataApi.override(tableAssetId, columnName, {
-            ...overrides,
-          });
+          const mergedOverrides = mergeOverrides(workflow.column?.overrides, overrides);
+          await columnMetadataApi.override(tableAssetId, columnName, mergedOverrides);
         }
         const toolCalls = buildToolCallsFromNodes(nodes);
         const response = await columnWorkflowsApi.runSelected(
@@ -1605,6 +1863,13 @@ const ColumnWorkflowPanel = ({
 
     await loadMetadata();
     await loadReport(String(tableAssetId));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("workflow-outputs-refresh", {
+          detail: { tableAssetId },
+        })
+      );
+    }
   }, [
     activeBoard,
     appendLog,
@@ -1714,9 +1979,8 @@ const ColumnWorkflowPanel = ({
         const workflow = workflows[columnName];
         if (workflow) {
           const overrides = collectOverrides(workflow.nodes);
-          await columnMetadataApi.override(tableAssetId, columnName, {
-            ...overrides,
-          });
+          const mergedOverrides = mergeOverrides(workflow.column?.overrides, overrides);
+          await columnMetadataApi.override(tableAssetId, columnName, mergedOverrides);
         }
         const response = await columnWorkflowsApi.estimate(
           tableAssetId,
@@ -1798,9 +2062,8 @@ const ColumnWorkflowPanel = ({
           const workflow = workflows[columnName];
           if (workflow) {
             const overrides = collectOverrides(workflow.nodes);
-            await columnMetadataApi.override(tableAssetId, columnName, {
-              ...overrides,
-            });
+            const mergedOverrides = mergeOverrides(workflow.column?.overrides, overrides);
+            await columnMetadataApi.override(tableAssetId, columnName, mergedOverrides);
           }
           const response = await columnWorkflowsApi.run(
             tableAssetId,
@@ -1870,6 +2133,13 @@ const ColumnWorkflowPanel = ({
 
     await loadMetadata();
     await loadReport(String(tableAssetId));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("workflow-outputs-refresh", {
+          detail: { tableAssetId },
+        })
+      );
+    }
     setEstimateTargets([]);
   }, [
     appendLog,
@@ -1910,9 +2180,8 @@ const ColumnWorkflowPanel = ({
             ...collectOverrides(workflow.nodes),
             ...(overridePatch || {}),
           };
-          await columnMetadataApi.override(tableAssetId, columnName, {
-            ...overrides,
-          });
+          const mergedOverrides = mergeOverrides(workflow.column?.overrides, overrides);
+          await columnMetadataApi.override(tableAssetId, columnName, mergedOverrides);
         }
         const response = await columnWorkflowsApi.run(tableAssetId, columnName, {
           focus,
@@ -1960,6 +2229,13 @@ const ColumnWorkflowPanel = ({
 
       await loadMetadata();
       await loadReport(String(tableAssetId));
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("workflow-outputs-refresh", {
+            detail: { tableAssetId },
+          })
+        );
+      }
     },
     [
       appendLog,
@@ -1982,18 +2258,148 @@ const ColumnWorkflowPanel = ({
         snapshotSignature?: string;
       }>).detail;
       if (!detail || detail.tableAssetId !== tableAssetId) return;
+      const workflow = workflows[detail.columnName];
+      const applyNode = workflow?.nodes.find((node) => node.type === "apply_data_repairs");
+      const applyMode = applyNode?.data?.apply_mode || "source_table";
+      const applyTool =
+        applyMode === "fixing_table"
+          ? "apply_data_repairs_to_fixing_table"
+          : "apply_data_repairs";
+
       appendLog(
         "status",
-        `Approval received. Running repairs for ${detail.columnName}...`
+        `Approval received. Applying repairs for ${detail.columnName}...`
       );
-      void runSingleColumn(detail.columnName, "repairs", {
-        data_fix_approved: true,
-        data_fix_note: detail.note || "",
-        ...(detail.planId ? { data_fix_plan_id: detail.planId } : {}),
-        ...(detail.planHash ? { data_fix_plan_hash: detail.planHash } : {}),
-        ...(detail.snapshotSignature
-          ? { data_fix_snapshot_signature: detail.snapshotSignature }
-          : {}),
+
+      void (async () => {
+        const latest = await columnMetadataApi.get(tableAssetId);
+        const latestColumn = latest.data?.columns?.find(
+          (col) => col.column_name === detail.columnName
+        );
+        const latestPlan =
+          (latestColumn?.metadata as Record<string, any> | undefined)?.analysis
+            ?.repair_plan ?? {};
+        const latestPlanId = latestPlan?.plan_id as string | undefined;
+        const latestPlanHash = latestPlan?.plan_hash as string | undefined;
+        const latestSnapshotSignature = latestPlan?.snapshot?.signature as
+          | string
+          | undefined;
+
+        if (
+          detail.planId &&
+          latestPlanId &&
+          detail.planId !== latestPlanId
+        ) {
+          appendLog(
+            "error",
+            `Approval failed: plan changed for ${detail.columnName}. Re-run the repair plan.`
+          );
+          toast({
+            title: "Approval failed",
+            description:
+              "Repair plan changed since the approval dialog was opened. Re-run the repair plan and approve again.",
+            variant: "destructive",
+          });
+          return;
+        }
+        if (
+          detail.planHash &&
+          latestPlanHash &&
+          detail.planHash !== latestPlanHash
+        ) {
+          appendLog(
+            "error",
+            `Approval failed: plan hash mismatch for ${detail.columnName}.`
+          );
+          toast({
+            title: "Approval failed",
+            description:
+              "Repair plan hash changed since the approval dialog was opened. Re-run the repair plan and approve again.",
+            variant: "destructive",
+          });
+          return;
+        }
+        if (
+          detail.snapshotSignature &&
+          latestSnapshotSignature &&
+          detail.snapshotSignature !== latestSnapshotSignature
+        ) {
+          appendLog(
+            "error",
+            `Approval failed: snapshot mismatch for ${detail.columnName}.`
+          );
+          toast({
+            title: "Approval failed",
+            description:
+              "The underlying data snapshot has changed. Re-run the repair plan and approve again.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        const planId = latestPlanId ?? detail.planId;
+        const planHash = latestPlanHash ?? detail.planHash;
+        const snapshotSignature =
+          latestSnapshotSignature ?? detail.snapshotSignature;
+
+        if (!planId || !planHash || !snapshotSignature) {
+          appendLog(
+            "error",
+            `Approval failed: repair plan metadata missing for ${detail.columnName}.`
+          );
+          toast({
+            title: "Approval failed",
+            description:
+              "Repair plan details are missing. Re-run the repair plan and try again.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        const baseOverrides = workflows[detail.columnName]?.column?.overrides;
+        const mergedOverrides = mergeOverrides(baseOverrides, {
+          data_fix_approved: true,
+          data_fix_note: detail.note || "",
+          data_fix_target: applyMode,
+          data_fix_plan_id: planId,
+          data_fix_plan_hash: planHash,
+          data_fix_snapshot_signature: snapshotSignature,
+        });
+        await columnMetadataApi.override(tableAssetId, detail.columnName, mergedOverrides);
+        const response = await columnWorkflowsApi.runSelected(
+          tableAssetId,
+          detail.columnName,
+          {
+            focus: "repairs",
+            tool_calls: [
+              {
+                tool_name: applyTool,
+                input: {
+                  plan_id: planId,
+                  plan_hash: planHash,
+                  snapshot_signature: snapshotSignature,
+                },
+              },
+            ],
+          }
+        );
+        appendWorkflowLogsDelta(detail.columnName, response.data.workflow_logs);
+        appendLog(
+          "complete",
+          `Repairs applied for ${detail.columnName}`,
+          response.data
+        );
+        await loadMetadata();
+        await loadReport(String(tableAssetId));
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("workflow-outputs-refresh", {
+              detail: { tableAssetId },
+            })
+          );
+        }
+      })().catch((error) => {
+        appendLog("error", `Repairs failed for ${detail.columnName}`, error);
       });
     };
     if (typeof window !== "undefined") {
@@ -2004,7 +2410,14 @@ const ColumnWorkflowPanel = ({
         window.removeEventListener("column-workflow-approval", handler as EventListener);
       }
     };
-  }, [appendLog, runSingleColumn, tableAssetId]);
+  }, [
+    appendLog,
+    appendWorkflowLogsDelta,
+    loadMetadata,
+    loadReport,
+    tableAssetId,
+    workflows,
+  ]);
 
   const handleCancelEstimate = useCallback(() => {
     setEstimateResults(null);

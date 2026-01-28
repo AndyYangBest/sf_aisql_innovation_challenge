@@ -73,12 +73,75 @@ async def run_selected_tools(
 ):
     """Run explicitly selected workflow tools for a column."""
     tools = ColumnWorkflowTools(sf_service, ai_sql_service, db)
+    from ...services.eda_workflow_persistence import EDAWorkflowPersistenceService
+    import uuid
+    from datetime import datetime
+
+    workflow_id = f"column_selected_{table_asset_id}_{column_name}_{uuid.uuid4().hex[:8]}"
+    persistence = EDAWorkflowPersistenceService(db)
+    execution = None
     try:
-        return await tools.run_selected_tools(
+        execution = await persistence.create_execution(
+            workflow_id=workflow_id,
+            workflow_type="COLUMN_WORKFLOW_SELECTED",
+            table_asset_id=table_asset_id,
+            user_intent=f"{column_name}:{payload.focus or 'selected'}",
+            user_id=None,
+            tasks_total=len(payload.tool_calls or []),
+        )
+    except Exception:
+        execution = None
+    try:
+        result = await tools.run_selected_tools(
             table_asset_id,
             column_name,
             payload.tool_calls,
             focus=payload.focus,
         )
+        if execution:
+            logs = result.get("logs", [])
+            tool_calls = result.get("tool_calls", [])
+            summary = {
+                "tool_calls": len(tool_calls),
+                "log_entries": len(logs),
+                "completed_at": datetime.utcnow().isoformat(),
+            }
+            await persistence.update_execution(
+                workflow_id=workflow_id,
+                status="completed",
+                progress=100,
+                tasks_completed=len(tool_calls),
+                tasks_failed=0,
+                summary=summary,
+                artifacts={"logs": logs, "tool_calls": tool_calls},
+            )
+            execution_id = execution.id
+            for entry in logs:
+                await persistence.log_event(
+                    workflow_execution_id=execution_id,
+                    log_level="ERROR" if entry.get("type") == "error" else "INFO",
+                    log_type=str(entry.get("type", "log")),
+                    message=str(entry.get("message", "")),
+                    details=entry.get("data"),
+                )
+            for call in tool_calls:
+                await persistence.log_event(
+                    workflow_execution_id=execution_id,
+                    log_level="ERROR" if call.get("status") == "error" else "INFO",
+                    log_type="tool_call",
+                    message=f"{call.get('tool_name')} ({call.get('status')})",
+                    tool_name=call.get("tool_name"),
+                    details={
+                        "input": call.get("input"),
+                        "output_preview": call.get("output_preview"),
+                        "error": call.get("error"),
+                        "duration_ms": call.get("duration_ms"),
+                        "agent_name": call.get("agent_name"),
+                    },
+                    duration_seconds=(call.get("duration_ms") or 0) / 1000.0 if call.get("duration_ms") else None,
+                )
+        return result
     except ValueError as exc:
+        if execution:
+            await persistence.fail_execution(workflow_id=workflow_id, error_message=str(exc))
         raise HTTPException(status_code=404, detail=str(exc)) from exc

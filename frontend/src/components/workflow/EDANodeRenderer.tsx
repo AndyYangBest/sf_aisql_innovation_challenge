@@ -151,6 +151,20 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
   const isComment = nodeType === 'comment';
   const isExpanded = Boolean(nodeData?.expanded);
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
+  const toolOutput = typeof nodeData?.tool_output === 'string' ? nodeData.tool_output.trim() : '';
+  const toolError = typeof nodeData?.tool_error === 'string' ? nodeData.tool_error.trim() : '';
+  const toolCallInputRaw = nodeData?.tool_call_input;
+  const toolCallInput = toolCallInputRaw
+    ? (() => {
+        try {
+          return JSON.stringify(toolCallInputRaw, null, 2);
+        } catch {
+          return String(toolCallInputRaw);
+        }
+      })()
+    : '';
+  const showToolOutput = isExpanded && (!isComment && (toolOutput || toolError));
+  const showToolInput = isExpanded && (!isComment && toolCallInput);
 
   // Determine if node should be dimmed (not yet executed)
   const isDimmed = status === 'skipped';
@@ -495,46 +509,53 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
               />
             )}
             <AlertDialog open={approvalDialogOpen} onOpenChange={setApprovalDialogOpen}>
-              <AlertDialogContent className="bg-slate-950 text-slate-100 border-slate-800">
+              <AlertDialogContent className="max-w-[560px] border border-border bg-background text-foreground shadow-xl">
                 <AlertDialogHeader>
                   <AlertDialogTitle>Approve Data Repairs</AlertDialogTitle>
-                  <AlertDialogDescription className="text-slate-300">
-                    Review the plan and token estimate before applying changes.
+                  <AlertDialogDescription className="text-muted-foreground">
+                    Review the plan details and confirm before applying changes.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
-                <div className="space-y-3 text-sm text-slate-200">
+                <div className="space-y-3 text-sm text-muted-foreground">
                   {nodeData.plan_summary && (
-                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-foreground">
                       {nodeData.plan_summary}
                     </div>
                   )}
                   {nodeData.apply_ready === false && (
-                    <div className="rounded-md border border-amber-500/60 bg-amber-900/30 px-3 py-2 text-amber-200">
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700">
                       Repairs require a row identifier and a writable table.
                     </div>
                   )}
-                  {nodeData.row_id_column && (
-                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                      Row ID column: {nodeData.row_id_column}
-                    </div>
-                  )}
-                  {nodeData.plan_id && (
-                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                      Plan ID: {nodeData.plan_id}
-                    </div>
-                  )}
-                  {nodeData.snapshot_signature && (
-                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                      Snapshot signature: {nodeData.snapshot_signature}
-                    </div>
-                  )}
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {nodeData.row_id_column && (
+                      <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                        Row ID column: {nodeData.row_id_column}
+                      </div>
+                    )}
+                    {nodeData.plan_id && (
+                      <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                        Plan ID: {nodeData.plan_id}
+                      </div>
+                    )}
+                    {nodeData.snapshot_signature && (
+                      <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                        Snapshot signature: {nodeData.snapshot_signature}
+                      </div>
+                    )}
+                    {nodeData.token_estimate && (
+                      <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                        Estimated tokens: {nodeData.token_estimate.token_count ?? 0}
+                      </div>
+                    )}
+                  </div>
                   {Array.isArray(nodeData.plan_steps) && nodeData.plan_steps.length > 0 && (
-                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                    <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
                       {nodeData.plan_steps.map((step: any, index: number) => (
-                        <div key={index} className="text-[12px] text-slate-200">
+                        <div key={index} className="text-[12px] text-muted-foreground">
                           {step.type === "null_repair" && (
                             <span>
-                              Null repair ({step.strategy}) - ~{step.estimated_rows ?? 0} rows
+                              Null repair ({step.strategy}) · ~{step.estimated_rows ?? 0} rows
                               {nodeData.snapshot?.total_count
                                 ? ` (${Math.round((step.estimated_rows || 0) / nodeData.snapshot.total_count * 100)}%)`
                                 : ""}
@@ -542,7 +563,7 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
                           )}
                           {step.type === "conflict_repair" && (
                             <span>
-                              Conflict repair ({step.strategy}) - {step.estimated_groups ?? 0} groups
+                              Conflict repair ({step.strategy}) · {step.estimated_groups ?? 0} groups
                             </span>
                           )}
                         </div>
@@ -550,36 +571,31 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
                     </div>
                   )}
                   {nodeData.sql_previews?.null_repair?.update_sql && (
-                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                      <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">
+                    <div className="rounded-md border border-border bg-background px-3 py-2">
+                      <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
                         Null Repair SQL
                       </div>
-                      <pre className="max-h-32 overflow-auto text-[11px] text-slate-200">
+                      <pre className="max-h-32 overflow-auto rounded-md bg-slate-900 px-2 py-2 text-[11px] text-slate-100">
                         {nodeData.sql_previews.null_repair.update_sql}
                       </pre>
                     </div>
                   )}
                   {nodeData.sql_previews?.conflict_repair?.update_sql && (
-                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                      <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">
+                    <div className="rounded-md border border-border bg-background px-3 py-2">
+                      <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
                         Conflict Repair SQL
                       </div>
-                      <pre className="max-h-32 overflow-auto text-[11px] text-slate-200">
+                      <pre className="max-h-32 overflow-auto rounded-md bg-slate-900 px-2 py-2 text-[11px] text-slate-100">
                         {nodeData.sql_previews.conflict_repair.update_sql}
                       </pre>
                     </div>
                   )}
                   {nodeData.rollback?.strategy && (
-                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                    <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
                       Rollback: {nodeData.rollback.strategy}
                       {nodeData.rollback.audit_table
                         ? ` (${nodeData.rollback.audit_table})`
                         : ""}
-                    </div>
-                  )}
-                  {nodeData.token_estimate && (
-                    <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                      Estimated tokens: {nodeData.token_estimate.token_count ?? 0}
                     </div>
                   )}
                 </div>
@@ -593,6 +609,7 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
                     Cancel
                   </AlertDialogCancel>
                   <AlertDialogAction
+                    disabled={nodeData.apply_ready === false}
                     onClick={() => {
                       setNodeValue('approved', true);
                       setApprovalDialogOpen(false);
@@ -612,7 +629,7 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
                       }
                     }}
                   >
-                    Confirm & Run Repairs
+                    Confirm & Apply Repairs
                   </AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>
@@ -622,6 +639,18 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
       case 'apply_data_repairs':
         return (
           <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Apply Mode',
+              <select
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.apply_mode ?? 'source_table'}
+                onChange={(event) => setNodeValue('apply_mode', event.target.value)}
+                disabled={readonly}
+              >
+                <option value="source_table">Write to original table</option>
+                <option value="fixing_table">Write to fixing table</option>
+              </select>
+            )}
             {nodeData.plan_summary && (
               <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]">
                 {nodeData.plan_summary}
@@ -694,6 +723,35 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
             )}
           </div>
         );
+      case 'generate_summary':
+        return (
+          <div className="mt-3 space-y-2 text-xs text-slate-700">
+            {renderDetailField(
+              'Focus',
+              <select
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.focus ?? 'general'}
+                onChange={(event) => setNodeValue('focus', event.target.value)}
+                disabled={readonly}
+              >
+                <option value="general">General</option>
+                <option value="quality">Data Quality</option>
+                <option value="patterns">Patterns</option>
+                <option value="business">Business</option>
+              </select>
+            )}
+            {renderDetailField(
+              'User Notes',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.user_notes ?? ''}
+                onChange={(event) => setNodeValue('user_notes', event.target.value)}
+                disabled={readonly}
+                placeholder="Optional guidance"
+              />
+            )}
+          </div>
+        );
       case 'generate_charts':
         return (
           <div className="mt-3 space-y-2 text-xs text-slate-700">
@@ -758,6 +816,42 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
                 disabled={readonly}
               />
             )}
+            {renderDetailField(
+              'Category Limit',
+              <input
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                value={nodeData.category_limit ?? ''}
+                onChange={(event) => setNodeValue('category_limit', event.target.value)}
+                disabled={readonly}
+                placeholder="all or numeric limit"
+              />
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              {renderDetailField(
+                'Time Limit',
+                <input
+                  className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  value={nodeData.time_limit ?? ''}
+                  onChange={(event) => setNodeValue('time_limit', event.target.value)}
+                  disabled={readonly}
+                  placeholder="all or numeric limit"
+                />
+              )}
+              {renderDetailField(
+                'Time Bucket',
+                <select
+                  className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  value={nodeData.time_bucket ?? 'day'}
+                  onChange={(event) => setNodeValue('time_bucket', event.target.value)}
+                  disabled={readonly}
+                >
+                  <option value="hour">Hour</option>
+                  <option value="day">Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                </select>
+              )}
+            </div>
             <div className="flex items-start gap-1.5 rounded-md bg-indigo-50 p-2 text-[10px] text-indigo-700">
               <Sparkles className="h-3 w-3 shrink-0 mt-0.5" />
               <span>
@@ -956,6 +1050,38 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
         )}
 
         {renderDetails()}
+
+        {(showToolInput || showToolOutput) && (
+          <div className="mt-3 space-y-2 rounded-md border border-slate-200 bg-white/80 px-2.5 py-2 text-[11px] text-slate-700">
+            {showToolInput && (
+              <>
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  Tool input
+                </div>
+                <pre className="whitespace-pre-wrap break-words text-[11px] text-slate-700">
+                  {toolCallInput}
+                </pre>
+              </>
+            )}
+            {showToolOutput && (
+              <>
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  Tool output
+                </div>
+                {toolError && (
+                  <div className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-700">
+                    {toolError}
+                  </div>
+                )}
+                {toolOutput && (
+                  <pre className="whitespace-pre-wrap break-words text-[11px] text-slate-700">
+                    {toolOutput}
+                  </pre>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Progress indicator for running state */}
         {status === 'running' && progress !== undefined && !isComment && (

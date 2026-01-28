@@ -3,9 +3,11 @@ import { Table } from "lucide-react";
 
 interface DataTabProps {
   tableResult?: TableResult;
+  rowLimit?: number;
+  showHeader?: boolean;
 }
 
-const DataTab = ({ tableResult }: DataTabProps) => {
+const DataTab = ({ tableResult, rowLimit, showHeader = true }: DataTabProps) => {
   if (!tableResult) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -19,14 +21,16 @@ const DataTab = ({ tableResult }: DataTabProps) => {
 
   return (
     <div className="space-y-4 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold mb-1">Data</h2>
-          <p className="text-sm text-muted-foreground">
-            {tableResult.rowCount} rows × {tableResult.columns.length} columns
-          </p>
+      {showHeader && (
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold mb-1">Data</h2>
+            <p className="text-sm text-muted-foreground">
+              {tableResult.rowCount} rows × {tableResult.columns.length} columns
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="border border-border rounded-xl overflow-hidden bg-card">
         <div className="overflow-x-auto">
@@ -51,7 +55,8 @@ const DataTab = ({ tableResult }: DataTabProps) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {tableResult.rows.map((row, rowIndex) => (
+              {(rowLimit ? tableResult.rows.slice(0, rowLimit) : tableResult.rows).map(
+                (row, rowIndex) => (
                 <tr
                   key={rowIndex}
                   className="hover:bg-muted/30 transition-colors"

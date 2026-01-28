@@ -1,34 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Sparkles, Tag, Lightbulb, BarChart3, FileText, Clock, ShieldCheck } from "lucide-react";
 import { TableAsset, TableResult, InsightArtifact } from "@/types";
 import { useTableStore } from "@/store/tableStore";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { columnMetadataApi } from "@/api/columnMetadata";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-
-type RepairPlanItem = {
-  columnName: string;
-  plan: Record<string, any>;
-  nullRate?: number;
-  conflictRate?: number;
-};
+import RepairApprovalDialog, {
+  RepairPlanItem,
+} from "@/components/workspace/RepairApprovalDialog";
 
 interface OverviewTabProps {
   tableAsset: TableAsset;
   tableResult?: TableResult;
+  variant?: "full" | "approvals";
 }
 
-const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
+const OverviewTab = ({ tableAsset, tableResult, variant = "full" }: OverviewTabProps) => {
   const { getArtifactsByTable, getReportStatus } = useTableStore();
   const artifacts = getArtifactsByTable(tableAsset.id);
   const reportStatus = getReportStatus(tableAsset.id);
@@ -36,7 +23,8 @@ const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
   const [repairPlans, setRepairPlans] = useState<RepairPlanItem[]>([]);
   const [repairDialogOpen, setRepairDialogOpen] = useState(false);
   const [activeRepair, setActiveRepair] = useState<RepairPlanItem | null>(null);
-  const [approvalNote, setApprovalNote] = useState("");
+
+  const tableId = Number.parseInt(tableAsset.id, 10);
 
   const insightCount = artifacts.filter((a) => a.type === "insight").length;
   const chartCount = artifacts.filter((a) => a.type === "chart").length;
@@ -46,41 +34,45 @@ const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
 
   const useCases = tableAsset.useCases || [];
 
+  const loadRepairs = useCallback(async () => {
+    if (Number.isNaN(tableId)) {
+      return [] as RepairPlanItem[];
+    }
+    const response = await columnMetadataApi.get(tableId);
+    if (response.status !== "success" || !response.data) {
+      return [] as RepairPlanItem[];
+    }
+    const plans = response.data.columns
+      .map((column) => {
+        const analysis = column.metadata?.analysis ?? {};
+        const plan = analysis.repair_plan ?? {};
+        const steps = Array.isArray(plan.steps) ? plan.steps : [];
+        if (steps.length === 0) {
+          return null;
+        }
+        return {
+          columnName: column.column_name,
+          plan,
+          nullRate: analysis.nulls?.null_rate,
+          conflictRate: analysis.conflicts?.conflict_rate,
+        } satisfies RepairPlanItem;
+      })
+      .filter(Boolean) as RepairPlanItem[];
+    return plans;
+  }, [tableId]);
+
   useEffect(() => {
     let active = true;
-    const loadRepairs = async () => {
-      const tableId = Number.parseInt(tableAsset.id, 10);
-      if (Number.isNaN(tableId)) {
-        return;
+    void (async () => {
+      const plans = await loadRepairs();
+      if (active) {
+        setRepairPlans(plans);
       }
-      const response = await columnMetadataApi.get(tableId);
-      if (response.status !== "success" || !response.data) {
-        return;
-      }
-      if (!active) return;
-      const plans = response.data.columns
-        .map((column) => {
-          const analysis = column.metadata?.analysis ?? {};
-          const plan = analysis.repair_plan ?? {};
-          const steps = Array.isArray(plan.steps) ? plan.steps : [];
-          if (steps.length === 0) {
-            return null;
-          }
-          return {
-            columnName: column.column_name,
-            plan,
-            nullRate: analysis.nulls?.null_rate,
-            conflictRate: analysis.conflicts?.conflict_rate,
-          } satisfies RepairPlanItem;
-        })
-        .filter(Boolean) as RepairPlanItem[];
-      setRepairPlans(plans);
-    };
-    void loadRepairs();
+    })();
     return () => {
       active = false;
     };
-  }, [tableAsset.id]);
+  }, [loadRepairs]);
 
   const pendingRepairs = useMemo(
     () => repairPlans.filter((item) => item.plan && !item.plan.approved),
@@ -94,7 +86,18 @@ const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
       year: "numeric",
     });
 
-  if (!hasReport) {
+  if (variant === "approvals" && pendingRepairs.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-48 text-muted-foreground border border-dashed border-border rounded-lg">
+        <div className="text-center">
+          <ShieldCheck className="h-10 w-10 mx-auto mb-3 opacity-60" />
+          <p className="text-sm">No repair plans awaiting approval</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (variant === "full" && !hasReport && pendingRepairs.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground">
         <div className="text-center">
@@ -102,6 +105,55 @@ const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
           <p className="mb-2">Report is empty</p>
           <p className="text-sm">Run workflows and save outputs from the sidebar</p>
         </div>
+      </div>
+    );
+  }
+
+  if (variant === "approvals") {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-emerald-500" />
+          <span className="text-sm font-medium">Repair Plans Pending Approval</span>
+        </div>
+        <div className="space-y-2">
+          {pendingRepairs.map((plan) => (
+            <div
+              key={plan.columnName}
+              className="flex flex-col gap-2 rounded-md border border-border bg-background px-3 py-2"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">{plan.columnName}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {plan.plan?.summary || "Repair plan available"}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="surface"
+                  onClick={() => {
+                    setActiveRepair(plan);
+                    setRepairDialogOpen(true);
+                  }}
+                >
+                  Review & Approve
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <RepairApprovalDialog
+          open={repairDialogOpen}
+          onOpenChange={setRepairDialogOpen}
+          tableId={tableId}
+          activeRepair={activeRepair}
+          onApplied={async () => {
+            const plans = await loadRepairs();
+            setRepairPlans(plans);
+          }}
+        />
       </div>
     );
   }
@@ -188,7 +240,6 @@ const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
                     variant="surface"
                     onClick={() => {
                       setActiveRepair(plan);
-                      setApprovalNote("");
                       setRepairDialogOpen(true);
                     }}
                   >
@@ -263,144 +314,16 @@ const OverviewTab = ({ tableAsset, tableResult }: OverviewTabProps) => {
         </div>
       )}
 
-      {/* Schema Preview */}
-      {tableResult && (
-        <div className="bg-secondary/30 border border-border rounded-lg p-4">
-          <h4 className="text-sm font-medium mb-3">Schema</h4>
-          <div className="grid gap-1.5">
-            {tableResult.columns.map((col) => (
-              <div
-                key={col.name}
-                className="flex items-center justify-between py-1.5 px-2 rounded bg-background text-sm"
-              >
-                <span className="font-mono">{col.name}</span>
-                <span className="text-xs text-muted-foreground font-mono">{col.type}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <AlertDialog open={repairDialogOpen} onOpenChange={setRepairDialogOpen}>
-        <AlertDialogContent className="bg-slate-950 text-slate-100 border-slate-800">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Approve Data Repairs</AlertDialogTitle>
-            <AlertDialogDescription className="text-slate-300">
-              Review the plan details before applying changes.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {activeRepair && (
-            <div className="space-y-3 text-sm text-slate-200">
-              <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                Column: {activeRepair.columnName}
-              </div>
-              {activeRepair.plan?.summary && (
-                <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                  {activeRepair.plan.summary}
-                </div>
-              )}
-              {activeRepair.plan?.row_id_column && (
-                <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                  Row ID column: {activeRepair.plan.row_id_column}
-                </div>
-              )}
-              {activeRepair.plan?.plan_id && (
-                <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                  Plan ID: {activeRepair.plan.plan_id}
-                </div>
-              )}
-              {activeRepair.plan?.snapshot?.signature && (
-                <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                  Snapshot signature: {activeRepair.plan.snapshot.signature}
-                </div>
-              )}
-              {Array.isArray(activeRepair.plan?.steps) && activeRepair.plan.steps.length > 0 && (
-                <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2 space-y-1">
-                  {activeRepair.plan.steps.map((step: any, index: number) => (
-                    <div key={index} className="text-[12px] text-slate-200">
-                      {step.type === "null_repair" && (
-                        <span>
-                          Null repair ({step.strategy}) - ~{step.estimated_rows ?? 0} rows
-                        </span>
-                      )}
-                      {step.type === "conflict_repair" && (
-                        <span>
-                          Conflict repair ({step.strategy}) - {step.estimated_groups ?? 0} groups
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {activeRepair.plan?.sql_previews?.null_repair?.update_sql && (
-                <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                  <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">
-                    Null Repair SQL
-                  </div>
-                  <pre className="max-h-32 overflow-auto text-[11px] text-slate-200">
-                    {activeRepair.plan.sql_previews.null_repair.update_sql}
-                  </pre>
-                </div>
-              )}
-              {activeRepair.plan?.sql_previews?.conflict_repair?.update_sql && (
-                <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                  <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">
-                    Conflict Repair SQL
-                  </div>
-                  <pre className="max-h-32 overflow-auto text-[11px] text-slate-200">
-                    {activeRepair.plan.sql_previews.conflict_repair.update_sql}
-                  </pre>
-                </div>
-              )}
-              {activeRepair.plan?.token_estimate && (
-                <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
-                  Estimated tokens: {activeRepair.plan.token_estimate.token_count ?? 0}
-                </div>
-              )}
-              <div className="space-y-1">
-                <div className="text-xs text-slate-400">Approval note</div>
-                <input
-                  className="w-full rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-700"
-                  value={approvalNote}
-                  onChange={(event) => setApprovalNote(event.target.value)}
-                  placeholder="Reason for approval"
-                />
-              </div>
-            </div>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              onClick={() => {
-                setRepairDialogOpen(false);
-              }}
-            >
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (!activeRepair) return;
-                setRepairDialogOpen(false);
-                if (typeof window !== "undefined") {
-                  window.dispatchEvent(
-                    new CustomEvent("column-workflow-approval", {
-                      detail: {
-                        tableAssetId: Number.parseInt(tableAsset.id, 10),
-                        columnName: activeRepair.columnName,
-                        note: approvalNote,
-                        planId: activeRepair.plan?.plan_id,
-                        planHash: activeRepair.plan?.plan_hash,
-                        snapshotSignature: activeRepair.plan?.snapshot?.signature,
-                      },
-                    })
-                  );
-                }
-              }}
-            >
-              Confirm & Run Repairs
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <RepairApprovalDialog
+        open={repairDialogOpen}
+        onOpenChange={setRepairDialogOpen}
+        tableId={tableId}
+        activeRepair={activeRepair}
+        onApplied={async () => {
+          const plans = await loadRepairs();
+          setRepairPlans(plans);
+        }}
+      />
     </div>
   );
 };

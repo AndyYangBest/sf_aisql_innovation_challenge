@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Columns, Hash, Type, Calendar, ToggleLeft, BarChart3 } from "lucide-react";
 import { TableResult } from "@/types";
+import DataTab from "./DataTab";
 import { useTableStore } from "@/store/tableStore";
 import { cn } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
@@ -181,6 +182,30 @@ const ProfileTab = ({ tableResult }: ProfileTabProps) => {
                 </div>
               </div>
             )}
+
+            <div className="mt-6 space-y-4">
+              <div>
+                <h4 className="text-sm font-medium mb-2">Schema</h4>
+                <div className="grid gap-1.5">
+                  {tableResult.columns.map((col) => (
+                    <div
+                      key={col.name}
+                      className="flex items-center justify-between py-1.5 px-2 rounded bg-background text-xs"
+                    >
+                      <span className="font-mono">{col.name}</span>
+                      <span className="text-[11px] text-muted-foreground font-mono">
+                        {col.type}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-medium mb-2">Data Preview</h4>
+                <DataTab tableResult={tableResult} rowLimit={12} showHeader={false} />
+              </div>
+            </div>
           </div>
         ) : (
           <div className="h-full flex items-center justify-center text-muted-foreground">

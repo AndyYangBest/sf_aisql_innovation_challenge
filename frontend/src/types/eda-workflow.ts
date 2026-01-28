@@ -21,6 +21,7 @@ export type EDANodeType =
   | 'plan_data_repairs'
   | 'approval_gate'
   | 'apply_data_repairs'
+  | 'generate_summary'
   | 'generate_insights'
   | 'generate_charts'
   | 'generate_documentation'
@@ -84,6 +85,17 @@ export const EDA_NODE_DEFINITIONS: Record<EDANodeType, EDANodeDefinition> = {
     defaultData: {
       title: 'Generate Insights',
       focus: 'general', // general, quality, patterns
+    },
+  },
+  generate_summary: {
+    type: 'generate_summary',
+    name: 'Generate Summary',
+    description: 'Create a concise AI column summary',
+    icon: 'Sparkles',
+    category: 'analysis',
+    defaultData: {
+      title: 'Generate Summary',
+      focus: 'overview',
     },
   },
   generate_charts: {
@@ -243,6 +255,7 @@ export const EDA_NODE_DEFINITIONS: Record<EDANodeType, EDANodeDefinition> = {
       title: 'Apply Repairs',
       null_strategy: '',
       conflict_strategy: '',
+      apply_mode: 'fixing_table',
       approval_key: 'data_fix_approved',
       plan_id: '',
       plan_hash: '',
@@ -266,6 +279,9 @@ export const EDA_NODE_DEFINITIONS: Record<EDANodeType, EDANodeDefinition> = {
       chart_type: '',
       x_column: '',
       y_column: '',
+      category_limit: 'all',
+      time_limit: 'all',
+      time_bucket: 'day',
     },
   },
   agent_step: {

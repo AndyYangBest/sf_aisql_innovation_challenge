@@ -16,6 +16,7 @@ from ..core.config import settings
 from ..models.column_metadata import ColumnMetadata
 from ..services.modular_ai_sql_service import ModularAISQLService
 from ..services.snowflake_service import SnowflakeService
+from ..services.eda_workflow_persistence import EDAWorkflowPersistenceService
 from .column_workflow_tools import ColumnWorkflowTools
 
 class ColumnWorkflowOrchestrator:
@@ -70,6 +71,25 @@ class ColumnWorkflowOrchestrator:
         fallback_used = False
         apply_fallback_used = False
         allow_fallback = bool((column_meta.overrides or {}).get("allow_preset_fallback"))
+        persistence = EDAWorkflowPersistenceService(self.db)
+        execution = None
+        try:
+            execution = await persistence.create_execution(
+                workflow_id=workflow_id,
+                workflow_type="COLUMN_WORKFLOW",
+                table_asset_id=table_asset_id,
+                user_intent=f"{column_name}:{focus or 'auto'}",
+                user_id=None,
+                tasks_total=0,
+            )
+        except Exception as exc:
+            workflow_logs.append(
+                {
+                    "type": "warning",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": f"Workflow persistence create failed: {exc}",
+                }
+            )
 
         try:
             result = await tools.run_column_agent(table_asset_id, column_name, focus=focus)
@@ -124,6 +144,67 @@ class ColumnWorkflowOrchestrator:
                 await self.db.rollback()
                 workflow_state = "error"
                 status = {"state": "error", "error": f"workflow_persist_failed: {exc}"}
+            try:
+                if execution:
+                    summary = {
+                        "workflow_state": workflow_state,
+                        "fallback_used": fallback_used,
+                        "apply_fallback_used": apply_fallback_used,
+                        "log_entries": len(workflow_logs),
+                        "tool_calls": len(workflow_tool_calls),
+                    }
+                    if workflow_state == "error":
+                        await persistence.fail_execution(
+                            workflow_id=workflow_id,
+                            error_message=str(status.get("error") if isinstance(status, dict) else status),
+                        )
+                    else:
+                        await persistence.update_execution(
+                            workflow_id=workflow_id,
+                            status="completed",
+                            progress=100,
+                            tasks_completed=summary.get("tool_calls", 0),
+                            tasks_failed=0,
+                            summary=summary,
+                            artifacts={
+                                "logs": workflow_logs,
+                                "tool_calls": workflow_tool_calls,
+                            },
+                        )
+
+                    execution_id = execution.id
+                    for entry in workflow_logs:
+                        await persistence.log_event(
+                            workflow_execution_id=execution_id,
+                            log_level="ERROR" if entry.get("type") == "error" else "INFO",
+                            log_type=str(entry.get("type", "log")),
+                            message=str(entry.get("message", "")),
+                            details=entry.get("data"),
+                        )
+                    for call in workflow_tool_calls:
+                        await persistence.log_event(
+                            workflow_execution_id=execution_id,
+                            log_level="ERROR" if call.get("status") == "error" else "INFO",
+                            log_type="tool_call",
+                            message=f"{call.get('tool_name')} ({call.get('status')})",
+                            tool_name=call.get("tool_name"),
+                            details={
+                                "input": call.get("input"),
+                                "output_preview": call.get("output_preview"),
+                                "error": call.get("error"),
+                                "duration_ms": call.get("duration_ms"),
+                                "agent_name": call.get("agent_name"),
+                            },
+                            duration_seconds=(call.get("duration_ms") or 0) / 1000.0 if call.get("duration_ms") else None,
+                        )
+            except Exception as exc:
+                workflow_logs.append(
+                    {
+                        "type": "warning",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": f"Workflow persistence update failed: {exc}",
+                    }
+                )
 
         return {
             "workflow_id": workflow_id,

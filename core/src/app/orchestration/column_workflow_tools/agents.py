@@ -21,6 +21,7 @@ class ColumnWorkflowAgentsMixin:
     ) -> dict[str, Any]:
         """Agent specialized in numeric/temporal column analysis."""
         ctx = await self._load_context(table_asset_id, column_name)
+        overrides = ctx.column_meta.overrides or {}
         metadata_payload = ctx.column_meta.metadata_payload or {}
         analysis_payload = metadata_payload.get("analysis", {}) if isinstance(metadata_payload, dict) else {}
         nulls_payload = analysis_payload.get("nulls", {}) if isinstance(analysis_payload, dict) else {}
@@ -28,25 +29,29 @@ class ColumnWorkflowAgentsMixin:
         known_null_rate = nulls_payload.get("null_rate") or metadata_payload.get("null_rate")
         known_null_count = nulls_payload.get("null_count") or metadata_payload.get("null_count")
         known_conflict_rate = conflicts_payload.get("conflict_rate")
+        apply_target = overrides.get("data_fix_target") or overrides.get("apply_mode")
         prompt = f"""
-You analyze numeric/temporal columns. Decide which tools to call.
+        You analyze numeric/temporal columns. Decide which tools to call.
 
-Column: {column_name}
-Semantic type: {ctx.column_meta.semantic_type}
-Focus: {focus or "numeric"}
-Known null rate: {known_null_rate}
-Known null count: {known_null_count}
-Known conflict rate: {known_conflict_rate}
+        Column: {column_name}
+        Semantic type: {ctx.column_meta.semantic_type}
+        Focus: {focus or "numeric"}
+        Known null rate: {known_null_rate}
+        Known null count: {known_null_count}
+        Known conflict rate: {known_conflict_rate}
+        Apply target: {apply_target}
 
-Rules:
-- Start with analyze_numeric_distribution.
-- Use analyze_numeric_correlations and analyze_numeric_periodicity when helpful.
-- Always run scan_nulls after distribution (quality scan is required).
-- If scan_nulls or known nulls/conflicts are non-zero, run plan_data_repairs.
-- Only call apply_data_repairs if approval is recorded in overrides.
-- Generate visuals/insights only when requested or useful.
-- You must call at least one tool (always call analyze_numeric_distribution first).
-""".strip()
+        Rules:
+        - Start with analyze_numeric_distribution.
+        - Use analyze_numeric_correlations and analyze_numeric_periodicity when helpful.
+        - Always run scan_nulls after distribution (quality scan is required).
+        - Use generate_column_summary when a concise summary is requested or overrides include summary_focus/user_notes.
+        - If scan_nulls or known nulls/conflicts are non-zero, run plan_data_repairs.
+        - Do not apply repairs directly; only plan and request approval.
+        - Generate visuals/insights only when requested or useful.
+        - When multiple independent tools are needed, call them in the same response to allow parallel execution.
+        - You must call at least one tool (always call analyze_numeric_distribution first).
+        """.strip()
         summary = await self._run_sub_agent(
             name="Numeric Analysis Agent",
             system_prompt="You are a numeric analysis agent. Use the smallest tool set needed.",
@@ -57,9 +62,9 @@ Rules:
                 self.scan_nulls,
                 self.plan_data_repairs,
                 self.require_user_approval,
-                self.apply_data_repairs,
                 self.generate_numeric_visuals,
                 self.generate_numeric_insights,
+                self.generate_column_summary,
             ],
             prompt=prompt,
             table_asset_id=table_asset_id,
@@ -77,20 +82,25 @@ Rules:
     ) -> dict[str, Any]:
         """Agent specialized in categorical column analysis."""
         ctx = await self._load_context(table_asset_id, column_name)
+        overrides = ctx.column_meta.overrides or {}
+        apply_target = overrides.get("data_fix_target") or overrides.get("apply_mode")
         prompt = f"""
 You analyze categorical columns. Decide which tools to call.
 
 Column: {column_name}
 Semantic type: {ctx.column_meta.semantic_type}
 Focus: {focus or "categorical"}
+Apply target: {apply_target}
 
 Rules:
 - Start with analyze_categorical_groups.
 - Always run scan_nulls after grouping (quality scan is required).
 - Use scan_conflicts when group_by columns are available.
 - Use plan_data_repairs when scan results indicate issues.
-- Only call apply_data_repairs if approval is recorded in overrides.
+- Use generate_column_summary when a concise summary is requested or overrides include summary_focus/user_notes.
+- Do not apply repairs directly; only plan and request approval.
 - Generate visuals/insights if they add value.
+- When multiple independent tools are needed, call them in the same response to allow parallel execution.
 - You must call at least one tool (always call analyze_categorical_groups first).
 """.strip()
         summary = await self._run_sub_agent(
@@ -102,9 +112,9 @@ Rules:
                 self.scan_conflicts,
                 self.plan_data_repairs,
                 self.require_user_approval,
-                self.apply_data_repairs,
                 self.generate_categorical_visuals,
                 self.generate_categorical_insights,
+                self.generate_column_summary,
             ],
             prompt=prompt,
             table_asset_id=table_asset_id,
@@ -122,19 +132,22 @@ Rules:
     ) -> dict[str, Any]:
         """Agent specialized in text column analysis."""
         ctx = await self._load_context(table_asset_id, column_name)
+        overrides = ctx.column_meta.overrides or {}
+        apply_target = overrides.get("data_fix_target") or overrides.get("apply_mode")
         prompt = f"""
 You analyze text columns. Decide which tools to call.
 
 Column: {column_name}
 Semantic type: {ctx.column_meta.semantic_type}
 Focus: {focus or "text"}
+Apply target: {apply_target}
 
 Rules:
 - Use summarize_text_column to capture summaries.
 - Run scan_nulls to detect missing text.
+- Use generate_column_summary when a concise summary is requested or overrides include summary_focus/user_notes.
 - Only call row_level_extract_text if an instruction exists in overrides.
-- Use plan_data_repairs and require_user_approval for data fixes.
-- Only call apply_data_repairs if approval is recorded in overrides.
+- Use plan_data_repairs and require_user_approval for data fixes. Do not apply repairs directly.
 - You must call at least one tool (always call summarize_text_column).
 """.strip()
         summary = await self._run_sub_agent(
@@ -146,7 +159,7 @@ Rules:
                 self.row_level_extract_text,
                 self.plan_data_repairs,
                 self.require_user_approval,
-                self.apply_data_repairs,
+                self.generate_column_summary,
             ],
             prompt=prompt,
             table_asset_id=table_asset_id,
@@ -193,6 +206,7 @@ Rules:
     ) -> dict[str, Any]:
         """Agent specialized in data quality checks and repair planning."""
         ctx = await self._load_context(table_asset_id, column_name)
+        overrides = ctx.column_meta.overrides or {}
         metadata_payload = ctx.column_meta.metadata_payload or {}
         analysis_payload = metadata_payload.get("analysis", {}) if isinstance(metadata_payload, dict) else {}
         nulls_payload = analysis_payload.get("nulls", {}) if isinstance(analysis_payload, dict) else {}
@@ -200,17 +214,20 @@ Rules:
         known_null_rate = nulls_payload.get("null_rate") or metadata_payload.get("null_rate")
         known_null_count = nulls_payload.get("null_count") or metadata_payload.get("null_count")
         known_conflict_rate = conflicts_payload.get("conflict_rate")
+        apply_target = overrides.get("data_fix_target") or overrides.get("apply_mode")
         prompt = f"""
 You handle data quality for column {column_name}.
 Focus: {focus or "quality"}
 Known null rate: {known_null_rate}
 Known null count: {known_null_count}
 Known conflict rate: {known_conflict_rate}
+Apply target: {apply_target}
 
 Rules:
 - Run scan_nulls first, then scan_conflicts if a grouping is provided.
 - Create repair plans with plan_data_repairs when issues are detected.
-- Only call apply_data_repairs if approval is recorded in overrides.
+- Do not apply repairs directly; only plan and request approval.
+        - When multiple independent tools are needed, call them in the same response to allow parallel execution.
 - You must call at least one tool (always call scan_nulls first).
 """.strip()
         summary = await self._run_sub_agent(
@@ -221,7 +238,6 @@ Rules:
                 self.scan_conflicts,
                 self.plan_data_repairs,
                 self.require_user_approval,
-                self.apply_data_repairs,
             ],
             prompt=prompt,
             table_asset_id=table_asset_id,
@@ -276,7 +292,6 @@ Rules:
                     self.image_analysis_agent,
                     self.data_quality_agent,
                     self.basic_column_stats,
-                    self.ai_sql_agent,
                 ],
                 hooks=self._get_log_hooks(),
                 model=model,
@@ -301,8 +316,7 @@ Guidance:
 - Route image columns to image_analysis_agent.
 - Run data_quality_agent when nulls/conflicts are known or repairs are requested.
 - If focus is "repairs", prioritize data_quality_agent and apply_data_repairs after approval.
-- Only apply repairs if overrides data_fix_approved is true.
-- Use ai_sql_agent only when natural language reasoning is required.
+- If overrides include data_fix_target="fixing_table", repairs should write to a fixing table (do not apply automatically).
 - Include focus in specialist agent calls when helpful.
 - Always pass table_asset_id={table_asset_id} and column_name='{column_name}' to tool calls.
 - Always invoke at least one tool; if unsure, call basic_column_stats.
@@ -358,4 +372,3 @@ Guidance:
         response = await agent.invoke_async(prompt)
         summary = getattr(response, "content", None) or str(response)
         return {"prompt": prompt, "response": summary}
-

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { BarChart3, Lightbulb, Loader2, Save, Sparkles, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BarChart3, Lightbulb, Loader2, Save, Sparkles, X, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Drawer,
@@ -19,6 +19,9 @@ import {
   AIChangelogPopover,
 } from "./ai-panel";
 import { cn } from "@/lib/utils";
+import RepairApprovalDialog, {
+  RepairPlanItem,
+} from "@/components/workspace/RepairApprovalDialog";
 
 interface AIActionsPanelProps {
   tableId: string;
@@ -53,6 +56,8 @@ type RepairPlanOutput = {
 
 const buildRepairPlanArtifact = (repair: RepairPlanOutput): Artifact => {
   const plan = repair.plan || {};
+  const planKey =
+    plan.plan_hash || plan.snapshot?.signature || plan.plan_id || "latest";
   const steps = Array.isArray(plan.steps) ? plan.steps : [];
   const sqlPreviews = plan.sql_previews || {};
   const rollback = plan.rollback || {};
@@ -107,7 +112,7 @@ const buildRepairPlanArtifact = (repair: RepairPlanOutput): Artifact => {
 
   return {
     type: "doc",
-    id: `repair_plan_${repair.tableId}_${repair.columnName}`,
+    id: `repair_plan_${repair.tableId}_${repair.columnName}_${planKey}`,
     tableId: repair.tableId,
     content: {
       title: `${repair.columnName} repair plan`,
@@ -241,7 +246,12 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
 
       const repairs: RepairPlanOutput[] = [];
       const plan = analysis.repair_plan;
-      if (plan && (plan.summary || (Array.isArray(plan.steps) && plan.steps.length > 0))) {
+      const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+      const summaryText = typeof plan?.summary === "string" ? plan.summary : "";
+      const hasActions =
+        steps.length > 0 ||
+        (summaryText && !summaryText.toLowerCase().includes("no repair actions"));
+      if (plan && hasActions) {
         repairs.push({
           id: plan.plan_id || `repair_${tableId}_${column.column_name}`,
           columnName: column.column_name,
@@ -299,44 +309,104 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
   const [outputGroups, setOutputGroups] = useState<OutputGroup[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [repairDialogOpen, setRepairDialogOpen] = useState(false);
+  const [activeRepair, setActiveRepair] = useState<RepairPlanItem | null>(null);
   const { addArtifact, getChangelog } = useTableStore();
   const artifacts = useTableStore((s) => s.artifacts);
   const { toast } = useToast();
   const { isMobile } = useBreakpoint();
   const changelog = getChangelog(tableId);
+  const prevHasPendingRef = useRef<boolean | null>(null);
 
   const savedIds = useMemo(() => {
     return new Set(artifacts.filter((a) => a.tableId === tableId).map((a) => a.id));
   }, [artifacts, tableId]);
 
-  useEffect(() => {
-    if (!tableId || !isOpen) return;
-    let isActive = true;
-    setIsLoading(true);
-    setError(null);
+  const toRepairPlanItem = useCallback(
+    (repair: RepairPlanOutput): RepairPlanItem => ({
+      columnName: repair.columnName,
+      plan: repair.plan || {},
+    }),
+    []
+  );
 
-    columnMetadataApi.get(Number(tableId))
-      .then((response) => {
-        if (!isActive) return;
+  const refreshOutputs = useCallback(
+    async (force = false) => {
+      if (!tableId || (!isOpen && !force)) return;
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const response = await columnMetadataApi.get(Number(tableId));
         if (response.status === "success" && response.data) {
           const groups = buildOutputGroups(response.data.columns, tableId);
           setOutputGroups(groups);
         } else {
           setError(response.error || "Failed to load workflow outputs");
         }
-      })
-      .catch((err) => {
-        if (!isActive) return;
+      } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load workflow outputs");
-      })
-      .finally(() => {
-        if (isActive) setIsLoading(false);
-      });
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [isOpen, tableId]
+  );
 
-    return () => {
-      isActive = false;
+  const hasPendingOutputs = useMemo(() => {
+    if (outputGroups.length === 0) {
+      return false;
+    }
+    return outputGroups.some((group) => {
+      const pendingCharts = group.charts.filter((item) => !savedIds.has(item.id)).length;
+      const pendingInsights = group.insights.filter((item) => !savedIds.has(item.id)).length;
+      const pendingRepairs = group.repairs.filter(
+        (repair) => !savedIds.has(buildRepairPlanArtifact(repair).id)
+      ).length;
+      const pendingFeatures = group.features.filter(
+        (feature) => !savedIds.has(featureToArtifact(feature, tableId).id)
+      ).length;
+      return pendingCharts + pendingInsights + pendingRepairs + pendingFeatures > 0;
+    });
+  }, [outputGroups, savedIds, tableId]);
+
+  useEffect(() => {
+    void refreshOutputs();
+  }, [activeTab, refreshOutputs]);
+
+  useEffect(() => {
+    if (isOpen) {
+      prevHasPendingRef.current = null;
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || repairDialogOpen) return;
+    if (isLoading || error || outputGroups.length === 0) {
+      prevHasPendingRef.current = hasPendingOutputs;
+      return;
+    }
+    const prev = prevHasPendingRef.current;
+    prevHasPendingRef.current = hasPendingOutputs;
+    if (prev === null) return;
+    if (prev && !hasPendingOutputs) {
+      onToggle();
+    }
+  }, [error, hasPendingOutputs, isLoading, isOpen, onToggle, outputGroups.length, repairDialogOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ tableAssetId?: number }>).detail;
+      if (!detail?.tableAssetId) return;
+      if (Number(tableId) !== detail.tableAssetId) return;
+      void refreshOutputs(true);
     };
-  }, [tableId, activeTab, isOpen]);
+    window.addEventListener("workflow-outputs-refresh", handler as EventListener);
+    return () => {
+      window.removeEventListener("workflow-outputs-refresh", handler as EventListener);
+    };
+  }, [refreshOutputs, tableId]);
 
   const handleSave = (artifact: Artifact) => {
     if (savedIds.has(artifact.id)) return;
@@ -346,7 +416,8 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
 
   const handleSaveGroup = (group: OutputGroup) => {
     const featureArtifacts = group.features.map((feature) => featureToArtifact(feature, tableId));
-    const pending = [...group.charts, ...group.insights, ...featureArtifacts].filter(
+    const repairArtifacts = group.repairs.map((repair) => buildRepairPlanArtifact(repair));
+    const pending = [...group.charts, ...group.insights, ...featureArtifacts, ...repairArtifacts].filter(
       (item) => !savedIds.has(item.id)
     );
     if (pending.length === 0) {
@@ -390,20 +461,44 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
 
       {!isLoading && !error && outputGroups.length > 0 && (
         <div className="space-y-3 max-w-full">
-          {outputGroups.map((group) => {
-            const pendingCount = [...group.charts, ...group.insights].filter((item) => !savedIds.has(item.id)).length;
-            return (
-              <div key={group.columnName} className="rounded-lg border border-border bg-card/50 p-3 space-y-3 min-w-0 max-w-full">
-                <div className="flex items-center justify-between gap-2 min-w-0">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium truncate">{group.columnName}</div>
-                    <div className="text-[11px] text-muted-foreground truncate">
-                      {group.charts.length} charts · {group.insights.length} insights · {group.features.length} features · {group.repairs.length} repair plans
+          {(() => {
+            if (!hasPendingOutputs) {
+              return (
+                <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+                  All outputs are saved. New runs will show here automatically.
+                </div>
+              );
+            }
+
+            return outputGroups.map((group) => {
+              const pendingCharts = group.charts.filter((item) => !savedIds.has(item.id));
+              const pendingInsights = group.insights.filter((item) => !savedIds.has(item.id));
+              const pendingFeatures = group.features.filter(
+                (feature) => !savedIds.has(featureToArtifact(feature, tableId).id)
+              );
+              const pendingRepairs = group.repairs.filter(
+                (repair) => !savedIds.has(buildRepairPlanArtifact(repair).id)
+              );
+              const pendingCount =
+                pendingCharts.length +
+                pendingInsights.length +
+                pendingFeatures.length +
+                pendingRepairs.length;
+              if (pendingCount === 0) {
+                return null;
+              }
+              return (
+                <div key={group.columnName} className="rounded-lg border border-border bg-card/50 p-3 space-y-3 min-w-0 max-w-full">
+                  <div className="flex items-center justify-between gap-2 min-w-0">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate">{group.columnName}</div>
+                      <div className="text-[11px] text-muted-foreground truncate">
+                      {pendingCharts.length} charts · {pendingInsights.length} insights · {pendingFeatures.length} features · {pendingRepairs.length} repair plans
+                      </div>
                     </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="surface"
+                    <Button
+                      size="sm"
+                      variant="surface"
                     disabled={pendingCount === 0}
                     onClick={() => handleSaveGroup(group)}
                   >
@@ -411,9 +506,9 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                   </Button>
                 </div>
 
-                {group.charts.length > 0 && (
+                {pendingCharts.length > 0 && (
                   <div className="space-y-2 max-w-full">
-                    {group.charts.map((chart) => {
+                    {pendingCharts.map((chart) => {
                       const isSaved = savedIds.has(chart.id);
                       return (
                         <div
@@ -451,9 +546,9 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                   </div>
                 )}
 
-                {group.insights.length > 0 && (
+                {pendingInsights.length > 0 && (
                   <div className="space-y-2 max-w-full">
-                    {group.insights.map((insight) => {
+                    {pendingInsights.map((insight) => {
                       const isSaved = savedIds.has(insight.id);
                       return (
                         <div
@@ -496,9 +591,9 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                   </div>
                 )}
 
-                {group.features.length > 0 && (
+                {pendingFeatures.length > 0 && (
                   <div className="space-y-2 max-w-full">
-                    {group.features.map((feature) => {
+                    {pendingFeatures.map((feature) => {
                       const featureArtifact = featureToArtifact(feature, tableId);
                       const isSaved = savedIds.has(featureArtifact.id);
                       return (
@@ -534,11 +629,10 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                   </div>
                 )}
 
-                {group.repairs.length > 0 && (
+                {pendingRepairs.length > 0 && (
                   <div className="space-y-2 max-w-full">
-                    {group.repairs.map((repair) => {
+                    {pendingRepairs.map((repair) => {
                       const plan = repair.plan || {};
-                      const planSteps = Array.isArray(plan.steps) ? plan.steps : [];
                       const tokenCount = plan.token_estimate?.token_count ?? 0;
                       const repairArtifact = buildRepairPlanArtifact(repair);
                       const isSaved = savedIds.has(repairArtifact.id);
@@ -572,6 +666,17 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                               <Button
                                 size="icon-sm"
                                 variant="ghost"
+                                onClick={() => {
+                                  setActiveRepair(toRepairPlanItem(repair));
+                                  setRepairDialogOpen(true);
+                                }}
+                                aria-label="Review & apply repair plan"
+                              >
+                                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                              </Button>
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
                                 disabled={isSaved}
                                 onClick={() => handleSave(repairArtifact)}
                               >
@@ -585,8 +690,9 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                   </div>
                 )}
               </div>
-            );
-          })}
+              );
+            });
+          })()}
         </div>
       )}
     </div>
@@ -595,6 +701,15 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
   if (isMobile) {
     return (
       <>
+        <RepairApprovalDialog
+          open={repairDialogOpen}
+          onOpenChange={setRepairDialogOpen}
+          tableId={Number(tableId)}
+          activeRepair={activeRepair}
+          onApplied={async () => {
+            await refreshOutputs(true);
+          }}
+        />
         {!isOpen && <AIFloatingButton onClick={onToggle} />}
         <Drawer open={isOpen} onOpenChange={(open) => !open && onToggle()}>
           <DrawerContent className="max-h-[85vh]">
@@ -625,6 +740,15 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
 
   return (
     <div className="w-72 flex-shrink-0 border-l border-border bg-card flex flex-col h-full overflow-hidden">
+      <RepairApprovalDialog
+        open={repairDialogOpen}
+        onOpenChange={setRepairDialogOpen}
+        tableId={Number(tableId)}
+        activeRepair={activeRepair}
+        onApplied={async () => {
+          await refreshOutputs(true);
+        }}
+      />
       <div className="p-3 border-b border-border flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-primary" />

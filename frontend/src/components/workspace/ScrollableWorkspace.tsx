@@ -1,24 +1,11 @@
 import { useRef, useEffect, useState, useCallback } from "react";
-import {
-  LayoutGrid,
-  Table,
-  BarChart3,
-  FileText,
-  Columns,
-  Lightbulb,
-  Network,
-  GitBranch,
-} from "lucide-react";
+import { BarChart3, FileText, Lightbulb, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TableAsset, TableResult } from "@/types";
 import OverviewTab from "./tabs/OverviewTab";
-import DataTab from "./tabs/DataTab";
-import ProfileTab from "./tabs/ProfileTab";
 import ChartsTab from "./tabs/ChartsTab";
 import InsightsTab from "./tabs/InsightsTab";
 import NotesTab from "./tabs/NotesTab";
-import LineageTab from "./tabs/LineageTab";
-import ColumnMapTab from "./tabs/ColumnMapTab";
 
 interface ScrollableWorkspaceProps {
   tableAsset: TableAsset;
@@ -27,52 +14,22 @@ interface ScrollableWorkspaceProps {
 
 const sections = [
   {
-    id: "overview",
-    label: "Overview",
-    icon: LayoutGrid,
-    color: "text-[hsl(var(--viz-blue))]",
-  },
-  {
-    id: "data",
-    label: "Data",
-    icon: Table,
-    color: "text-[hsl(var(--viz-cyan))]",
-  },
-  {
-    id: "profile",
-    label: "Profile",
-    icon: Columns,
+    id: "approvals",
+    label: "Approve Plans",
+    icon: ShieldCheck,
     color: "text-[hsl(var(--viz-green))]",
   },
   {
-    id: "columnmap",
-    label: "Column Map",
-    icon: Network,
-    color: "text-[hsl(var(--viz-purple))]",
-  },
-  {
-    id: "charts",
-    label: "Charts",
+    id: "visuals",
+    label: "Visuals",
     icon: BarChart3,
     color: "text-[hsl(var(--viz-orange))]",
   },
   {
-    id: "insights",
-    label: "Insights",
+    id: "insights-notes",
+    label: "Insights + Notes",
     icon: Lightbulb,
     color: "text-[hsl(var(--viz-yellow))]",
-  },
-  {
-    id: "notes",
-    label: "Notes",
-    icon: FileText,
-    color: "text-[hsl(var(--viz-pink))]",
-  },
-  {
-    id: "lineage",
-    label: "Lineage",
-    icon: GitBranch,
-    color: "text-muted-foreground",
   },
 ];
 
@@ -82,7 +39,7 @@ const ScrollableWorkspace = ({
 }: ScrollableWorkspaceProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const [activeSection, setActiveSection] = useState("overview");
+  const [activeSection, setActiveSection] = useState("approvals");
 
   // 滚动到指定 section
   const scrollToSection = useCallback((sectionId: string) => {
@@ -164,116 +121,64 @@ const ScrollableWorkspace = ({
         ref={containerRef}
         className="flex-1 overflow-y-auto p-6 scrollbar-thin scroll-smooth min-w-0"
       >
-        <div className="space-y-12">
-          {/* Overview Section */}
+        <div className="space-y-10">
+          {/* Approvals Section */}
           <div
             ref={(el) => {
-              sectionRefs.current["overview"] = el;
+              sectionRefs.current["approvals"] = el;
             }}
-            id="overview"
-          >
-            <OverviewTab tableAsset={tableAsset} tableResult={tableResult} />
-          </div>
-
-          {/* Data Section */}
-          <div
-            ref={(el) => {
-              sectionRefs.current["data"] = el;
-            }}
-            id="data"
-            className="pt-6 border-t border-border"
+            id="approvals"
           >
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Table className="h-5 w-5 text-[hsl(var(--viz-cyan))]" />
-              Data Preview
+              <ShieldCheck className="h-5 w-5 text-[hsl(var(--viz-green))]" />
+              Approve Plans
             </h2>
-            <DataTab tableResult={tableResult} />
+            <OverviewTab tableAsset={tableAsset} tableResult={tableResult} variant="approvals" />
           </div>
 
-          {/* Profile Section */}
+          {/* Visuals Section */}
           <div
             ref={(el) => {
-              sectionRefs.current["profile"] = el;
+              sectionRefs.current["visuals"] = el;
             }}
-            id="profile"
-            className="pt-6 border-t border-border"
-          >
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Columns className="h-5 w-5 text-[hsl(var(--viz-green))]" />
-              Column Profile
-            </h2>
-            <ProfileTab tableResult={tableResult} />
-          </div>
-
-          {/* Column Map Section */}
-          <div
-            ref={(el) => {
-              sectionRefs.current["columnmap"] = el;
-            }}
-            id="columnmap"
-            className="pt-6 border-t border-border"
-          >
-            <ColumnMapTab tableId={tableAsset.id} tableResult={tableResult} />
-          </div>
-
-          {/* Charts Section */}
-          <div
-            ref={(el) => {
-              sectionRefs.current["charts"] = el;
-            }}
-            id="charts"
+            id="visuals"
             className="pt-6 border-t border-border"
           >
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <BarChart3 className="h-5 w-5 text-[hsl(var(--viz-orange))]" />
-              Charts
+              Visuals
             </h2>
             <ChartsTab tableId={tableAsset.id} />
           </div>
 
-          {/* Insights Section */}
+          {/* Insights + Notes Section */}
           <div
             ref={(el) => {
-              sectionRefs.current["insights"] = el;
+              sectionRefs.current["insights-notes"] = el;
             }}
-            id="insights"
+            id="insights-notes"
             className="pt-6 border-t border-border"
           >
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <Lightbulb className="h-5 w-5 text-[hsl(var(--viz-yellow))]" />
-              Insights
+              Insights + Notes
             </h2>
-            <InsightsTab tableId={tableAsset.id} />
-          </div>
-
-          {/* Notes Section */}
-          <div
-            ref={(el) => {
-              sectionRefs.current["notes"] = el;
-            }}
-            id="notes"
-            className="pt-6 border-t border-border"
-          >
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <FileText className="h-5 w-5 text-[hsl(var(--viz-pink))]" />
-              Notes
-            </h2>
-            <NotesTab tableId={tableAsset.id} />
-          </div>
-
-          {/* Lineage Section */}
-          <div
-            ref={(el) => {
-              sectionRefs.current["lineage"] = el;
-            }}
-            id="lineage"
-            className="pt-6 border-t border-border"
-          >
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <GitBranch className="h-5 w-5 text-muted-foreground" />
-              Lineage
-            </h2>
-            <LineageTab tableAsset={tableAsset} tableResult={tableResult} />
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div className="rounded-lg border border-border bg-card/40 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <Lightbulb className="h-4 w-4 text-[hsl(var(--viz-yellow))]" />
+                  <span className="text-sm font-medium">Insights</span>
+                </div>
+                <InsightsTab tableId={tableAsset.id} />
+              </div>
+              <div className="rounded-lg border border-border bg-card/40 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <FileText className="h-4 w-4 text-[hsl(var(--viz-pink))]" />
+                  <span className="text-sm font-medium">Notes</span>
+                </div>
+                <NotesTab tableId={tableAsset.id} />
+              </div>
+            </div>
           </div>
 
           {/* Bottom padding */}

@@ -94,6 +94,7 @@ class ColumnWorkflowLogBuffer:
         tool_use_id: str | None,
         status: str,
         error: str | None = None,
+        output_preview: str | None = None,
     ) -> None:
         if tool_use_id:
             for call in reversed(self.tool_calls):
@@ -112,6 +113,8 @@ class ColumnWorkflowLogBuffer:
                             pass
                     if error:
                         call["error"] = error
+                    if output_preview:
+                        call["output_preview"] = output_preview
                     agent_key = call.get("agent_name") or "unknown"
                     batch = self._running_batches.get(agent_key)
                     if batch and tool_use_id:
@@ -126,6 +129,8 @@ class ColumnWorkflowLogBuffer:
                 call["ended_at"] = datetime.utcnow().isoformat()
                 if error:
                     call["error"] = error
+                if output_preview:
+                    call["output_preview"] = output_preview
                 agent_key = call.get("agent_name") or "unknown"
                 fallback_id = call.get("tool_use_id")
                 batch = self._running_batches.get(agent_key)
@@ -244,7 +249,15 @@ class ColumnWorkflowLogHook(HookProvider):
         exception = getattr(event, "exception", None)
         status = "error" if exception else "success"
         error = str(exception) if exception else None
-        self.buffer.update_tool_call(tool_use_id, status, error=error)
+        output_preview = None
+        if event.result is not None:
+            output_preview = self._truncate(self._format_content(event.result))
+        self.buffer.update_tool_call(
+            tool_use_id,
+            status,
+            error=error,
+            output_preview=output_preview,
+        )
         message = f"Tool completed: {tool_name}"
         if error:
             message += f" (error: {error})"
@@ -253,14 +266,12 @@ class ColumnWorkflowLogHook(HookProvider):
             message,
             {"tool_name": tool_name, "state": status},
         )
-        if event.result is not None:
-            result_preview = self._truncate(self._format_content(event.result))
-            if result_preview:
-                self.buffer.add_entry(
-                    "strands_log",
-                    f"Tool result: {tool_name} -> {result_preview}",
-                    {"tool_name": tool_name, "state": status},
-                )
+        if output_preview:
+            self.buffer.add_entry(
+                "strands_log",
+                f"Tool result: {tool_name} -> {output_preview}",
+                {"tool_name": tool_name, "state": status},
+            )
 
     def log_message(self, event: MessageAddedEvent) -> None:
         message = event.message

@@ -19,6 +19,7 @@ import {
 import { MinimapRender, createMinimapPlugin } from '@flowgram.ai/minimap-plugin';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   LayoutGrid,
   MessageSquarePlus,
@@ -79,6 +80,7 @@ const EDAWorkflowToolbar = ({
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [addNodeOpen, setAddNodeOpen] = useState(false);
+  const keepAddNodeOpenRef = useRef(false);
 
   useEffect(() => {
     const disposable = history.undoRedoService.onChange(() => {
@@ -127,9 +129,14 @@ const EDAWorkflowToolbar = ({
       if (selectService) {
         selectService.selection = [node];
       }
-      setAddNodeOpen(false);
+      keepAddNodeOpenRef.current = true;
+      setAddNodeOpen(true);
+      setTimeout(() => {
+        keepAddNodeOpenRef.current = false;
+        void tools.fitView(false);
+      }, 180);
     },
-    [defaultColumnName, document, playground, selectService]
+    [defaultColumnName, document, playground, selectService, tools]
   );
 
   const nodeGroups = useMemo(() => {
@@ -149,6 +156,14 @@ const EDAWorkflowToolbar = ({
 
   const iconClassName = 'h-4 w-4 text-slate-900';
   const buttonClassName = 'h-8 w-8 text-slate-900 hover:text-slate-900';
+  const runTooltip = useMemo(() => {
+    if (!runLabel) return 'Agent run: the agent decides which tools to use.';
+    const lower = runLabel.toLowerCase();
+    if (lower.includes('selected')) {
+      return 'Selected run: executes only the selected nodes.';
+    }
+    return 'Agent run: the agent decides which tools to use.';
+  }, [runLabel]);
 
   return (
     <div
@@ -166,18 +181,34 @@ const EDAWorkflowToolbar = ({
         <LayoutGrid className={iconClassName} strokeWidth={2.5} />
       </Button>
       {onRun && (
-        <Button
-          variant="ghost"
-          size="icon"
-          className={buttonClassName}
-          onClick={onRun}
-          aria-label={runLabel || 'Run workflow'}
-          disabled={runDisabled || isRunning}
-        >
-          <Play className={iconClassName} strokeWidth={2.5} />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={buttonClassName}
+              onClick={onRun}
+              aria-label={runLabel || 'Run workflow'}
+              disabled={runDisabled || isRunning}
+            >
+              <Play className={iconClassName} strokeWidth={2.5} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-xs">
+            {runTooltip}
+          </TooltipContent>
+        </Tooltip>
       )}
-      <Popover open={addNodeOpen} onOpenChange={setAddNodeOpen}>
+      <Popover
+        open={addNodeOpen}
+        onOpenChange={(open) => {
+          if (!open && keepAddNodeOpenRef.current) {
+            setAddNodeOpen(true);
+            return;
+          }
+          setAddNodeOpen(open);
+        }}
+      >
         <PopoverTrigger asChild>
           <Button
             variant="ghost"
@@ -189,30 +220,38 @@ const EDAWorkflowToolbar = ({
             <Plus className={iconClassName} strokeWidth={2.5} />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-72 p-3" onMouseDown={(event) => event.stopPropagation()}>
+        <PopoverContent
+          align="start"
+          className="w-[560px] max-h-[70vh] overflow-y-auto p-3"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
           <div className="text-xs font-semibold uppercase text-slate-500 tracking-wide mb-2">
             Add Node
           </div>
-          <div className="space-y-3">
-            {(['source', 'analysis', 'feature', 'output'] as const).map((category) => (
-              <div key={category} className="space-y-1">
-                <div className="text-[11px] uppercase text-slate-400 tracking-wide">
-                  {category}
+          <div className="pr-1">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+              {(['source', 'analysis', 'feature', 'output'] as const).map((category) => (
+                <div key={category} className="space-y-1">
+                  <div className="text-[11px] uppercase text-slate-400 tracking-wide">
+                    {category}
+                  </div>
+                  <div className="space-y-1">
+                    {nodeGroups[category].map((definition) => (
+                      <button
+                        key={definition.type}
+                        className="w-full rounded-md border border-slate-200 bg-white px-2 py-2 text-left text-[11px] text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                        onClick={() => handleAddNode(definition.type)}
+                      >
+                        <div className="font-medium text-slate-900">{definition.name}</div>
+                        <div className="text-[10px] text-slate-500">
+                          {definition.description}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  {nodeGroups[category].map((definition) => (
-                    <button
-                      key={definition.type}
-                      className="w-full rounded-md border border-slate-200 bg-white px-2 py-2 text-left text-xs text-slate-700 hover:border-slate-300 hover:bg-slate-50"
-                      onClick={() => handleAddNode(definition.type)}
-                    >
-                      <div className="font-medium text-slate-900">{definition.name}</div>
-                      <div className="text-[11px] text-slate-500">{definition.description}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </PopoverContent>
       </Popover>
@@ -341,6 +380,8 @@ export const EDAWorkflowEditor = ({
   const applyingRef = useRef(false);
   const lastEditorJsonRef = useRef<string | null>(null);
   const lastLayoutSignatureRef = useRef<string | null>(null);
+  const hasFitViewRef = useRef(false);
+  const fitViewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Node registries
   const nodeRegistries = useMemo(() => createEDANodeRegistries(), []);
@@ -375,13 +416,25 @@ export const EDAWorkflowEditor = ({
   const layoutNodeCountRef = useRef(0);
   const pendingLayoutRef = useRef(false);
   const wasRunningRef = useRef(false);
+  const wasRunningFitRef = useRef(false);
 
   const handleAllLayersRendered = () => {
     setEditorReady(true);
     if (nodes.length > 0) {
+      hasFitViewRef.current = true;
       void editorRef.current?.tools?.fitView(false);
     }
   };
+
+  const scheduleFitView = useCallback(() => {
+    if (!editorReady) return;
+    if (fitViewTimerRef.current) {
+      clearTimeout(fitViewTimerRef.current);
+    }
+    fitViewTimerRef.current = setTimeout(() => {
+      void editorRef.current?.tools?.fitView(false);
+    }, 120);
+  }, [editorReady]);
 
   useEffect(() => {
     if (!editorReady) {
@@ -415,9 +468,31 @@ export const EDAWorkflowEditor = ({
       layoutNodeCountRef.current = nodes.length;
       if (isRunning) {
         pendingLayoutRef.current = true;
+      } else {
+        scheduleFitView();
       }
     }
-  }, [editorReady, isRunning, nodes.length]);
+  }, [editorReady, isRunning, nodes.length, scheduleFitView]);
+
+  useEffect(() => {
+    if (!editorReady) return;
+    if (nodes.length > 0) {
+      scheduleFitView();
+    }
+  }, [editorReady, nodes.length, scheduleFitView]);
+
+  useEffect(() => {
+    if (!editorReady) {
+      return;
+    }
+    if (lastLayoutSignatureRef.current === layoutSignature) {
+      return;
+    }
+    lastLayoutSignatureRef.current = layoutSignature;
+    if (nodes.length > 0 && !isRunning) {
+      scheduleFitView();
+    }
+  }, [editorReady, isRunning, layoutSignature, nodes.length, scheduleFitView]);
 
   useEffect(() => {
     if (!editorReady) {
@@ -441,11 +516,25 @@ export const EDAWorkflowEditor = ({
             ranksep: 120,
           },
         });
+        scheduleFitView();
       };
       void runLayout();
     }
     wasRunningRef.current = isRunning;
-  }, [editorReady, isRunning, layoutSignature]);
+  }, [editorReady, isRunning, layoutSignature, scheduleFitView]);
+
+  useEffect(() => {
+    if (!editorReady) return;
+    if (isRunning) {
+      wasRunningFitRef.current = true;
+      scheduleFitView();
+      return;
+    }
+    if (wasRunningFitRef.current && !isRunning) {
+      wasRunningFitRef.current = false;
+      scheduleFitView();
+    }
+  }, [editorReady, isRunning, scheduleFitView]);
 
   if (nodes.length === 0) {
     return (

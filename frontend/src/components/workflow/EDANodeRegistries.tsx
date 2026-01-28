@@ -116,6 +116,37 @@ export function createEDANodeRegistries(): WorkflowNodeRegistry[] {
       },
     },
 
+    // Generate Summary Node
+    {
+      type: 'generate_summary',
+      meta: {
+        defaultPorts: [
+          { type: 'input', location: 'left' },
+          { type: 'output', location: 'right' },
+        ],
+      },
+      formMeta: {
+        render: () => (
+          <>
+            <Field name="title">
+              {({ field }) => (
+                <div className="text-sm font-medium text-slate-900 mb-2">
+                  {field.value || 'Generate Summary'}
+                </div>
+              )}
+            </Field>
+            <Field name="focus">
+              {({ field }) => (
+                <div className="text-xs text-slate-700">
+                  Focus: {field.value || 'general'}
+                </div>
+              )}
+            </Field>
+          </>
+        ),
+      },
+    },
+
     // Generate Charts Node
     {
       type: 'generate_charts',

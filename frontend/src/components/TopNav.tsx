@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Database, Layout, Lightbulb, Search, Menu } from "lucide-react";
+import { Layout, Lightbulb, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -31,10 +31,19 @@ const TopNav = ({ onNewTable }: TopNavProps) => {
         {/* Logo & Nav */}
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigate("/")}>
-            <div className="p-1.5 rounded-lg bg-primary/10">
-              <Database className="h-5 w-5 text-primary" />
+            <div className="p-2.5 rounded-lg bg-primary/10">
+              <img
+                src="/black-theme.svg"
+                alt="Scrat"
+                className="h-7 w-7 dark:hidden"
+              />
+              <img
+                src="/white-theme.svg"
+                alt="Scrat"
+                className="h-7 w-7 hidden dark:block"
+              />
             </div>
-            <span className="font-semibold text-lg hidden sm:block">TableSpace</span>
+            <span className="font-semibold text-lg hidden sm:block">Scrat</span>
           </div>
 
           <nav className="flex items-center gap-1">

@@ -158,6 +158,7 @@ class ColumnWorkflowToolsBase:
             "generate_categorical_visuals": 0,
             "generate_numeric_insights": 0,
             "generate_categorical_insights": 0,
+            "generate_column_summary": 0,
             "summarize_text_column": 0,
             "row_level_extract_text": 1,
             "describe_image_column": 0,
@@ -165,6 +166,7 @@ class ColumnWorkflowToolsBase:
             "plan_data_repairs": 2,
             "require_user_approval": 3,
             "apply_data_repairs": 4,
+            "apply_data_repairs_to_fixing_table": 4,
         }
 
         def resolve_tool(name: str) -> Any | None:
@@ -203,10 +205,18 @@ class ColumnWorkflowToolsBase:
                         "result": result,
                     }
                 )
-                log_buffer.update_tool_call(tool_use_id, "success")
+                preview = str(result)
+                if len(preview) > 240:
+                    preview = preview[:240].rstrip() + "..."
+                log_buffer.update_tool_call(tool_use_id, "success", output_preview=preview)
             except Exception as exc:  # pragma: no cover - defensive
                 errors.append(f"{tool_name}:{exc}")
-                log_buffer.update_tool_call(tool_use_id, "error", error=str(exc))
+                log_buffer.update_tool_call(
+                    tool_use_id,
+                    "error",
+                    error=str(exc),
+                    output_preview=str(exc),
+                )
 
         try:
             log_buffer.add_entry(
@@ -504,6 +514,16 @@ class ColumnWorkflowToolsBase:
         y_key = "count" if use_count else "avg_value"
         y_title = "Count" if use_count else f"Average {y_column}"
         agg_expr = "COUNT(*)" if use_count else f"AVG({self._quote_ident(y_column)})"
+        overrides = ctx.column_meta.overrides or {}
+        limit_override = overrides.get("visual_time_limit") or overrides.get("visual_point_limit")
+        if isinstance(limit_override, str) and limit_override.lower() == "all":
+            time_limit = None
+        elif limit_override in (-1, 0, ""):
+            time_limit = None
+        elif limit_override is not None:
+            time_limit = max(1, self._coerce_int(limit_override, 500))
+        else:
+            time_limit = 500
 
         query = f"""
         WITH base AS (
@@ -517,7 +537,7 @@ class ColumnWorkflowToolsBase:
         {"" if use_count else f"AND {self._quote_ident(y_column)} IS NOT NULL"}
         GROUP BY {time_bucket_expr}
         ORDER BY time_bucket
-        LIMIT 500
+        {"" if time_limit is None else f"LIMIT {int(time_limit)}"}
         """
         try:
             rows = await self.sf.execute_query(query)
@@ -559,6 +579,20 @@ class ColumnWorkflowToolsBase:
     ) -> dict[str, Any] | None:
         x_ident = self._quote_ident(x_column)
         use_count = y_column == "count" or y_semantic != "numeric"
+        overrides = ctx.column_meta.overrides or {}
+        limit_override = (
+            overrides.get("visual_top_n")
+            or overrides.get("categorical_visual_top_n")
+            or overrides.get("visual_category_limit")
+        )
+        if isinstance(limit_override, str) and limit_override.lower() == "all":
+            top_limit = None
+        elif limit_override in (-1, 0, ""):
+            top_limit = None
+        elif limit_override is not None:
+            top_limit = max(1, self._coerce_int(limit_override, 50))
+        else:
+            top_limit = None
 
         if use_count:
             total_query = f"""
@@ -578,7 +612,7 @@ class ColumnWorkflowToolsBase:
             WHERE {x_ident} IS NOT NULL
             GROUP BY category
             ORDER BY count DESC
-            LIMIT 8
+            {"" if top_limit is None else f"LIMIT {int(top_limit)}"}
             """
             try:
                 total_rows = await self.sf.execute_query(total_query)
@@ -592,7 +626,7 @@ class ColumnWorkflowToolsBase:
                 for row in top_rows_raw
             ]
             top_sum = sum(row.get("count", 0) for row in top_rows)
-            if total_count > top_sum:
+            if top_limit is not None and total_count > top_sum:
                 top_rows.append({"category": "Other", "count": total_count - top_sum})
             if not top_rows:
                 return None
@@ -603,7 +637,7 @@ class ColumnWorkflowToolsBase:
                 y_key="count",
                 data=top_rows,
                 narrative=[
-                    "Top categories shown with long-tail grouped as Other",
+                    "Top categories shown with long-tail grouped as Other" if top_limit is not None else "All categories shown",
                     f"Total non-null rows: {total_count}",
                 ],
                 source_columns=[x_column],
@@ -612,26 +646,41 @@ class ColumnWorkflowToolsBase:
             )
 
         y_ident = self._quote_ident(y_column)
-        numeric_query = f"""
-        WITH base AS (
-            {ctx.analysis_query}
-        ), top AS (
-            SELECT {x_ident} AS category
+        if top_limit is None:
+            numeric_query = f"""
+            WITH base AS (
+                {ctx.analysis_query}
+            )
+            SELECT
+                {x_ident} AS category,
+                AVG({y_ident}) AS avg_value
             FROM base
             WHERE {x_ident} IS NOT NULL
-            GROUP BY category
-            ORDER BY COUNT(*) DESC
-            LIMIT 8
-        )
-        SELECT
-            base.{x_ident} AS category,
-            AVG(base.{y_ident}) AS avg_value
-        FROM base
-        JOIN top ON base.{x_ident} = top.category
-        WHERE base.{y_ident} IS NOT NULL
-        GROUP BY base.{x_ident}
-        ORDER BY avg_value DESC
-        """
+            AND {y_ident} IS NOT NULL
+            GROUP BY {x_ident}
+            ORDER BY avg_value DESC
+            """
+        else:
+            numeric_query = f"""
+            WITH base AS (
+                {ctx.analysis_query}
+            ), top AS (
+                SELECT {x_ident} AS category
+                FROM base
+                WHERE {x_ident} IS NOT NULL
+                GROUP BY category
+                ORDER BY COUNT(*) DESC
+                LIMIT {int(top_limit)}
+            )
+            SELECT
+                base.{x_ident} AS category,
+                AVG(base.{y_ident}) AS avg_value
+            FROM base
+            JOIN top ON base.{x_ident} = top.category
+            WHERE base.{y_ident} IS NOT NULL
+            GROUP BY base.{x_ident}
+            ORDER BY avg_value DESC
+            """
         try:
             numeric_rows = await self.sf.execute_query(numeric_query)
         except Exception as exc:
@@ -665,6 +714,18 @@ class ColumnWorkflowToolsBase:
         analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
         null_count = self._coerce_int((analysis.get("nulls") or {}).get("null_count"))
         conflict_groups = self._coerce_int((analysis.get("conflicts") or {}).get("conflict_groups"))
+        summary_payload = {
+            "column": column_name,
+            "semantic_type": semantic_type,
+            "stats": analysis.get("stats"),
+            "nulls": analysis.get("nulls"),
+            "conflicts": analysis.get("conflicts"),
+            "visuals": analysis.get("visuals", []),
+            "repair_plan": analysis.get("repair_plan"),
+        }
+        summary_instruction = (
+            "Summarize the column in plain language. Return JSON with keys: summary, key_points, risks."
+        )
 
         if semantic_type in {"numeric", "temporal"}:
             estimates.append({
@@ -692,6 +753,10 @@ class ColumnWorkflowToolsBase:
                 "task": "generate_insights",
                 "token_count": await self._estimate_ai_agg_tokens(payload, instruction),
             })
+            estimates.append({
+                "task": "generate_summary",
+                "token_count": await self._estimate_ai_agg_tokens(summary_payload, summary_instruction),
+            })
             if null_count or conflict_groups:
                 estimates.append({"task": "plan_data_repairs", "token_count": 0})
                 estimates.append({"task": "approval_gate", "token_count": 0})
@@ -718,6 +783,10 @@ class ColumnWorkflowToolsBase:
             estimates.append({
                 "task": "generate_insights",
                 "token_count": await self._estimate_ai_agg_tokens(payload, instruction),
+            })
+            estimates.append({
+                "task": "generate_summary",
+                "token_count": await self._estimate_ai_agg_tokens(summary_payload, summary_instruction),
             })
             if null_count or conflict_groups:
                 estimates.append({"task": "plan_data_repairs", "token_count": 0})
@@ -748,6 +817,10 @@ class ColumnWorkflowToolsBase:
                     "instruction_tokens": instruction_tokens,
                     "token_count": total_tokens,
                 })
+            estimates.append({
+                "task": "generate_summary",
+                "token_count": await self._estimate_ai_agg_tokens(summary_payload, summary_instruction),
+            })
             if null_count:
                 estimates.append({"task": "plan_data_repairs", "token_count": 0})
                 estimates.append({"task": "approval_gate", "token_count": 0})
@@ -846,7 +919,15 @@ class ColumnWorkflowToolsBase:
             return default
 
     def _resolve_temporal_expr(self, ctx: ColumnContext, col: str) -> str:
-        return f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({col}))"
+        num_expr = f"TRY_TO_NUMBER({col})"
+        return (
+            "CASE "
+            f"WHEN {num_expr} IS NULL THEN TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({col})) "
+            f"WHEN {num_expr} BETWEEN 19000101 AND 21000101 THEN TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({col}), 'YYYYMMDD') "
+            f"WHEN {num_expr} > 100000000000 THEN TRY_TO_TIMESTAMP_NTZ({num_expr} / 1000) "
+            f"ELSE TRY_TO_TIMESTAMP_NTZ({num_expr}) "
+            "END"
+        )
 
     def _numeric_expr(self, expr: str) -> str:
         return f"TRY_TO_NUMBER(TO_VARCHAR({expr}))"
@@ -868,6 +949,35 @@ class ColumnWorkflowToolsBase:
         normalized = re.sub(r"[^A-Za-z0-9_]+", "_", str(value))
         normalized = normalized.strip("_").lower()
         return normalized or "col"
+
+    def _split_table_ref(self, table_ref: str) -> list[str]:
+        parts: list[str] = []
+        buf: list[str] = []
+        in_quotes = False
+        for ch in str(table_ref):
+            if ch == '"':
+                in_quotes = not in_quotes
+            if ch == "." and not in_quotes:
+                parts.append("".join(buf).strip())
+                buf = []
+                continue
+            buf.append(ch)
+        if buf:
+            parts.append("".join(buf).strip())
+        return [part for part in parts if part]
+
+    def _build_fixing_table_ref(self, table_ref: str, column_name: str) -> str:
+        parts = self._split_table_ref(table_ref)
+        suffix = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        normalized = self._normalize_identifier(column_name)
+        table_name = f"fixing_{normalized}_{suffix}"
+        quoted_table = self._quote_ident(table_name)
+        if len(parts) >= 2:
+            prefix = ".".join(parts[:-1])
+            return f"{prefix}.{quoted_table}"
+        if len(parts) == 1:
+            return f"{parts[0]}.{quoted_table}"
+        return quoted_table
 
     def _build_windowed_query(
         self,
@@ -896,6 +1006,23 @@ class ColumnWorkflowToolsBase:
         column_name: str,
         group_by_columns: list[str],
     ) -> dict[str, Any]:
+        def sanitize_error_message(message: str) -> str:
+            if not message:
+                return ""
+            # Remove Snowflake query IDs / UUIDs that change on every run.
+            cleaned = re.sub(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                "<id>",
+                message,
+                flags=re.IGNORECASE,
+            )
+            cleaned = re.sub(
+                r"(?i)query id[:\s]*[0-9a-f\\-]+",
+                "query id:<id>",
+                cleaned,
+            )
+            return cleaned
+
         col = self._quote_ident(column_name)
         base_query = ctx.analysis_query
         time_column = ctx.time_column
@@ -916,7 +1043,36 @@ class ColumnWorkflowToolsBase:
             rows = await self.sf.execute_query(snapshot_query)
             row = rows[0] if rows else {}
         except Exception as exc:
-            return {"error": str(exc)}
+            if time_expr:
+                fallback_query = f"""
+                WITH base AS ({base_query})
+                SELECT
+                    COUNT(*) AS total_count,
+                    COUNT_IF({col} IS NULL) AS null_count
+                FROM base
+                """
+                try:
+                    rows = await self.sf.execute_query(fallback_query)
+                    row = rows[0] if rows else {}
+                    time_expr = None
+                except Exception as fallback_exc:
+                    error_snapshot = {
+                        "error": sanitize_error_message(str(fallback_exc)),
+                        "group_by_columns": group_by_columns,
+                        "time_column": time_column,
+                        "base_query": base_query,
+                    }
+                    error_snapshot["signature"] = self._hash_payload(error_snapshot)
+                    return error_snapshot
+            else:
+                error_snapshot = {
+                    "error": sanitize_error_message(str(exc)),
+                    "group_by_columns": group_by_columns,
+                    "time_column": time_column,
+                    "base_query": base_query,
+                }
+                error_snapshot["signature"] = self._hash_payload(error_snapshot)
+                return error_snapshot
 
         snapshot = {
             "total_count": self._coerce_int(row.get("TOTAL_COUNT")),
@@ -1078,6 +1234,14 @@ class ColumnWorkflowToolsBase:
             select(ColumnMetadata.column_name).where(
                 ColumnMetadata.table_asset_id == table_asset_id,
                 ColumnMetadata.semantic_type == "temporal",
+            )
+        )
+        return [row[0] for row in result.all() if row and row[0]]
+
+    async def _list_all_columns(self, table_asset_id: int) -> list[str]:
+        result = await self.db.execute(
+            select(ColumnMetadata.column_name).where(
+                ColumnMetadata.table_asset_id == table_asset_id
             )
         )
         return [row[0] for row in result.all() if row and row[0]]
@@ -1406,7 +1570,7 @@ class ColumnWorkflowToolsBase:
         if is_temporal:
             time_col = time_expr or col
         elif ctx.time_column:
-            time_col = f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({self._quote_ident(ctx.time_column)}))"
+            time_col = self._resolve_temporal_expr(ctx, self._quote_ident(ctx.time_column))
         if time_col:
             time_bucket_expr = f"DATE_TRUNC('day', {time_col})"
             time_query = f"""

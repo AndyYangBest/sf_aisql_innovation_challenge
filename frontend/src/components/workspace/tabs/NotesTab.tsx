@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FileText, Save, Edit3, Eye } from "lucide-react";
+import { FileText, Save, Edit3, Eye, Trash2 } from "lucide-react";
 import { useTableStore } from "@/store/tableStore";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -10,7 +10,7 @@ interface NotesTabProps {
 }
 
 const NotesTab = ({ tableId }: NotesTabProps) => {
-  const { getArtifactsByTable, updateReportNotes } = useTableStore();
+  const { getArtifactsByTable, updateReportNotes, deleteArtifact } = useTableStore();
   const artifacts = getArtifactsByTable(tableId);
   const docArtifacts = artifacts.filter((a) => a.type === "doc");
   const latestDoc = docArtifacts[docArtifacts.length - 1];
@@ -118,6 +118,16 @@ const NotesTab = ({ tableId }: NotesTabProps) => {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {latestDoc && latestDoc.type === "doc" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => deleteArtifact(latestDoc.id)}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete
+            </Button>
+          )}
           {isEditing ? (
             <>
               <Button variant="outline" size="sm" onClick={() => setIsEditing(false)}>
@@ -153,7 +163,7 @@ const NotesTab = ({ tableId }: NotesTabProps) => {
           placeholder="Write your notes in Markdown..."
         />
       ) : latestDoc && latestDoc.type === "doc" ? (
-        <div className="p-6 rounded-xl glass prose prose-invert max-w-none">
+        <div className="p-6 rounded-xl glass prose prose-invert max-w-none break-words min-w-0">
           {renderMarkdown(latestDoc.content.markdown)}
         </div>
       ) : (

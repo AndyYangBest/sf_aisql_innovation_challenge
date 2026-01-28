@@ -174,7 +174,7 @@ const AIFloatingButton = ({ onClick, className }: AIFloatingButtonProps) => {
       >
         <div className="flex items-center gap-1.5">
           <Sparkles className="w-3 h-3 text-primary" />
-          <span>AI Assistant</span>
+          <span>Output</span>
         </div>
         {/* Arrow */}
         <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 rotate-45 w-2 h-2 bg-popover border-r border-t border-border" />

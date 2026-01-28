@@ -9,7 +9,6 @@ import {
   Users,
   Search,
   Plus,
-  Database,
   Table,
   Loader2,
 } from "lucide-react";
@@ -20,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import NewTableDrawer from "@/components/NewTableDrawer";
 import { StatCard } from "@/components/shared/StatCard";
 import { PageContainer, PageHeader } from "@/components/shared/PageContainer";
+import StatusBar from "@/components/StatusBar";
 import { tablesApi } from "@/api/tables";
 import { useToast } from "@/hooks/use-toast";
 
@@ -92,16 +92,25 @@ const TablesPage = () => {
   const insightCount = artifacts.filter((a) => a.type === "insight").length;
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background pb-10">
       {/* Header */}
       <PageHeader>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-            <div className="p-1.5 sm:p-2 rounded-lg bg-primary/10 flex-shrink-0">
-              <Database className="h-5 w-5 sm:h-6 sm:w-6 text-primary" />
+            <div className="p-1 sm:p-1.5 rounded-lg bg-primary/10 flex-shrink-0">
+              <img
+                src="/black-theme.svg"
+                alt="Scrat"
+                className="h-12 w-12 sm:h-14 sm:w-14 dark:hidden"
+              />
+              <img
+                src="/white-theme.svg"
+                alt="Scrat"
+                className="h-12 w-12 sm:h-14 sm:w-14 hidden dark:block"
+              />
             </div>
             <div className="min-w-0">
-              <h1 className="text-lg sm:text-xl font-bold truncate">TableSpace</h1>
+              <h1 className="text-lg sm:text-xl font-bold truncate">Scrat</h1>
               <p className="text-xs text-muted-foreground hidden sm:block">
                 Data Analytics Workspace
               </p>
@@ -253,6 +262,7 @@ const TablesPage = () => {
         </div>
       </PageContainer>
 
+      <StatusBar />
       <NewTableDrawer open={drawerOpen} onOpenChange={setDrawerOpen} />
     </div>
   );
