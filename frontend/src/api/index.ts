@@ -55,3 +55,4 @@ export { workflowsApi, simulateNodeExecution, getExecutionOrder } from './workfl
 export { aiApi } from './ai';
 export { columnMetadataApi } from './columnMetadata';
 export { columnWorkflowsApi } from './columnWorkflows';
+export { usageApi } from './usage';

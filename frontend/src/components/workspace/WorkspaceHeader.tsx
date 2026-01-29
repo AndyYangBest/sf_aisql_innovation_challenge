@@ -47,6 +47,17 @@ export interface TokenUsage {
   total: number;
 }
 
+export interface CreditUsageDay {
+  day: string;
+  credits_used: number;
+}
+
+export interface CreditUsage {
+  days: number;
+  total_credits: number;
+  by_day: CreditUsageDay[];
+}
+
 interface WorkspaceHeaderProps {
   // 基础信息
   title: string;
@@ -65,6 +76,9 @@ interface WorkspaceHeaderProps {
   
   // Token 使用
   tokenUsage?: TokenUsage;
+
+  // Snowflake credits usage
+  creditUsage?: CreditUsage;
   
   // 操作回调
   onBack?: () => void;
@@ -94,6 +108,7 @@ export function WorkspaceHeader({
   currentUserId,
   onInvite,
   tokenUsage,
+  creditUsage,
   onBack,
   onSave,
   onShare,
@@ -262,8 +277,41 @@ export function WorkspaceHeader({
           </div>
         )}
 
-        {/* Token 计数 */}
-        {tokenUsage && (
+        {/* Snowflake credits（优先显示真实 credits，其次才显示 token） */}
+        {creditUsage ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-1 sm:gap-1.5 text-[10px] sm:text-xs text-muted-foreground cursor-default hover:text-foreground transition-colors">
+                <Coins className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                <span className="tabular-nums">
+                  {isMobile
+                    ? (creditUsage.total_credits >= 1000
+                        ? `${(creditUsage.total_credits / 1000).toFixed(1)}k`
+                        : creditUsage.total_credits.toFixed(2))
+                    : creditUsage.total_credits.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              <div className="space-y-1">
+                <div className="flex justify-between gap-4 font-medium">
+                  <span>Credits (last {creditUsage.days}d):</span>
+                  <span>{creditUsage.total_credits.toLocaleString(undefined, { maximumFractionDigits: 6 })}</span>
+                </div>
+                {creditUsage.by_day?.length > 0 && (
+                  <div className="border-t border-border pt-1 space-y-1">
+                    {creditUsage.by_day.slice(0, 7).map((d) => (
+                      <div key={d.day} className="flex justify-between gap-4">
+                        <span className="text-muted-foreground">{d.day}</span>
+                        <span>{d.credits_used.toLocaleString(undefined, { maximumFractionDigits: 6 })}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        ) : tokenUsage && (
           <Tooltip>
             <TooltipTrigger asChild>
               <div className="flex items-center gap-1 sm:gap-1.5 text-[10px] sm:text-xs text-muted-foreground cursor-default hover:text-foreground transition-colors">

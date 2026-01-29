@@ -5,22 +5,16 @@ import { Button } from "@/components/ui/button";
 import ScrollableWorkspace from "@/components/workspace/ScrollableWorkspace";
 import AIActionsPanel from "@/components/workspace/AIActionsPanel";
 import WorkflowTab from "@/components/workspace/tabs/WorkflowTab";
-import WorkspaceHeader, { Collaborator, TokenUsage } from "@/components/workspace/WorkspaceHeader";
+import WorkspaceHeader, { Collaborator, CreditUsage } from "@/components/workspace/WorkspaceHeader";
 import { useToast } from "@/hooks/use-toast";
 import { tablesApi } from "@/api/tables";
+import { usageApi } from "@/api";
 
 // Mock 协作者数据 - 未来从后端获取
 const mockCollaborators: Collaborator[] = [
   { id: "1", name: "Alice Chen", email: "alice@example.com", status: "online", color: "#10B981" },
   { id: "2", name: "Bob Wang", email: "bob@example.com", status: "idle", color: "#F59E0B" },
 ];
-
-// Mock Token 使用数据 - 未来从后端获取
-const mockTokenUsage: TokenUsage = {
-  context: 8200,
-  output: 4250,
-  total: 12450,
-};
 
 const TableWorkspace = () => {
   const { id } = useParams<{ id: string }>();
@@ -36,6 +30,7 @@ const TableWorkspace = () => {
   const [activeTab, setActiveTab] = useState<"workflow" | "report">("workflow");
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+  const [creditUsage, setCreditUsage] = useState<CreditUsage | null>(null);
   const { toast } = useToast();
 
   const tableAsset = tableAssets.find((t) => t.id === id);
@@ -80,6 +75,16 @@ const TableWorkspace = () => {
     if (!id || !tableAsset) return;
     void loadTableResult(id);
   }, [id, loadTableResult, tableAsset]);
+
+  useEffect(() => {
+    // Fetch real Snowflake credits usage (last 7 days)
+    void (async () => {
+      const resp = await usageApi.getCreditUsage(7);
+      if (resp.status === "success" && resp.data) {
+        setCreditUsage(resp.data);
+      }
+    })();
+  }, []);
 
   if (isLoading) {
     return (
@@ -130,7 +135,7 @@ const TableWorkspace = () => {
         onModeChange={handleModeChange}
         collaborators={mockCollaborators}
         onInvite={handleInvite}
-        tokenUsage={mockTokenUsage}
+        creditUsage={creditUsage ?? undefined}
       />
 
       <div className="flex-1 flex overflow-hidden">
