@@ -123,18 +123,32 @@ const TablesPage = () => {
     ).length;
   };
 
-  const chartCount = useMemo(
-    () =>
-      new Set(artifacts.filter((a) => a.type === "chart").map((a) => a.id))
-        .size,
-    [artifacts],
+  const tableIdSet = useMemo(
+    () => new Set(tableAssets.map((table) => table.id)),
+    [tableAssets],
   );
-  const insightCount = useMemo(
-    () =>
-      new Set(artifacts.filter((a) => a.type === "insight").map((a) => a.id))
-        .size,
-    [artifacts],
-  );
+  const chartCount = useMemo(() => {
+    const ids = new Set(
+      artifacts
+        .filter(
+          (artifact) =>
+            artifact.type === "chart" && tableIdSet.has(artifact.tableId),
+        )
+        .map((artifact) => artifact.id),
+    );
+    return ids.size;
+  }, [artifacts, tableIdSet]);
+  const insightCount = useMemo(() => {
+    const ids = new Set(
+      artifacts
+        .filter(
+          (artifact) =>
+            artifact.type === "insight" && tableIdSet.has(artifact.tableId),
+        )
+        .map((artifact) => artifact.id),
+    );
+    return ids.size;
+  }, [artifacts, tableIdSet]);
   const approvedPlansCount = getApprovedPlansCount();
 
   return (

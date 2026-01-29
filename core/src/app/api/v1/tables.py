@@ -14,6 +14,11 @@ async def get_snowflake_service() -> SnowflakeService:
 
 
 @router.get(
+    "",
+    summary="Get Snowflake Tables",
+    description="Fetch list of tables from Snowflake database",
+)
+@router.get(
     "/",
     summary="Get Snowflake Tables",
     description="Fetch list of tables from Snowflake database",

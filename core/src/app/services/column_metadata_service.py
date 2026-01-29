@@ -109,6 +109,12 @@ class ColumnMetadataService:
 
         saved_columns = await self._upsert_column_metadata(table_asset_id, column_metadata)
         await self.db.commit()
+        await self.db.refresh(table_metadata)
+        for record in saved_columns:
+            try:
+                await self.db.refresh(record)
+            except Exception:
+                continue
 
         return table_metadata, saved_columns
 

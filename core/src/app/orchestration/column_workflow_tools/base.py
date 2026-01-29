@@ -1260,6 +1260,98 @@ class ColumnWorkflowToolsBase:
             return str(value), value
         return None, None
 
+    async def _suggest_group_columns(
+        self,
+        ctx: ColumnContext,
+        column_name: str,
+        candidate_limit: int = 8,
+    ) -> tuple[list[str], str | None]:
+        """Suggest grouping columns for contextual imputation using AI_COMPLETE."""
+        result = await self.db.execute(
+            select(ColumnMetadata).where(ColumnMetadata.table_asset_id == ctx.table_asset_id)
+        )
+        columns = list(result.scalars().all())
+        candidates: list[dict[str, Any]] = []
+        for col_meta in columns:
+            if col_meta.column_name == column_name:
+                continue
+            semantic = col_meta.semantic_type
+            if semantic not in {"categorical", "temporal", "id", "spatial"}:
+                continue
+            examples = col_meta.examples or []
+            candidates.append(
+                {
+                    "name": col_meta.column_name,
+                    "semantic_type": semantic,
+                    "examples": examples[:3],
+                }
+            )
+        candidates = candidates[:candidate_limit]
+        if not candidates:
+            return [], None
+
+        prompt = (
+            "You are selecting grouping columns to impute missing values for a target column. "
+            f"Target column: {column_name}. "
+            "Pick up to 2 grouping columns from the candidates that best preserve data consistency "
+            "and avoid leakage. Prefer temporal and categorical identifiers that naturally segment the data "
+            "(e.g., route, product, customer, date). "
+            "Return JSON: {\"group_columns\": [\"col1\", \"col2\"], \"rationale\": \"...\"}."
+        )
+        prompt += f" Candidates: {json.dumps(candidates)}"
+        response_format = {
+            "type": "object",
+            "properties": {
+                "group_columns": {"type": "array", "items": {"type": "string"}},
+                "rationale": {"type": "string"},
+            },
+        }
+        try:
+            raw = await self.ai_sql.ai_complete(self.model_id, prompt, response_format=response_format)
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception as exc:
+            logger.warning("AI_COMPLETE group column suggestion failed: %s", exc)
+            parsed = {}
+        group_columns = []
+        rationale = None
+        if isinstance(parsed, dict):
+            group_columns = [str(col).strip() for col in parsed.get("group_columns") or [] if str(col).strip()]
+            rationale = parsed.get("rationale")
+        # Fallback to table metadata hints.
+        if not group_columns:
+            fallback = []
+            if ctx.time_column:
+                fallback.append(ctx.time_column)
+            entity = (ctx.table_meta.metadata_payload or {}).get("entity_column")
+            if entity and entity != column_name:
+                fallback.append(entity)
+            group_columns = fallback[:2]
+        return group_columns, rationale
+
+    async def _resolve_segment_count_expr(self, ctx: ColumnContext) -> tuple[str | None, list[str]]:
+        if not ctx.table_ref:
+            return None, []
+        try:
+            columns = await self.sf.execute_query(f"DESC TABLE {ctx.table_ref}")
+        except Exception as exc:
+            logger.warning("Segment count discovery failed: %s", exc)
+            return None, []
+        candidate_cols = [
+            row.get("name", row.get("NAME"))
+            for row in columns
+            if isinstance(row, dict) and "SEGMENT" in str(row.get("name", row.get("NAME"))).upper()
+        ]
+        candidate_cols = [col for col in candidate_cols if col and col != ctx.column_name]
+        candidate_cols = candidate_cols[:4]
+        if not candidate_cols:
+            return None, []
+        exprs = [
+            f"IFF({self._quote_ident(col)} IS NULL, NULL, REGEXP_COUNT(TO_VARCHAR({self._quote_ident(col)}), '\\\\|\\\\|') + 1)"
+            for col in candidate_cols
+        ]
+        segment_expr = f"GREATEST({', '.join(exprs)})"
+        return segment_expr, candidate_cols
+
     def _build_strands_model(self) -> OpenAIModel:
         model_id = (
             settings.STRANDS_MODEL_ID

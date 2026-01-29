@@ -280,7 +280,7 @@ export const tablesApi = {
       if (database) params.append('database', database);
       if (schema) params.append('schema', schema);
 
-      const response = await fetch(`/api/v1/tables?${params.toString()}`);
+      const response = await fetch(`/api/v1/tables/?${params.toString()}`);
       let result: any = null;
       try {
         result = await response.json();

@@ -75,7 +75,7 @@ const RepairApprovalDialog = ({
               Column: {activeRepair.columnName}
             </div>
             {effectivePlan?.summary && (
-              <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2 text-slate-100">
+              <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2 text-slate-100 break-words">
                 {effectivePlan.summary}
               </div>
             )}
@@ -109,9 +109,13 @@ const RepairApprovalDialog = ({
                             Null repair ({step.strategy}) · ~{step.estimated_rows ?? 0} rows
                           </div>
                           {step.fill_value !== undefined && step.fill_value !== null && (
-                            <div>Fill value: {String(step.fill_value)}</div>
+                            <div className="break-words">
+                              Fill value: {String(step.fill_value)}
+                            </div>
                           )}
-                          {step.reason && <div>Reason: {step.reason}</div>}
+                          {step.reason && (
+                            <div className="break-words">Reason: {step.reason}</div>
+                          )}
                           {step.basis?.method && (
                             <div>Basis: {step.basis.method}</div>
                           )}
@@ -136,7 +140,9 @@ const RepairApprovalDialog = ({
                 <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">
                   Why this repair?
                 </div>
-                <div>{effectivePlan.rationale.nulls.reason}</div>
+                <div className="break-words whitespace-pre-wrap">
+                  {effectivePlan.rationale.nulls.reason}
+                </div>
               </div>
             )}
             {effectivePlan?.rationale_report && (
@@ -145,10 +151,12 @@ const RepairApprovalDialog = ({
                   Repair rationale
                 </div>
                 {effectivePlan.rationale_report.summary && (
-                  <div className="text-slate-100">{effectivePlan.rationale_report.summary}</div>
+                  <div className="text-slate-100 break-words whitespace-pre-wrap">
+                    {effectivePlan.rationale_report.summary}
+                  </div>
                 )}
                 {effectivePlan.rationale_report.why_this_value && (
-                  <div>
+                  <div className="break-words whitespace-pre-wrap">
                     <span className="font-medium text-slate-100">Why this value:</span>{" "}
                     {effectivePlan.rationale_report.why_this_value}
                   </div>
@@ -186,7 +194,7 @@ const RepairApprovalDialog = ({
                 <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">
                   Null Repair SQL
                 </div>
-                <pre className="max-h-32 overflow-auto rounded-md bg-slate-950 px-2 py-2 text-[11px] text-slate-100">
+                <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 px-2 py-2 text-[11px] text-slate-100">
                   {effectivePlan.sql_previews.null_repair.update_sql}
                 </pre>
               </div>
@@ -196,7 +204,7 @@ const RepairApprovalDialog = ({
                 <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">
                   Conflict Repair SQL
                 </div>
-                <pre className="max-h-32 overflow-auto rounded-md bg-slate-950 px-2 py-2 text-[11px] text-slate-100">
+                <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 px-2 py-2 text-[11px] text-slate-100">
                   {effectivePlan.sql_previews.conflict_repair.update_sql}
                 </pre>
               </div>

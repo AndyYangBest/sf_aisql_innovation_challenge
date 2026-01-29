@@ -138,9 +138,30 @@ export const useTableStore = create<TableStore>()(
           })),
 
         setTableAssets: (assets) =>
-          set(() => ({
-            tableAssets: assets,
-          })),
+          set((state) => {
+            const tableIdSet = new Set(assets.map((asset) => asset.id));
+            return {
+              tableAssets: assets,
+              artifacts: state.artifacts.filter((artifact) =>
+                tableIdSet.has(artifact.tableId),
+              ),
+              reportOverrides: Object.fromEntries(
+                Object.entries(state.reportOverrides).filter(([tableId]) =>
+                  tableIdSet.has(tableId),
+                ),
+              ),
+              reportStatus: Object.fromEntries(
+                Object.entries(state.reportStatus).filter(([tableId]) =>
+                  tableIdSet.has(tableId),
+                ),
+              ),
+              approvedPlansByTable: Object.fromEntries(
+                Object.entries(state.approvedPlansByTable).filter(([tableId]) =>
+                  tableIdSet.has(tableId),
+                ),
+              ),
+            };
+          }),
 
         updateTableAsset: (id, updates) =>
           set((state) => ({

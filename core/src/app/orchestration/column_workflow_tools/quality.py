@@ -280,10 +280,64 @@ class ColumnWorkflowQualityMixin:
                 "method": strategy_key or "manual_review",
             }
             if fill_value is None:
-                null_reason = (
-                    "All sampled values were NULL; no non-null basis available. "
-                    "Consider a group-based imputation or a manual default."
+                # Try a contextual, group-based imputation using similar rows.
+                group_columns, group_rationale = await self._suggest_group_columns(ctx, column_name)
+                segment_expr, segment_cols = await self._resolve_segment_count_expr(ctx)
+                sample_size = int(
+                    overrides.get("null_impute_sample_size")
+                    or overrides.get("impute_sample_size")
+                    or 20000
                 )
+                if group_columns or segment_expr:
+                    group_exprs = [self._quote_ident(col) for col in group_columns if col]
+                    segment_expr_base = None
+                    segment_expr_b2 = None
+                    if segment_expr and segment_cols:
+                        segment_expr_base = segment_expr
+                        segment_expr_b2 = segment_expr
+                        for seg_col in segment_cols:
+                            quoted = self._quote_ident(seg_col)
+                            segment_expr_base = segment_expr_base.replace(quoted, f"base.{quoted}")
+                            segment_expr_b2 = segment_expr_b2.replace(quoted, f"b2.{quoted}")
+                    if segment_expr_base and segment_expr_b2:
+                        group_exprs.append(segment_expr_b2)
+                    group_predicates = []
+                    for col in group_columns:
+                        group_predicates.append(
+                            f"b2.{self._quote_ident(col)} = base.{self._quote_ident(col)}"
+                        )
+                    if segment_expr_base and segment_expr_b2:
+                        group_predicates.append(f"{segment_expr_b2} = {segment_expr_base}")
+                    base_expr = self._numeric_expr(self._quote_ident(column_name))
+                    subquery = (
+                        f"SELECT APPROX_PERCENTILE({base_expr}, 0.5) "
+                        f"FROM {ctx.table_ref} AS b2 "
+                        f"WHERE {base_expr} IS NOT NULL"
+                    )
+                    if group_predicates:
+                        subquery += " AND " + " AND ".join(group_predicates)
+                    if sample_size:
+                        subquery += f" LIMIT {sample_size}"
+                    fill_expr = f"({subquery})"
+                    fill_value = None
+                    strategy = "group_median_impute"
+                    strategy_key = "group_median_impute"
+                    basis = {
+                        "computed_from": "group_similarity",
+                        "group_columns": group_columns,
+                        "segment_columns": segment_cols,
+                        "sample_size": sample_size,
+                        "ai_rationale": group_rationale,
+                    }
+                    null_reason = (
+                        "Contextual imputation using similar rows grouped by "
+                        f"{', '.join(group_columns) if group_columns else 'segment count'}."
+                    )
+                else:
+                    null_reason = (
+                        "All sampled values were NULL; no non-null basis available. "
+                        "Consider a group-based imputation or a manual default."
+                    )
             elif strategy_key in {"median_impute", "median"}:
                 null_reason = "Median of non-null values (robust to outliers)."
             elif strategy_key in {"mean_impute", "mean"}:
@@ -299,8 +353,21 @@ class ColumnWorkflowQualityMixin:
             update_sql = None
             count_sql = None
             if ctx.table_ref and fill_expr:
-                update_sql = f"UPDATE {ctx.table_ref} SET {self._quote_ident(column_name)} = {fill_expr} WHERE {self._quote_ident(column_name)} IS NULL"
-                count_sql = f"SELECT COUNT(*) AS affected_rows FROM {ctx.table_ref} WHERE {self._quote_ident(column_name)} IS NULL"
+                if strategy_key == "group_median_impute":
+                    update_sql = (
+                        f"UPDATE {ctx.table_ref} AS base "
+                        f"SET {self._quote_ident(column_name)} = {fill_expr} "
+                        f"WHERE {self._quote_ident(column_name)} IS NULL"
+                    )
+                else:
+                    update_sql = (
+                        f"UPDATE {ctx.table_ref} SET {self._quote_ident(column_name)} = {fill_expr} "
+                        f"WHERE {self._quote_ident(column_name)} IS NULL"
+                    )
+                count_sql = (
+                    f"SELECT COUNT(*) AS affected_rows FROM {ctx.table_ref} "
+                    f"WHERE {self._quote_ident(column_name)} IS NULL"
+                )
             plan_steps.append(
                 {
                     "type": "null_repair",
@@ -311,6 +378,7 @@ class ColumnWorkflowQualityMixin:
                     "requires_manual_default": fill_value is None,
                     "reason": null_reason,
                     "basis": basis,
+                    "requires_base_alias": strategy_key == "group_median_impute",
                 }
             )
             sql_previews["null_repair"] = {
@@ -854,6 +922,8 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                 )
             else:
                 if audit_table:
+                    uses_alias = bool(null_step.get("requires_base_alias"))
+                    base_ref = f"{ctx.table_ref} AS base" if uses_alias else ctx.table_ref
                     audit_insert = f"""
                     INSERT INTO {audit_table} (plan_id, column_name, repair_type, row_id, before_value, after_value, created_at)
                     SELECT '{self._sanitize_literal(plan.get("plan_id", ""))}', '{self._sanitize_literal(column_name)}', 'null_repair',
@@ -861,7 +931,7 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                            TO_VARIANT({col}),
                            TO_VARIANT({fill_expr}),
                            CURRENT_TIMESTAMP()
-                    FROM {ctx.table_ref}
+                    FROM {base_ref}
                     WHERE {col} IS NULL
                     """
                     await self.sf.execute_query(audit_insert)
@@ -1246,9 +1316,15 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                     }
                 )
             else:
-                update_query = (
-                    f"UPDATE {target_table} SET {col} = {fill_expr} WHERE {col} IS NULL"
-                )
+                uses_alias = bool(null_step.get("requires_base_alias"))
+                if uses_alias:
+                    update_query = (
+                        f"UPDATE {target_table} AS base SET {col} = {fill_expr} WHERE {col} IS NULL"
+                    )
+                else:
+                    update_query = (
+                        f"UPDATE {target_table} SET {col} = {fill_expr} WHERE {col} IS NULL"
+                    )
                 await self.sf.execute_query(update_query)
                 repair_results.append(
                     {
