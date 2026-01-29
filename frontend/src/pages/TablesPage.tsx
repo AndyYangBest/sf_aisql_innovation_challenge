@@ -27,7 +27,14 @@ const TablesPage = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const { tableAssets, artifacts, setTableAssets, loadReport, reportStatus, getApprovedPlansCount } = useTableStore();
+  const {
+    tableAssets,
+    artifacts,
+    setTableAssets,
+    loadReport,
+    reportStatus,
+    getApprovedPlansCount,
+  } = useTableStore();
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -58,7 +65,8 @@ const TablesPage = () => {
         // Handle authentication error - show specific message
         toast({
           title: "Authentication Required",
-          description: "Your Snowflake session has expired. Please refresh the page and re-authenticate.",
+          description:
+            "Your Snowflake session has expired. Please refresh the page and re-authenticate.",
           variant: "destructive",
           duration: 10000, // Show for 10 seconds
         });
@@ -116,12 +124,16 @@ const TablesPage = () => {
   };
 
   const chartCount = useMemo(
-    () => new Set(artifacts.filter((a) => a.type === "chart").map((a) => a.id)).size,
-    [artifacts]
+    () =>
+      new Set(artifacts.filter((a) => a.type === "chart").map((a) => a.id))
+        .size,
+    [artifacts],
   );
   const insightCount = useMemo(
-    () => new Set(artifacts.filter((a) => a.type === "insight").map((a) => a.id)).size,
-    [artifacts]
+    () =>
+      new Set(artifacts.filter((a) => a.type === "insight").map((a) => a.id))
+        .size,
+    [artifacts],
   );
   const approvedPlansCount = getApprovedPlansCount();
 
@@ -144,9 +156,23 @@ const TablesPage = () => {
               />
             </div>
             <div className="min-w-0">
-              <h1 className="text-lg sm:text-xl font-bold truncate" style={{ fontFamily: "'Orbitron', sans-serif", letterSpacing: '0.05em' }}>Scrat</h1>
-              <p className="text-xs text-muted-foreground hidden sm:block" style={{ fontFamily: "'Fredoka One', cursive", fontSize: '0.85rem' }}>
-                Digesting Yummy Snowflake large Data
+              <h1
+                className="text-lg sm:text-xl font-bold truncate"
+                style={{
+                  fontFamily: "'Orbitron', sans-serif",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                Scrat
+              </h1>
+              <p
+                className="text-xs text-muted-foreground hidden sm:block"
+                style={{
+                  fontFamily: "'Orbitron', sans-serif",
+                  fontSize: "0.85rem",
+                }}
+              >
+                Snowflake Centric Raw Analytics Toolkit
               </p>
             </div>
           </div>

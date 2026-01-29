@@ -54,10 +54,12 @@ class ColumnWorkflowQualityMixin:
         total_count = self._coerce_int(row.get("TOTAL_COUNT"))
         null_count = self._coerce_int(row.get("NULL_COUNT"))
         null_rate = round(null_count / total_count, 6) if total_count else None
+        snapshot_id = self._get_analysis_snapshot_id(ctx)
         nulls = {
             "total_count": total_count,
             "null_count": null_count,
             "null_rate": null_rate,
+            "snapshot_id": snapshot_id,
         }
         await self._update_column_analysis(ctx, {"nulls": nulls})
         return {"column": column_name, "nulls": nulls}
@@ -190,17 +192,37 @@ class ColumnWorkflowQualityMixin:
             group_by = [item.strip() for item in group_by.split(",") if item.strip()]
         group_by = [str(item) for item in group_by if item]
 
-        snapshot = await self._compute_snapshot(ctx, column_name, group_by)
+        snapshot = await self._ensure_analysis_snapshot(ctx, column_name, group_by)
         conflict_groups = self._coerce_int(conflicts.get("conflict_groups"))
         snapshot["conflict_groups"] = conflict_groups
 
-        total_count = self._coerce_int(snapshot.get("total_count")) or self._coerce_int(
-            nulls.get("total_count")
-        )
-        null_count = self._coerce_int(snapshot.get("null_count")) or self._coerce_int(
-            nulls.get("null_count")
+        total_count = self._coerce_int(snapshot.get("total_count"))
+        null_count = self._coerce_int(snapshot.get("null_count"))
+        sample_total = self._coerce_int(nulls.get("total_count"))
+        sample_nulls = self._coerce_int(nulls.get("null_count"))
+        sample_snapshot_id = nulls.get("snapshot_id")
+        distribution_snapshot_id = None
+        if isinstance(analysis.get("distribution"), dict):
+            distribution_snapshot_id = analysis.get("distribution", {}).get("snapshot_id")
+        sample_null_rate = (
+            round(sample_nulls / sample_total, 6) if sample_total else None
         )
         conflict_rows = snapshot.get("conflict_rows")
+
+        inconsistency_reasons: list[str] = []
+        if not total_count and sample_total:
+            inconsistency_reasons.append("full_snapshot_missing")
+        if sample_snapshot_id and sample_snapshot_id != snapshot.get("snapshot_id"):
+            inconsistency_reasons.append("snapshot_mismatch_nulls")
+        if distribution_snapshot_id and distribution_snapshot_id != snapshot.get("snapshot_id"):
+            inconsistency_reasons.append("snapshot_mismatch_distribution")
+        if null_count == 0 and (sample_nulls or 0) > 0:
+            inconsistency_reasons.append("full_null_zero_sample_nonzero")
+
+        if total_count and sample_total and sample_total > 0:
+            ratio = abs(total_count - sample_total) / max(total_count, sample_total)
+            if ratio > 0.1:
+                inconsistency_reasons.append("total_count_mismatch")
 
         existing_plan = analysis.get("repair_plan")
         if isinstance(existing_plan, dict):
@@ -244,6 +266,11 @@ class ColumnWorkflowQualityMixin:
 
         plan_steps = []
         sql_previews: dict[str, Any] = {}
+        requires_manual_review = False
+        forbidden = False
+        if inconsistency_reasons:
+            requires_manual_review = True
+            forbidden = True
         if null_count:
             fill_expr, fill_value = await self._compute_null_fill_value(ctx, column_name, strategy)
             strategy_key = str(strategy or "").lower()
@@ -291,6 +318,9 @@ class ColumnWorkflowQualityMixin:
                 "count_sql": count_sql,
                 "estimated_rows": null_count,
             }
+        elif sample_nulls:
+            requires_manual_review = True
+            forbidden = True
 
         if conflict_groups:
             plan_steps.append(
@@ -381,6 +411,8 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         }
 
         summary_parts = []
+        if inconsistency_reasons:
+            summary_parts.append("Inconsistent data stats; manual review required")
         if null_count:
             summary_parts.append(f"Null repair: {strategy} for ~{null_count} rows")
         if conflict_groups:
@@ -389,6 +421,19 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             )
         if not summary_parts:
             summary_parts.append("No repair actions required")
+
+        estimated_rows = 0
+        for step in plan_steps:
+            if step.get("type") == "null_repair":
+                estimated_rows = max(
+                    estimated_rows, self._coerce_int(step.get("estimated_rows"))
+                )
+        if total_count and estimated_rows and estimated_rows > total_count:
+            requires_manual_review = True
+            forbidden = True
+
+        if forbidden:
+            apply_ready = False
 
         plan_id = uuid.uuid4().hex
         plan_payload = {
@@ -402,6 +447,13 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             "sql_previews": sql_previews,
             "token_estimate": token_estimate,
             "approval_required": True,
+            "requires_manual_review": requires_manual_review,
+            "inconsistent": bool(inconsistency_reasons),
+            "inconsistency_reasons": inconsistency_reasons,
+            "forbidden": forbidden,
+            "analysis_total_rows": total_count,
+            "estimator_total_rows": total_count,
+            "sample_null_rate": sample_null_rate,
         }
         if null_count:
             plan_payload["rationale"] = {
@@ -436,6 +488,16 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                 plan = json.loads(plan)
             except json.JSONDecodeError:
                 plan = {}
+        if isinstance(plan, dict) and (
+            plan.get("forbidden")
+            or plan.get("inconsistent")
+            or plan.get("requires_manual_review")
+        ):
+            return {
+                "column": column_name,
+                "skipped": True,
+                "reason": "plan_inconsistent",
+            }
         if not isinstance(plan, dict) or not plan.get("plan_id"):
             return {"column": column_name, "status": "error", "reason": "plan_missing"}
 
@@ -565,6 +627,16 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                 plan = json.loads(plan)
             except json.JSONDecodeError:
                 plan = {}
+        if isinstance(plan, dict) and (
+            plan.get("forbidden")
+            or plan.get("inconsistent")
+            or plan.get("requires_manual_review")
+        ):
+            return {
+                "column": column_name,
+                "skipped": True,
+                "reason": "plan_inconsistent",
+            }
         approved = bool(overrides.get(approval_key) or (isinstance(plan, dict) and plan.get("approved")))
         if not approved:
             return {"column": column_name, "skipped": True, "reason": "approval_required"}

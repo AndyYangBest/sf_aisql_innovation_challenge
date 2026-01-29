@@ -321,6 +321,12 @@ class ColumnWorkflowOrchestrator:
         table_asset_id = column_meta.table_asset_id
         column_name = column_meta.column_name
         semantic_type = column_meta.semantic_type
+        try:
+            ctx = await tools._load_context(table_asset_id, column_name)
+            await tools._ensure_analysis_snapshot(ctx, column_name)
+        except Exception:
+            # Snapshot is best-effort for preset fallback runs
+            pass
 
         if semantic_type in {"numeric", "temporal"}:
             await tools.analyze_numeric_distribution(table_asset_id, column_name)

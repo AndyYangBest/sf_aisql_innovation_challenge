@@ -366,6 +366,7 @@ Rules:
     ) -> dict[str, Any]:
         """Agent-run column analysis that selects tools based on column metadata."""
         ctx = await self._load_context(table_asset_id, column_name)
+        await self._ensure_analysis_snapshot(ctx, column_name)
         overrides = ctx.column_meta.overrides or {}
         metadata_payload = ctx.column_meta.metadata_payload or {}
         analysis_payload = (

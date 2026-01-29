@@ -229,6 +229,7 @@ class ColumnWorkflowAnalysisMixin:
             "p90": stats_row.get("P90"),
             "total_count": self._coerce_int(stats_row.get("TOTAL_COUNT")),
             "null_count": self._coerce_int(stats_row.get("NULL_COUNT")),
+            "snapshot_id": self._get_analysis_snapshot_id(ctx),
         }
 
         distribution_shape = "unknown"
@@ -455,4 +456,3 @@ class ColumnWorkflowAnalysisMixin:
 
         await self._update_column_analysis(ctx, {"category_groups": groups})
         return {"column": column_name, "category_groups": groups}
-

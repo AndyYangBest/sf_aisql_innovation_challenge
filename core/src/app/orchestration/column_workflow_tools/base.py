@@ -136,6 +136,7 @@ class ColumnWorkflowToolsBase:
     ) -> dict[str, Any]:
         """Run a specific set of tools for a column, honoring dependencies."""
         ctx = await self._load_context(table_asset_id, column_name)
+        await self._ensure_analysis_snapshot(ctx, column_name)
         log_buffer = ColumnWorkflowLogBuffer()
         log_buffer.set_default_context(table_asset_id, column_name)
         self._set_log_buffer(log_buffer)
@@ -1007,6 +1008,10 @@ class ColumnWorkflowToolsBase:
         ctx: ColumnContext,
         column_name: str,
         group_by_columns: list[str],
+        *,
+        as_of: datetime | None = None,
+        query_fingerprint: str | None = None,
+        snapshot_id: str | None = None,
     ) -> dict[str, Any]:
         def sanitize_error_message(message: str) -> str:
             if not message:
@@ -1114,8 +1119,62 @@ class ColumnWorkflowToolsBase:
         snapshot["conflict_rows"] = conflict_rows
         snapshot["group_by_columns"] = group_by_columns
         snapshot["time_column"] = time_column
-        snapshot["signature"] = self._hash_payload({k: v for k, v in snapshot.items() if k != "signature"})
+        snapshot_time = as_of or datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        snapshot["as_of"] = snapshot_time.isoformat()
+        snapshot["query_fingerprint"] = query_fingerprint or self._hash_payload(
+            {"analysis_query": ctx.analysis_query}
+        )
+        snapshot["snapshot_id"] = snapshot_id or self._hash_payload(
+            {
+                "table_asset_id": ctx.table_asset_id,
+                "column": column_name,
+                "query_fingerprint": snapshot["query_fingerprint"],
+                "as_of": snapshot["as_of"],
+            }
+        )
+        snapshot["signature"] = self._hash_payload(
+            {k: v for k, v in snapshot.items() if k != "signature"}
+        )
         return snapshot
+
+    async def _ensure_analysis_snapshot(
+        self,
+        ctx: ColumnContext,
+        column_name: str,
+        group_by_columns: list[str] | None = None,
+    ) -> dict[str, Any]:
+        group_by_columns = group_by_columns or []
+        metadata = ctx.column_meta.metadata_payload or {}
+        analysis = metadata.get("analysis", {}) if isinstance(metadata, dict) else {}
+        existing = analysis.get("snapshot")
+        if isinstance(existing, str):
+            try:
+                existing = json.loads(existing)
+            except json.JSONDecodeError:
+                existing = None
+        if isinstance(existing, dict) and existing.get("snapshot_id"):
+            return existing
+
+        snapshot = await self._compute_snapshot(
+            ctx,
+            column_name,
+            group_by_columns,
+        )
+        await self._update_column_analysis(ctx, {"snapshot": snapshot})
+        return snapshot
+
+    def _get_analysis_snapshot_id(self, ctx: ColumnContext) -> str | None:
+        metadata = ctx.column_meta.metadata_payload or {}
+        analysis = metadata.get("analysis", {}) if isinstance(metadata, dict) else {}
+        snapshot = analysis.get("snapshot")
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except json.JSONDecodeError:
+                snapshot = None
+        if isinstance(snapshot, dict):
+            return snapshot.get("snapshot_id")
+        return None
 
     async def _compute_null_fill_value(
         self,

@@ -923,16 +923,30 @@ class ColumnWorkflowVisualsMixin:
             )
         ]
 
-        # ✅ 修复缩进 & 参数对齐
-        if len(top_rows) <= 6:
+        pie_limit_override = overrides.get("visual_pie_limit") or overrides.get("pie_limit")
+        if isinstance(pie_limit_override, str) and pie_limit_override.lower() == "all":
+            pie_limit = None
+        elif pie_limit_override in ("", 0, -1, None):
+            pie_limit = 8
+        else:
+            pie_limit = max(3, self._coerce_int(pie_limit_override, 8))
+
+        pie_rows = top_rows
+        if pie_limit is not None and len(top_rows) > pie_limit:
+            pie_rows = top_rows[:pie_limit]
+        pie_sum = sum(row.get("count", 0) for row in pie_rows)
+        if total_count > pie_sum:
+            pie_rows = pie_rows + [{"category": "Other", "count": total_count - pie_sum}]
+
+        if len(pie_rows) >= 2:
             visuals.append(
                 self._build_chart_spec(
                     chart_type="pie",
                     title=f"Share of {column_name} categories",
                     x_key="category",
                     y_key="count",
-                    data=top_rows,
-                    narrative=["Pie chart only when categories are limited"],
+                    data=pie_rows,
+                    narrative=["Pie chart for top categories with remaining grouped as Other"],
                     source_columns=[column_name],
                     x_title=column_name,
                     y_title="Count",

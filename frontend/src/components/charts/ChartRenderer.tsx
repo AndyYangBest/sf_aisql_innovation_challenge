@@ -76,10 +76,42 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
     fontSize: 10,
   };
 
+  const formatTick = (value: unknown) => {
+    if (value === null || value === undefined || value === "") {
+      return "";
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return String(value);
+    }
+    const absValue = Math.abs(numeric);
+    const fractionDigits = absValue >= 1000 ? 0 : 2;
+    return new Intl.NumberFormat("en-US", {
+      maximumFractionDigits: fractionDigits,
+      minimumFractionDigits: 0,
+    }).format(numeric);
+  };
+
   const yAxisProps =
     shouldUseLog && minValue !== null
       ? { scale: "log" as const, domain: [Math.max(minValue, 1e-6), "auto"] as const }
       : {};
+
+  const getLinearDomain = () => {
+    if (minValue === null || maxValue === null) {
+      return undefined;
+    }
+    const range = maxValue - minValue;
+    const pad = range === 0 ? Math.max(Math.abs(maxValue) * 0.05, 1) : range * 0.12;
+    return [minValue - pad, maxValue + pad] as const;
+  };
+
+  const lineAreaYAxisProps = !shouldUseLog
+    ? {
+        domain: getLinearDomain(),
+        allowDataOverflow: true,
+      }
+    : yAxisProps;
 
   switch (chartType) {
     case "bar":
@@ -101,7 +133,8 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 tick={axisStyle}
                 axisLine={false}
                 tickLine={false}
-                {...yAxisProps}
+                tickFormatter={formatTick}
+                {...lineAreaYAxisProps}
                 label={{ value: yTitle, angle: -90, position: "insideLeft", ...axisLabelStyle }}
               />
             )}
@@ -134,7 +167,8 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 tick={axisStyle}
                 axisLine={false}
                 tickLine={false}
-                {...yAxisProps}
+                tickFormatter={formatTick}
+                {...lineAreaYAxisProps}
                 label={{ value: yTitle, angle: -90, position: "insideLeft", ...axisLabelStyle }}
               />
             )}
@@ -144,8 +178,8 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
               dataKey={yKey}
               stroke={CHART_COLORS[0]}
               strokeWidth={2}
-              dot={{ fill: CHART_COLORS[0], strokeWidth: 0, r: 4 }}
-              activeDot={{ r: 6, fill: CHART_COLORS[0] }}
+              dot={false}
+              activeDot={false}
             />
           </LineChart>
         </ResponsiveContainer>
@@ -176,7 +210,8 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 tick={axisStyle}
                 axisLine={false}
                 tickLine={false}
-                {...yAxisProps}
+                tickFormatter={formatTick}
+                {...lineAreaYAxisProps}
                 label={{ value: yTitle, angle: -90, position: "insideLeft", ...axisLabelStyle }}
               />
             )}
