@@ -5,7 +5,7 @@
 
 import { TableAsset, TableResult } from '@/types';
 import { ApiResponse } from './types';
-import { apiRequest } from './client';
+import { apiRequest, AuthenticationError } from './client';
 
 // Snowflake table interface
 export interface SnowflakeTable {
@@ -242,6 +242,10 @@ export const tablesApi = {
         result = null;
       }
       if (!response.ok) {
+        // Check for authentication error
+        if (response.status === 401) {
+          throw new AuthenticationError(result?.detail || 'Authentication token has expired. Please re-authenticate.');
+        }
         throw new Error(result?.detail || result?.error || 'Failed to fetch Snowflake databases');
       }
       return result?.data ?? [];
@@ -260,6 +264,10 @@ export const tablesApi = {
         result = null;
       }
       if (!response.ok) {
+        // Check for authentication error
+        if (response.status === 401) {
+          throw new AuthenticationError(result?.detail || 'Authentication token has expired. Please re-authenticate.');
+        }
         throw new Error(result?.detail || result?.error || 'Failed to fetch Snowflake schemas');
       }
       return result?.data ?? [];
@@ -280,6 +288,10 @@ export const tablesApi = {
         result = null;
       }
       if (!response.ok) {
+        // Check for authentication error
+        if (response.status === 401) {
+          throw new AuthenticationError(result?.detail || 'Authentication token has expired. Please re-authenticate.');
+        }
         throw new Error(result?.detail || result?.error || 'Failed to fetch Snowflake tables');
       }
       return result?.data ?? [];
@@ -407,6 +419,11 @@ export const tablesApi = {
       const response = await fetch(`/api/v1/table-assets?${params.toString()}`);
 
       if (!response.ok) {
+        // Check for authentication error
+        if (response.status === 401) {
+          const result = await response.json().catch(() => null);
+          throw new AuthenticationError(result?.detail || 'Authentication token has expired. Please re-authenticate.');
+        }
         throw new Error('Failed to fetch table assets');
       }
 

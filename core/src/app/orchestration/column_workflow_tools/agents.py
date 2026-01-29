@@ -69,8 +69,8 @@ class ColumnWorkflowAgentsMixin:
         - Use generate_column_summary when a concise summary is requested or overrides include summary_focus/user_notes.
         - If scan_nulls or known nulls/conflicts are non-zero, run plan_data_repairs.
         - Do not apply repairs directly; only plan and request approval.
-        - Always call generate_numeric_visuals.
-        - Generate insights when useful; consider calling generate_chart_candidates when visuals are requested.
+        - Always call generate_numeric_visuals and generate_numeric_insights.
+        - Consider calling generate_chart_candidates when visuals are requested.
         - When multiple independent tools are needed, call them in the same response to allow parallel execution.
         - You must call at least one tool (always call analyze_numeric_distribution first).
         """.strip()
@@ -122,7 +122,8 @@ Rules:
 - Use plan_data_repairs when scan results indicate issues.
 - Use generate_column_summary when a concise summary is requested or overrides include summary_focus/user_notes.
 - Do not apply repairs directly; only plan and request approval.
-- Generate visuals/insights if they add value; consider calling generate_chart_candidates when visuals are requested.
+        - Always call generate_categorical_visuals and generate_categorical_insights.
+        - Consider calling generate_chart_candidates when visuals are requested.
 - When multiple independent tools are needed, call them in the same response to allow parallel execution.
 - You must call at least one tool (always call analyze_categorical_groups first).
 """.strip()

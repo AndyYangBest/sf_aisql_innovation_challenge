@@ -246,6 +246,26 @@ class ColumnWorkflowQualityMixin:
         sql_previews: dict[str, Any] = {}
         if null_count:
             fill_expr, fill_value = await self._compute_null_fill_value(ctx, column_name, strategy)
+            strategy_key = str(strategy or "").lower()
+            null_reason = None
+            basis = {
+                "computed_from": "analysis_query_non_nulls",
+                "method": strategy_key or "manual_review",
+            }
+            if fill_value is None:
+                null_reason = "No non-null values available to derive a fill value."
+            elif strategy_key in {"median_impute", "median"}:
+                null_reason = "Median of non-null values (robust to outliers)."
+            elif strategy_key in {"mean_impute", "mean"}:
+                null_reason = "Mean of non-null values."
+            elif strategy_key in {"mode_impute", "mode"}:
+                null_reason = "Most frequent non-null value."
+            elif strategy_key in {"zero_impute", "zero"}:
+                null_reason = "Rule-based fill with zero."
+            elif strategy_key in {"empty_string", "empty"}:
+                null_reason = "Rule-based fill with empty string."
+            elif strategy_key in {"forward_fill", "ffill"}:
+                null_reason = "Forward-fill using the last observed value in time order."
             update_sql = None
             count_sql = None
             if ctx.table_ref and fill_expr:
@@ -258,6 +278,8 @@ class ColumnWorkflowQualityMixin:
                     "estimated_rows": null_count,
                     "fill_expr": fill_expr,
                     "fill_value": fill_value,
+                    "reason": null_reason,
+                    "basis": basis,
                 }
             )
             sql_previews["null_repair"] = {
@@ -377,6 +399,15 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             "token_estimate": token_estimate,
             "approval_required": True,
         }
+        if null_count:
+            plan_payload["rationale"] = {
+                "nulls": {
+                    "strategy": strategy,
+                    "reason": null_reason,
+                    "fill_value": fill_value,
+                    "basis": basis,
+                }
+            }
         plan_hash = self._hash_payload(plan_payload)
         plan = {
             "plan_id": plan_id,

@@ -12,6 +12,7 @@ from ...services.chart_service import ChartService
 from ...services.eda_service import EDAService
 
 logger = logging.getLogger(__name__)
+MIN_TIME_POINTS = 3
 
 
 class ColumnWorkflowVisualsMixin:
@@ -125,8 +126,33 @@ class ColumnWorkflowVisualsMixin:
         column_sql_type = ""
         if isinstance(ctx.column_meta.metadata_payload, dict):
             column_sql_type = str(ctx.column_meta.metadata_payload.get("sql_type") or "").lower()
+        min_points = self._coerce_int(overrides.get("visual_time_min_points"), MIN_TIME_POINTS)
+        if min_points < 2:
+            min_points = MIN_TIME_POINTS
         temporal_meta = await self._list_temporal_columns_with_meta(ctx.table_asset_id)
+        temporal_meta = [
+            item
+            for item in temporal_meta
+            if item.get("column")
+            and (
+                item.get("unique_count") is None
+                or self._coerce_int(item.get("unique_count"), min_points) >= min_points
+            )
+        ]
+        temporal_meta.sort(
+            key=lambda item: self._coerce_int(item.get("unique_count"), 0), reverse=True
+        )
         temporal_columns = [item["column"] for item in temporal_meta if item.get("column")]
+        time_column_ok = True
+        if ctx.time_column:
+            time_meta = next(
+                (item for item in temporal_meta if item.get("column") == ctx.time_column),
+                None,
+            )
+            if time_meta and time_meta.get("unique_count") is not None:
+                time_column_ok = (
+                    self._coerce_int(time_meta.get("unique_count"), 0) >= min_points
+                )
         analysis_errors: list[dict[str, Any]] = []
 
         if is_temporal:
@@ -298,7 +324,7 @@ class ColumnWorkflowVisualsMixin:
 
         if is_temporal:
             time_col = time_expr or col
-        elif ctx.time_column:
+        elif ctx.time_column and time_column_ok:
             time_col = self._resolve_temporal_expr(ctx, self._quote_ident(ctx.time_column))
             used_time_columns.add(ctx.time_column)
 
@@ -378,6 +404,12 @@ class ColumnWorkflowVisualsMixin:
                         time_query = fallback_query
                         break
 
+            if len(time_rows) < min_points:
+                analysis_errors.append(
+                    {"step": "time_query", "error": f"insufficient_points:{len(time_rows)}"}
+                )
+                time_rows = []
+
             if is_temporal:
                 time_data = [
                     {
@@ -397,7 +429,7 @@ class ColumnWorkflowVisualsMixin:
                     for row in time_rows
                 ]
 
-            if time_data and len(time_data) > 1:
+            if time_data and len(time_data) >= min_points:
                 time_title = column_name if is_temporal else (ctx.time_column or "time")
                 y_title = "Count" if is_temporal else f"Average {column_name}"
                 visuals.append(
@@ -605,8 +637,10 @@ class ColumnWorkflowVisualsMixin:
                             extra_data = fallback_data
                             column_bucket = fallback_bucket
                             break
+                if len(extra_data) < min_points:
+                    continue
 
-                if extra_data and len(extra_data) > 1:
+                if extra_data and len(extra_data) >= min_points:
                     visuals.append(
                         self._build_chart_spec(
                             chart_type="line",
@@ -905,7 +939,23 @@ class ColumnWorkflowVisualsMixin:
                 )
             )
 
-        temporal_columns = await self._list_temporal_columns(ctx.table_asset_id)
+        min_points = self._coerce_int(overrides.get("visual_time_min_points"), MIN_TIME_POINTS)
+        if min_points < 2:
+            min_points = MIN_TIME_POINTS
+        temporal_meta = await self._list_temporal_columns_with_meta(ctx.table_asset_id)
+        temporal_meta = [
+            item
+            for item in temporal_meta
+            if item.get("column")
+            and (
+                item.get("unique_count") is None
+                or self._coerce_int(item.get("unique_count"), min_points) >= min_points
+            )
+        ]
+        temporal_meta.sort(
+            key=lambda item: self._coerce_int(item.get("unique_count"), 0), reverse=True
+        )
+        temporal_columns = [item["column"] for item in temporal_meta]
         for temporal_column in temporal_columns:
             temporal_expr = self._resolve_temporal_expr(
                 ctx, self._quote_ident(temporal_column)
@@ -999,7 +1049,10 @@ class ColumnWorkflowVisualsMixin:
                         bucket = fallback_bucket
                         break
 
-            if time_data and len(time_data) > 1:
+            if len(time_data) < min_points:
+                continue
+
+            if time_data and len(time_data) >= min_points:
                 visuals.append(
                     self._build_chart_spec(
                         chart_type="line",

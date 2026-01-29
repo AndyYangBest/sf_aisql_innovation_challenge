@@ -5,12 +5,17 @@ import json
 import logging
 
 import snowflake.connector
-from snowflake.connector.errors import ProgrammingError
+from snowflake.connector.errors import ProgrammingError, DatabaseError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
 
 from ..config import settings
+
+
+class SnowflakeAuthenticationError(Exception):
+    """Raised when Snowflake authentication token has expired."""
+    pass
 
 
 class Base(DeclarativeBase, MappedAsDataclass):
@@ -57,8 +62,51 @@ class SnowflakeConnection:
             self._connection = snowflake.connector.connect(**params)
         return self._connection
 
+    def _is_auth_error(self, error: Exception) -> bool:
+        """Check if error is due to authentication token expiration."""
+        error_msg = str(error).lower()
+        # Check for Snowflake authentication error codes and messages
+        if isinstance(error, (ProgrammingError, DatabaseError)):
+            # Error code 390114: Authentication token has expired
+            # Error code 390144: Authentication token is invalid
+            if hasattr(error, 'errno') and error.errno in (390114, 390144):
+                return True
+        # Check error message for authentication-related keywords
+        auth_keywords = [
+            'authentication token has expired',
+            'authentication token is invalid',
+            'user must authenticate again',
+            'token expired',
+            'session expired',
+        ]
+        return any(keyword in error_msg for keyword in auth_keywords)
+
+    def _reset_connection(self) -> None:
+        """Force reset the connection."""
+        try:
+            if self._connection and not self._connection.is_closed():
+                self._connection.close()
+        except Exception:
+            pass
+        finally:
+            self._connection = None
+
     def execute_query(self, query: str) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
+        try:
+            return self._execute_query_internal(query)
+        except Exception as e:
+            # Check if this is an authentication error
+            if self._is_auth_error(e):
+                logger.warning("Snowflake authentication token expired, resetting connection")
+                self._reset_connection()
+                # Raise a custom exception that can be caught by the API layer
+                raise SnowflakeAuthenticationError("Authentication token has expired. Please re-authenticate.") from e
+            # Re-raise other errors
+            raise
+
+    def _execute_query_internal(self, query: str) -> list[dict[str, Any]]:
+        """Internal method to execute a query and return results as list of dicts."""
         conn = self.get_connection()
         # Disable TIMESTAMP_TYPE_MAPPING to return timestamps as strings
         cursor = conn.cursor()

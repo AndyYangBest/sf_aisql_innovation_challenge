@@ -13,6 +13,16 @@ const defaultConfig: ApiConfig = {
 };
 
 /**
+ * Custom error class for authentication errors
+ */
+export class AuthenticationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthenticationError';
+  }
+}
+
+/**
  * 统一的请求处理包装器
  * 将任意异步函数转换为标准 API 响应格式
  */
@@ -25,6 +35,16 @@ export async function apiRequest<T>(
     return { data, error: null, status: 'success' };
   } catch (error) {
     console.error(errorMessage, error);
+
+    // Check if this is an authentication error
+    if (error instanceof AuthenticationError) {
+      return {
+        data: null,
+        error: error.message,
+        status: 'unauthorized',
+      };
+    }
+
     return {
       data: null,
       error: error instanceof Error ? error.message : errorMessage,

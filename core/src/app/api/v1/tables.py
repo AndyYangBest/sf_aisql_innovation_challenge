@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from ...services.snowflake_service import SnowflakeService
+from ...core.db.database import SnowflakeAuthenticationError
 
 router = APIRouter(prefix="/tables", tags=["Tables"])
 
@@ -26,6 +27,8 @@ async def get_tables(
         service = await get_snowflake_service()
         tables = await service.get_tables(database=database, schema=schema)
         return {"success": True, "data": tables, "count": len(tables)}
+    except SnowflakeAuthenticationError as e:
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -41,6 +44,8 @@ async def get_databases():
         service = await get_snowflake_service()
         databases = await service.get_databases()
         return {"success": True, "data": databases, "count": len(databases)}
+    except SnowflakeAuthenticationError as e:
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -58,6 +63,8 @@ async def get_schemas(
         service = await get_snowflake_service()
         schemas = await service.get_schemas(database=database)
         return {"success": True, "data": schemas, "count": len(schemas)}
+    except SnowflakeAuthenticationError as e:
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -79,6 +86,8 @@ async def get_table_columns(
             table_name=table_name, database=database, schema=schema
         )
         return {"success": True, "data": columns, "count": len(columns)}
+    except SnowflakeAuthenticationError as e:
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -101,5 +110,7 @@ async def get_sample_data(
             table_name=table_name, limit=limit, database=database, schema=schema
         )
         return {"success": True, "data": rows, "count": len(rows)}
+    except SnowflakeAuthenticationError as e:
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

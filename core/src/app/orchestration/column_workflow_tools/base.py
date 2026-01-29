@@ -1269,8 +1269,15 @@ class ColumnWorkflowToolsBase:
                 continue
             column_name, semantic_type, metadata_payload = row
             sql_type = ""
+            unique_count = None
+            null_rate = None
             if isinstance(metadata_payload, dict):
                 sql_type = str(metadata_payload.get("sql_type") or "").lower()
+                for key in ("unique_count", "distinct_count", "distinct", "unique"):
+                    if metadata_payload.get(key) is not None:
+                        unique_count = self._coerce_int(metadata_payload.get(key))
+                        break
+                null_rate = self._coerce_float(metadata_payload.get("null_rate"))
             is_native = any(token in sql_type for token in ("date", "time", "timestamp"))
             is_temporal = semantic_type == "temporal" or is_native
             if not is_temporal and self._looks_like_temporal_name(column_name):
@@ -1281,6 +1288,8 @@ class ColumnWorkflowToolsBase:
                         "column": column_name,
                         "is_native": is_native,
                         "sql_type": sql_type,
+                        "unique_count": unique_count,
+                        "null_rate": null_rate,
                     }
                 )
         # 保持顺序去重

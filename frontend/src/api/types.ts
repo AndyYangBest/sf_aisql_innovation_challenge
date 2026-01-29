@@ -8,7 +8,7 @@
 export interface ApiResponse<T> {
   data: T | null;
   error: string | null;
-  status: 'success' | 'error' | 'loading';
+  status: 'success' | 'error' | 'loading' | 'unauthorized';
 }
 
 export interface PaginationParams {

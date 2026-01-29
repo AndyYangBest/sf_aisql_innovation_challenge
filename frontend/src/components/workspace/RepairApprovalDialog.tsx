@@ -97,21 +97,43 @@ const RepairApprovalDialog = ({
               effectivePlan.steps.length > 0 && (
                 <div className="space-y-1 text-xs">
                   {effectivePlan.steps.map((step: any, index: number) => (
-                    <div key={index} className="rounded-md bg-slate-100 px-2 py-1">
+                    <div key={index} className="rounded-md bg-slate-100 px-2 py-1 space-y-1">
                       {step.type === "null_repair" && (
-                        <span>
-                          Null repair ({step.strategy}) · ~{step.estimated_rows ?? 0} rows
-                        </span>
+                        <>
+                          <div className="font-medium text-foreground">
+                            Null repair ({step.strategy}) · ~{step.estimated_rows ?? 0} rows
+                          </div>
+                          {step.fill_value !== undefined && step.fill_value !== null && (
+                            <div>Fill value: {String(step.fill_value)}</div>
+                          )}
+                          {step.reason && <div>Reason: {step.reason}</div>}
+                          {step.basis?.method && (
+                            <div>Basis: {step.basis.method}</div>
+                          )}
+                        </>
                       )}
                       {step.type === "conflict_repair" && (
-                        <span>
-                          Conflict repair ({step.strategy}) · {step.estimated_groups ?? 0} groups
-                        </span>
+                        <>
+                          <div className="font-medium text-foreground">
+                            Conflict repair ({step.strategy}) · {step.estimated_groups ?? 0} groups
+                          </div>
+                          {Array.isArray(step.group_by_columns) && step.group_by_columns.length > 0 && (
+                            <div>Group by: {step.group_by_columns.join(", ")}</div>
+                          )}
+                        </>
                       )}
                     </div>
                   ))}
                 </div>
               )}
+            {effectivePlan?.rationale?.nulls?.reason && (
+              <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs">
+                <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                  Why this repair?
+                </div>
+                <div>{effectivePlan.rationale.nulls.reason}</div>
+              </div>
+            )}
             {effectivePlan?.sql_previews?.null_repair?.update_sql && (
               <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
                 <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">

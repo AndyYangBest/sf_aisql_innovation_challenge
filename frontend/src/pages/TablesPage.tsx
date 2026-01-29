@@ -40,8 +40,22 @@ const TablesPage = () => {
     setIsLoading(true);
     try {
       const response = await tablesApi.getAllTableAssets();
-      if (response.status === 'success' && response.data) {
+      if (response.status === "success" && response.data) {
         setTableAssets(response.data.items);
+      } else if (response.status === "unauthorized") {
+        // Handle authentication error - show specific message
+        toast({
+          title: "Authentication Required",
+          description: "Your Snowflake session has expired. Please refresh the page and re-authenticate.",
+          variant: "destructive",
+          duration: 10000, // Show for 10 seconds
+        });
+        // Optionally, redirect to login page or trigger re-authentication
+        // For now, we'll just show the error message
+        // In a full implementation, you might want to:
+        // 1. Clear any stored tokens
+        // 2. Redirect to a login page
+        // 3. Show a re-authentication modal
       } else {
         toast({
           title: "Failed to load tables",
@@ -69,7 +83,7 @@ const TablesPage = () => {
         table.name.toLowerCase().includes(query) ||
         table.tags.some((tag) => tag.toLowerCase().includes(query)) ||
         table.database?.toLowerCase().includes(query) ||
-        table.schema?.toLowerCase().includes(query)
+        table.schema?.toLowerCase().includes(query),
     );
   }, [tableAssets, searchQuery]);
 
@@ -84,8 +98,9 @@ const TablesPage = () => {
   };
 
   const getTableInsightCount = (tableId: string) => {
-    return artifacts.filter((a) => a.tableId === tableId && a.type === "insight")
-      .length;
+    return artifacts.filter(
+      (a) => a.tableId === tableId && a.type === "insight",
+    ).length;
   };
 
   const chartCount = artifacts.filter((a) => a.type === "chart").length;
@@ -112,11 +127,15 @@ const TablesPage = () => {
             <div className="min-w-0">
               <h1 className="text-lg sm:text-xl font-bold truncate">Scrat</h1>
               <p className="text-xs text-muted-foreground hidden sm:block">
-                Data Analytics Workspace
+                Digesting Yummy Snowflake large Data
               </p>
             </div>
           </div>
-          <Button onClick={() => setDrawerOpen(true)} size="sm" className="flex-shrink-0">
+          <Button
+            onClick={() => setDrawerOpen(true)}
+            size="sm"
+            className="flex-shrink-0"
+          >
             <Plus className="h-4 w-4 sm:mr-2" />
             <span className="hidden sm:inline">New Table</span>
           </Button>
@@ -173,18 +192,24 @@ const TablesPage = () => {
 
         {/* Table List */}
         <div className="space-y-2 sm:space-y-3">
-          <h2 className="text-base sm:text-lg font-semibold mb-3 sm:mb-4">All Tables</h2>
+          <h2 className="text-base sm:text-lg font-semibold mb-3 sm:mb-4">
+            All Tables
+          </h2>
 
           {isLoading ? (
             <div className="text-center py-8 sm:py-12">
               <Loader2 className="h-10 w-10 sm:h-12 sm:w-12 mx-auto mb-3 animate-spin text-primary" />
-              <p className="text-sm sm:text-base text-muted-foreground">Loading tables...</p>
+              <p className="text-sm sm:text-base text-muted-foreground">
+                Loading tables...
+              </p>
             </div>
           ) : filteredTables.length === 0 ? (
             <div className="text-center py-8 sm:py-12 text-muted-foreground">
               <Table className="h-10 w-10 sm:h-12 sm:w-12 mx-auto mb-3 opacity-30" />
               <p className="text-sm sm:text-base">
-                {searchQuery ? `No tables found matching "${searchQuery}"` : "No tables yet. Create your first table!"}
+                {searchQuery
+                  ? `No tables found matching "${searchQuery}"`
+                  : "No tables yet. Create your first table!"}
               </p>
             </div>
           ) : (
@@ -216,7 +241,8 @@ const TablesPage = () => {
 
                       {/* 数据库路径 - 移动端隐藏或截断 */}
                       <div className="font-mono text-xs text-muted-foreground mb-2 sm:mb-3 truncate">
-                        {table.database?.toLowerCase()}.{table.schema?.toLowerCase()}.
+                        {table.database?.toLowerCase()}.
+                        {table.schema?.toLowerCase()}.
                         {table.name.toLowerCase().replace(/\s+/g, "_")}
                       </div>
 
@@ -227,7 +253,9 @@ const TablesPage = () => {
                           {formatDate(table.updatedAt)}
                         </span>
                         {table.owner && (
-                          <span className="hidden sm:inline">by {table.owner}</span>
+                          <span className="hidden sm:inline">
+                            by {table.owner}
+                          </span>
                         )}
                       </div>
 
@@ -245,7 +273,10 @@ const TablesPage = () => {
                             </Badge>
                           ))}
                           {table.tags.length > 3 && (
-                            <Badge variant="outline" className="text-xs px-1.5 sm:px-2">
+                            <Badge
+                              variant="outline"
+                              className="text-xs px-1.5 sm:px-2"
+                            >
                               +{table.tags.length - 3}
                             </Badge>
                           )}
