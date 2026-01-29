@@ -156,6 +156,7 @@ class ColumnWorkflowToolsBase:
             "analyze_categorical_groups": 0,
             "generate_numeric_visuals": 0,
             "generate_categorical_visuals": 0,
+            "generate_chart_candidates": 0,
             "generate_numeric_insights": 0,
             "generate_categorical_insights": 0,
             "generate_column_summary": 0,
@@ -919,14 +920,15 @@ class ColumnWorkflowToolsBase:
             return default
 
     def _resolve_temporal_expr(self, ctx: ColumnContext, col: str) -> str:
-        num_expr = f"TRY_TO_NUMBER({col})"
+        num_expr = f"TRY_TO_NUMBER(TO_VARCHAR({col}))"
+        ts_expr = f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({col}))"
         return (
-            "CASE "
-            f"WHEN {num_expr} IS NULL THEN TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({col})) "
-            f"WHEN {num_expr} BETWEEN 19000101 AND 21000101 THEN TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({col}), 'YYYYMMDD') "
-            f"WHEN {num_expr} > 100000000000 THEN TRY_TO_TIMESTAMP_NTZ({num_expr} / 1000) "
-            f"ELSE TRY_TO_TIMESTAMP_NTZ({num_expr}) "
-            "END"
+            "COALESCE("
+            f"{ts_expr}, "
+            f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({num_expr}), 'YYYYMMDD'), "
+            f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({num_expr} / 1000)), "
+            f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({num_expr}))"
+            ")"
         )
 
     def _numeric_expr(self, expr: str) -> str:
@@ -1229,14 +1231,124 @@ class ColumnWorkflowToolsBase:
             return [1, 3, 6, 12]
         return [1, 7, 30]
 
-    async def _list_temporal_columns(self, table_asset_id: int) -> list[str]:
-        result = await self.db.execute(
-            select(ColumnMetadata.column_name).where(
-                ColumnMetadata.table_asset_id == table_asset_id,
-                ColumnMetadata.semantic_type == "temporal",
+    def _looks_like_temporal_name(self, column_name: str) -> bool:
+        lowered = str(column_name or "").lower()
+        return any(
+            token in lowered
+            for token in (
+                "date",
+                "time",
+                "timestamp",
+                "epoch",
             )
         )
-        return [row[0] for row in result.all() if row and row[0]]
+
+    def _default_time_bucket(self, column_name: str | None) -> str:
+        lowered = str(column_name or "").lower()
+        if "epoch" in lowered:
+            return "hour"
+        if "time" in lowered and "date" not in lowered:
+            return "hour"
+        return "day"
+
+    async def _list_temporal_columns_with_meta(
+        self, table_asset_id: int
+    ) -> list[dict[str, Any]]:
+        result = await self.db.execute(
+            select(
+                ColumnMetadata.column_name,
+                ColumnMetadata.semantic_type,
+                ColumnMetadata.metadata_payload,
+            ).where(
+                ColumnMetadata.table_asset_id == table_asset_id,
+            )
+        )
+        candidates: list[dict[str, Any]] = []
+        for row in result.all():
+            if not row or not row[0]:
+                continue
+            column_name, semantic_type, metadata_payload = row
+            sql_type = ""
+            if isinstance(metadata_payload, dict):
+                sql_type = str(metadata_payload.get("sql_type") or "").lower()
+            is_native = any(token in sql_type for token in ("date", "time", "timestamp"))
+            is_temporal = semantic_type == "temporal" or is_native
+            if not is_temporal and self._looks_like_temporal_name(column_name):
+                is_temporal = True
+            if is_temporal:
+                candidates.append(
+                    {
+                        "column": column_name,
+                        "is_native": is_native,
+                        "sql_type": sql_type,
+                    }
+                )
+        # 保持顺序去重
+        seen: set[str] = set()
+        ordered: list[dict[str, Any]] = []
+        for item in candidates:
+            name = item.get("column")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            ordered.append(item)
+        return ordered
+
+    async def _list_temporal_columns(self, table_asset_id: int) -> list[str]:
+        items = await self._list_temporal_columns_with_meta(table_asset_id)
+        return [item["column"] for item in items if item.get("column")]
+
+    async def _list_categorical_columns(
+        self, table_asset_id: int, max_columns: int = 5
+    ) -> list[dict[str, Any]]:
+        result = await self.db.execute(
+            select(
+                ColumnMetadata.column_name,
+                ColumnMetadata.semantic_type,
+                ColumnMetadata.metadata_payload,
+            ).where(
+                ColumnMetadata.table_asset_id == table_asset_id,
+            )
+        )
+        candidates: list[tuple[str, float, int | None]] = []
+        for row in result.all():
+            if not row or not row[0]:
+                continue
+            column_name, semantic_type, metadata_payload = row
+            if semantic_type not in {"categorical", "text"}:
+                # 如果类型没标注，也允许低基数文本列
+                pass
+            sql_type = ""
+            unique_count = None
+            sample_size = None
+            if isinstance(metadata_payload, dict):
+                sql_type = str(metadata_payload.get("sql_type") or "").lower()
+                unique_count = metadata_payload.get("unique_count")
+                sample_size = metadata_payload.get("sample_size")
+            is_textual = any(token in sql_type for token in ("char", "text", "string", "varchar"))
+            if semantic_type not in {"categorical", "text"} and not is_textual:
+                continue
+            if unique_count is None:
+                # 没有唯一值信息时，保守放过
+                cardinality = 1.0
+            else:
+                try:
+                    denom = float(sample_size) if sample_size else float(unique_count)
+                    cardinality = float(unique_count) / denom if denom else 1.0
+                except (TypeError, ValueError):
+                    cardinality = 1.0
+            # 低基数优先
+            if unique_count is not None and unique_count <= 50:
+                candidates.append((column_name, cardinality, unique_count))
+            elif cardinality <= 0.2:
+                candidates.append((column_name, cardinality, unique_count))
+        # 按基数排序，取前 max_columns
+        candidates.sort(key=lambda item: item[1])
+        selected = candidates[: max_columns or 5]
+        return [
+            {"column": name, "cardinality": card, "unique_count": uniq}
+            for name, card, uniq in selected
+        ]
 
     async def _list_all_columns(self, table_asset_id: int) -> list[str]:
         result = await self.db.execute(

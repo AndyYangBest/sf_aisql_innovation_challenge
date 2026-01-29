@@ -3,13 +3,112 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sqlalchemy import select
+
 from strands import tool
+
+from ...models.column_metadata import ColumnMetadata
+from ...services.chart_service import ChartService
+from ...services.eda_service import EDAService
 
 logger = logging.getLogger(__name__)
 
 
 class ColumnWorkflowVisualsMixin:
     """Tool mixin."""
+
+    @tool
+    async def generate_chart_candidates(
+        self,
+        table_asset_id: int,
+        column_name: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Generate chart candidate configurations for the table."""
+        ctx = await self._load_context(table_asset_id, column_name or "")
+        if not ctx.table_ref:
+            return {
+                "table_asset_id": table_asset_id,
+                "chart_candidates": [],
+                "error": "table_ref_missing",
+            }
+
+        table_ref = ctx.table_ref
+        database = None
+        schema = None
+        table_name = table_ref
+
+        if "." in table_ref:
+            parts = table_ref.split(".")
+            if len(parts) == 3:
+                database, schema, table_name = parts
+            elif len(parts) == 2:
+                schema, table_name = parts
+
+        try:
+            columns = await self.sf.get_table_columns(table_name, database=database, schema=schema)
+        except Exception as exc:
+            logger.warning("Failed to load table columns for chart candidates: %s", exc)
+            return {
+                "table_asset_id": table_asset_id,
+                "chart_candidates": [],
+                "error": f"column_load_failed:{exc}",
+            }
+
+        meta_result = await self.db.execute(
+            select(ColumnMetadata).where(ColumnMetadata.table_asset_id == table_asset_id)
+        )
+        meta_rows = {row.column_name: row for row in meta_result.scalars().all()}
+
+        column_profiles: list[dict[str, Any]] = []
+        for col in columns:
+            column_name = col.get("COLUMN_NAME") or col.get("column_name")
+            data_type = col.get("DATA_TYPE") or col.get("data_type") or ""
+            cardinality = 1.0
+            meta = meta_rows.get(column_name)
+            if meta:
+                payload = meta.metadata_payload or {}
+                analysis = payload.get("analysis", {}) if isinstance(payload, dict) else {}
+                unique_count = (
+                    analysis.get("unique_count")
+                    or analysis.get("distinct_count")
+                    or payload.get("unique_count")
+                    or payload.get("distinct_count")
+                )
+                total_count = (
+                    analysis.get("total_count")
+                    or payload.get("total_count")
+                    or payload.get("row_count")
+                    or payload.get("count")
+                )
+                try:
+                    unique_val = float(unique_count)
+                    total_val = float(total_count)
+                    if total_val > 0:
+                        cardinality = unique_val / total_val
+                except (TypeError, ValueError):
+                    pass
+
+            column_profiles.append(
+                {
+                    "COLUMN_NAME": column_name,
+                    "DATA_TYPE": data_type,
+                    "cardinality": cardinality,
+                }
+            )
+
+        chart_service = ChartService(EDAService(self.sf))
+        candidates = await chart_service.generate_chart_candidates(table_ref, column_profiles)
+        if limit and limit > 0:
+            candidates = candidates[:limit]
+
+        await self._update_column_analysis(
+            ctx,
+            {
+                "chart_candidates": candidates,
+            },
+        )
+        return {"table_asset_id": table_asset_id, "chart_candidates": candidates}
 
     @tool
     async def generate_numeric_visuals(
@@ -23,6 +122,11 @@ class ColumnWorkflowVisualsMixin:
         is_temporal = ctx.column_meta.semantic_type == "temporal"
         used_time_columns: set[str] = set()
         time_expr = None
+        column_sql_type = ""
+        if isinstance(ctx.column_meta.metadata_payload, dict):
+            column_sql_type = str(ctx.column_meta.metadata_payload.get("sql_type") or "").lower()
+        temporal_meta = await self._list_temporal_columns_with_meta(ctx.table_asset_id)
+        temporal_columns = [item["column"] for item in temporal_meta if item.get("column")]
         analysis_errors: list[dict[str, Any]] = []
 
         if is_temporal:
@@ -48,7 +152,8 @@ class ColumnWorkflowVisualsMixin:
                 MIN({col}) AS min_value,
                 MAX({col}) AS max_value,
                 AVG({col}) AS avg_value,
-                STDDEV({col}) AS stddev_value
+                STDDEV({col}) AS stddev_value,
+                COUNT(*) AS total_count
             FROM base
             WHERE {col} IS NOT NULL
             """
@@ -77,6 +182,7 @@ class ColumnWorkflowVisualsMixin:
         else:
             stats["avg_value"] = _get_stat("avg_value")
             stats["stddev_value"] = _get_stat("stddev_value")
+            stats["total_count"] = self._coerce_int(_get_stat("total_count"))
 
         # Custom visuals override
         visual_plan = self._extract_visual_overrides(ctx)
@@ -111,6 +217,17 @@ class ColumnWorkflowVisualsMixin:
             and (max_v is not None)
             and (min_v != max_v)
         ):
+            bin_override = (
+                overrides.get("visual_hist_bins")
+                or overrides.get("visual_bin_count")
+            )
+            total_count = stats.get("total_count") or 0
+            if bin_override is not None:
+                bin_count = max(5, self._coerce_int(bin_override, 20))
+            elif total_count:
+                bin_count = min(60, max(20, int(total_count ** 0.5)))
+            else:
+                bin_count = 20
             hist_query = f"""
             WITH base AS (
                 {ctx.analysis_query}
@@ -122,7 +239,7 @@ class ColumnWorkflowVisualsMixin:
                 WHERE {col} IS NOT NULL
             )
             SELECT
-                WIDTH_BUCKET(base.{col}, stats.min_value, stats.max_value, 20) AS bin,
+                WIDTH_BUCKET(base.{col}, stats.min_value, stats.max_value, {bin_count}) AS bin,
                 COUNT(*) AS count
             FROM base, stats
             WHERE base.{col} IS NOT NULL
@@ -153,7 +270,7 @@ class ColumnWorkflowVisualsMixin:
                         y_key="count",
                         data=histogram_data,
                         narrative=[
-                            "Distribution based on 20 bins",
+                            f"Distribution based on {bin_count} bins",
                             f"Min: {min_v}, Max: {max_v}",
                         ],
                         source_columns=[column_name],
@@ -190,8 +307,11 @@ class ColumnWorkflowVisualsMixin:
                 overrides.get("visual_time_bucket")
                 or overrides.get("visual_time_granularity")
             )
-            bucket = str(bucket_override or "day").lower()
-            if bucket not in {"hour", "day", "week", "month"}:
+            default_bucket = self._default_time_bucket(
+                column_name if is_temporal else ctx.time_column
+            )
+            bucket = str(bucket_override or default_bucket or "day").lower()
+            if bucket not in {"hour", "day", "week", "month", "raw"}:
                 bucket = "day"
             limit_override = (
                 overrides.get("visual_time_limit") or overrides.get("visual_point_limit")
@@ -203,22 +323,30 @@ class ColumnWorkflowVisualsMixin:
             elif limit_override is not None:
                 time_limit = max(1, self._coerce_int(limit_override, 500))
             else:
-                time_limit = 500
-            time_bucket_expr = f"DATE_TRUNC('{bucket}', {time_col})"
-            time_query = f"""
-            WITH base AS (
-                {ctx.analysis_query}
-            )
-            SELECT
-                TO_VARCHAR({time_bucket_expr}) AS time_bucket,
-                {"COUNT(*) AS count" if is_temporal else f"AVG({col}) AS avg_value"}
-            FROM base
-            WHERE {time_col} IS NOT NULL
-            {"AND " + col + " IS NOT NULL" if not is_temporal else ""}
-            GROUP BY {time_bucket_expr}
-            ORDER BY time_bucket
-            {"" if time_limit is None else f"LIMIT {int(time_limit)}"}
-            """
+                time_limit = None
+
+            def _build_time_query(bucket_key: str) -> tuple[str, str]:
+                if bucket_key == "raw":
+                    time_bucket_expr = f"{time_col}"
+                else:
+                    time_bucket_expr = f"DATE_TRUNC('{bucket_key}', {time_col})"
+                query = f"""
+                WITH base AS (
+                    {ctx.analysis_query}
+                )
+                SELECT
+                    TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+                    {"COUNT(*) AS count" if is_temporal else f"AVG({col}) AS avg_value"}
+                FROM base
+                WHERE {time_col} IS NOT NULL
+                {"AND " + col + " IS NOT NULL" if not is_temporal else ""}
+                GROUP BY {time_bucket_expr}
+                ORDER BY time_bucket
+                {"" if time_limit is None else f"LIMIT {int(time_limit)}"}
+                """
+                return query, time_bucket_expr
+
+            time_query, _time_bucket_expr = _build_time_query(bucket)
 
             try:
                 time_rows = await self.sf.execute_query(time_query)
@@ -226,6 +354,29 @@ class ColumnWorkflowVisualsMixin:
                 logger.warning("Time series query failed for %s: %s", column_name, exc)
                 analysis_errors.append({"step": "time_query", "error": str(exc)})
                 time_rows = []
+
+            # 如果只得到 0/1 个点，尝试更细粒度或 raw
+            if len(time_rows) <= 1 and bucket != "raw":
+                fallback_buckets = ["hour", "raw"] if bucket != "hour" else ["raw"]
+                for fallback_bucket in fallback_buckets:
+                    fallback_query, _ = _build_time_query(fallback_bucket)
+                    try:
+                        fallback_rows = await self.sf.execute_query(fallback_query)
+                    except Exception as exc:
+                        logger.warning(
+                            "Time series fallback query failed for %s: %s",
+                            column_name,
+                            exc,
+                        )
+                        analysis_errors.append(
+                            {"step": "time_query_fallback", "error": str(exc)}
+                        )
+                        continue
+                    if len(fallback_rows) > 1:
+                        time_rows = fallback_rows
+                        bucket = fallback_bucket
+                        time_query = fallback_query
+                        break
 
             if is_temporal:
                 time_data = [
@@ -246,7 +397,7 @@ class ColumnWorkflowVisualsMixin:
                     for row in time_rows
                 ]
 
-            if time_data:
+            if time_data and len(time_data) > 1:
                 time_title = column_name if is_temporal else (ctx.time_column or "time")
                 y_title = "Count" if is_temporal else f"Average {column_name}"
                 visuals.append(
@@ -330,16 +481,22 @@ class ColumnWorkflowVisualsMixin:
 
         # ---- Extra temporal columns for numeric ----
         if not is_temporal:
-            temporal_columns = await self._list_temporal_columns(ctx.table_asset_id)
 
-            # 防止 visuals 爆炸：最多再补 2 个时间列趋势（你可以改成 3）
-            extra_limit = 2
+            # 防止 visuals 爆炸：最多补几个时间列趋势（默认 4，可 override）
+            extra_limit = self._coerce_int(
+                overrides.get("visual_time_extra_limit"), 4
+            )
+            if extra_limit <= 0:
+                extra_limit = 0
             added = 0
             bucket_override = (
                 overrides.get("visual_time_bucket")
                 or overrides.get("visual_time_granularity")
             )
-            bucket = str(bucket_override or "day").lower()
+            default_bucket = self._default_time_bucket(
+                temporal_columns[0] if temporal_columns else None
+            )
+            bucket = str(bucket_override or default_bucket or "day").lower()
             if bucket not in {"hour", "day", "week", "month"}:
                 bucket = "day"
             limit_override = (
@@ -352,7 +509,7 @@ class ColumnWorkflowVisualsMixin:
             elif limit_override is not None:
                 time_limit = max(1, self._coerce_int(limit_override, 500))
             else:
-                time_limit = 500
+                time_limit = None
 
             for temporal_column in temporal_columns:
                 if added >= extra_limit:
@@ -362,25 +519,40 @@ class ColumnWorkflowVisualsMixin:
                     or temporal_column == column_name
                 ):
                     continue
-
                 temporal_expr = self._resolve_temporal_expr(
                     ctx, self._quote_ident(temporal_column)
                 )
-                time_bucket_expr = f"DATE_TRUNC('{bucket}', {temporal_expr})"
-                extra_time_query = f"""
-                WITH base AS (
-                    {ctx.analysis_query}
+                column_bucket = (
+                    bucket
+                    if bucket_override
+                    else str(self._default_time_bucket(temporal_column) or "day").lower()
                 )
-                SELECT
-                    TO_VARCHAR({time_bucket_expr}) AS time_bucket,
-                    AVG({col}) AS avg_value
-                FROM base
-                WHERE {temporal_expr} IS NOT NULL
-                AND {col} IS NOT NULL
-                GROUP BY {time_bucket_expr}
-                ORDER BY time_bucket
-                {"" if time_limit is None else f"LIMIT {int(time_limit)}"}
-                """
+                if column_bucket not in {"hour", "day", "week", "month"}:
+                    column_bucket = "day"
+
+                def _build_extra_query(bucket_key: str) -> tuple[str, str]:
+                    time_bucket_expr = (
+                        f"{temporal_expr}"
+                        if bucket_key == "raw"
+                        else f"DATE_TRUNC('{bucket_key}', {temporal_expr})"
+                    )
+                    query = f"""
+                    WITH base AS (
+                        {ctx.analysis_query}
+                    )
+                    SELECT
+                        TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+                        AVG({col}) AS avg_value
+                    FROM base
+                    WHERE {temporal_expr} IS NOT NULL
+                    AND {col} IS NOT NULL
+                    GROUP BY {time_bucket_expr}
+                    ORDER BY time_bucket
+                    {"" if time_limit is None else f"LIMIT {int(time_limit)}"}
+                    """
+                    return query, time_bucket_expr
+
+                extra_time_query, _ = _build_extra_query(column_bucket)
                 try:
                     extra_rows = await self.sf.execute_query(extra_time_query)
                 except Exception as exc:
@@ -401,7 +573,40 @@ class ColumnWorkflowVisualsMixin:
                     }
                     for row in extra_rows
                 ]
-                if extra_data:
+
+                if len(extra_data) <= 1 and column_bucket != "raw":
+                    fallback_buckets = (
+                        ["hour", "raw"] if column_bucket != "hour" else ["raw"]
+                    )
+                    for fallback_bucket in fallback_buckets:
+                        fallback_query, _ = _build_extra_query(fallback_bucket)
+                        try:
+                            fallback_rows = await self.sf.execute_query(fallback_query)
+                        except Exception as exc:
+                            logger.warning(
+                                "Extra time series fallback failed for %s: %s",
+                                column_name,
+                                exc,
+                            )
+                            analysis_errors.append(
+                                {"step": "extra_time_query_fallback", "error": str(exc)}
+                            )
+                            continue
+                        fallback_data = [
+                            {
+                                "time_bucket": row.get("TIME_BUCKET") or row.get("time_bucket"),
+                                "avg_value": self._coerce_float(
+                                    row.get("AVG_VALUE") or row.get("avg_value")
+                                ),
+                            }
+                            for row in fallback_rows
+                        ]
+                        if len(fallback_data) > 1:
+                            extra_data = fallback_data
+                            column_bucket = fallback_bucket
+                            break
+
+                if extra_data and len(extra_data) > 1:
                     visuals.append(
                         self._build_chart_spec(
                             chart_type="line",
@@ -419,6 +624,90 @@ class ColumnWorkflowVisualsMixin:
                         )
                     )
                     added += 1
+
+        # ---- Extra categorical breakdowns for numeric ----
+        if not is_temporal:
+            category_limit_override = overrides.get("visual_category_limit")
+            if isinstance(category_limit_override, str) and category_limit_override.lower() == "all":
+                category_limit = None
+            elif category_limit_override in (-1, 0):
+                category_limit = None
+            elif category_limit_override is not None:
+                category_limit = max(5, self._coerce_int(category_limit_override, 12))
+            else:
+                category_limit = 12
+            full_threshold = self._coerce_int(
+                overrides.get("visual_category_full_threshold"), 50
+            )
+            categorical_columns = await self._list_categorical_columns(
+                ctx.table_asset_id, max_columns=3
+            )
+            for category_meta in categorical_columns:
+                category_column = str(category_meta.get("column") or "")
+                unique_count = category_meta.get("unique_count")
+                if not category_column or category_column == column_name:
+                    continue
+                if category_limit is None:
+                    limit_for_column = None
+                elif unique_count is not None and unique_count <= full_threshold:
+                    limit_for_column = None
+                else:
+                    limit_for_column = category_limit
+                cat_col = self._quote_ident(category_column)
+                limit_clause = "" if limit_for_column is None else f"LIMIT {int(limit_for_column)}"
+                cat_query = f"""
+                WITH base AS (
+                    {ctx.analysis_query}
+                )
+                SELECT
+                    {cat_col} AS category,
+                    AVG({col}) AS avg_value,
+                    COUNT(*) AS count
+                FROM base
+                WHERE {cat_col} IS NOT NULL
+                AND {col} IS NOT NULL
+                GROUP BY {cat_col}
+                ORDER BY count DESC
+                {limit_clause}
+                """
+                try:
+                    cat_rows = await self.sf.execute_query(cat_query)
+                except Exception as exc:
+                    logger.warning(
+                        "Category breakdown query failed for %s: %s",
+                        column_name,
+                        exc,
+                    )
+                    analysis_errors.append({"step": "category_breakdown", "error": str(exc)})
+                    cat_rows = []
+
+                cat_data = [
+                    {
+                        "category": row.get("CATEGORY") or row.get("category"),
+                        "avg_value": self._coerce_float(
+                            row.get("AVG_VALUE") or row.get("avg_value")
+                        ),
+                        "count": self._coerce_int(row.get("COUNT") or row.get("count")),
+                    }
+                    for row in cat_rows
+                ]
+                if cat_data:
+                    visuals.append(
+                        self._build_chart_spec(
+                            chart_type="bar",
+                            title=f"{column_name} by {category_column}",
+                            x_key="category",
+                            y_key="avg_value",
+                            data=cat_data,
+                            narrative=[
+                                f"Average {column_name} by {category_column}",
+                                "Top categories by frequency",
+                            ],
+                            source_columns=[category_column, column_name],
+                            x_title=category_column,
+                            y_title=f"Average {column_name}",
+                        )
+                    )
 
         analysis: dict[str, Any] = {
             "visuals": visuals,
@@ -625,7 +914,8 @@ class ColumnWorkflowVisualsMixin:
                 overrides.get("visual_time_bucket")
                 or overrides.get("visual_time_granularity")
             )
-            bucket = str(bucket_override or "day").lower()
+            default_bucket = self._default_time_bucket(temporal_column)
+            bucket = str(bucket_override or default_bucket or "day").lower()
             if bucket not in {"hour", "day", "week", "month"}:
                 bucket = "day"
             limit_override = (
@@ -638,23 +928,31 @@ class ColumnWorkflowVisualsMixin:
             elif limit_override is not None:
                 time_limit = max(1, self._coerce_int(limit_override, 500))
             else:
-                time_limit = 500
-            time_bucket_expr = f"DATE_TRUNC('{bucket}', {temporal_expr})"
-            time_query = f"""
-            WITH base AS (
-                {ctx.analysis_query}
-            )
-            SELECT
-                TO_VARCHAR({time_bucket_expr}) AS time_bucket,
-                COUNT(*) AS count
-            FROM base
-            WHERE {temporal_expr} IS NOT NULL
-            AND {col} IS NOT NULL
-            AND TRIM(TO_VARCHAR({col})) != ''
-            GROUP BY {time_bucket_expr}
-            ORDER BY time_bucket
-            {"" if time_limit is None else f"LIMIT {int(time_limit)}"}
-            """
+                time_limit = None
+            def _build_time_query(bucket_key: str) -> tuple[str, str]:
+                time_bucket_expr = (
+                    f"{temporal_expr}"
+                    if bucket_key == "raw"
+                    else f"DATE_TRUNC('{bucket_key}', {temporal_expr})"
+                )
+                query = f"""
+                WITH base AS (
+                    {ctx.analysis_query}
+                )
+                SELECT
+                    TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+                    COUNT(*) AS count
+                FROM base
+                WHERE {temporal_expr} IS NOT NULL
+                AND {col} IS NOT NULL
+                AND TRIM(TO_VARCHAR({col})) != ''
+                GROUP BY {time_bucket_expr}
+                ORDER BY time_bucket
+                {"" if time_limit is None else f"LIMIT {int(time_limit)}"}
+                """
+                return query, time_bucket_expr
+
+            time_query, _ = _build_time_query(bucket)
             try:
                 time_rows = await self.sf.execute_query(time_query)
             except Exception as exc:
@@ -673,7 +971,35 @@ class ColumnWorkflowVisualsMixin:
                 }
                 for row in time_rows
             ]
-            if time_data:
+            if len(time_data) <= 1 and bucket != "raw":
+                fallback_buckets = ["hour", "raw"] if bucket != "hour" else ["raw"]
+                for fallback_bucket in fallback_buckets:
+                    fallback_query, _ = _build_time_query(fallback_bucket)
+                    try:
+                        fallback_rows = await self.sf.execute_query(fallback_query)
+                    except Exception as exc:
+                        logger.warning(
+                            "Categorical time series fallback failed for %s: %s",
+                            column_name,
+                            exc,
+                        )
+                        analysis_errors.append(
+                            {"step": "categorical_time_query_fallback", "error": str(exc)}
+                        )
+                        continue
+                    fallback_data = [
+                        {
+                            "time_bucket": row.get("TIME_BUCKET") or row.get("time_bucket"),
+                            "count": self._coerce_int(row.get("COUNT") or row.get("count")),
+                        }
+                        for row in fallback_rows
+                    ]
+                    if len(fallback_data) > 1:
+                        time_data = fallback_data
+                        bucket = fallback_bucket
+                        break
+
+            if time_data and len(time_data) > 1:
                 visuals.append(
                     self._build_chart_spec(
                         chart_type="line",

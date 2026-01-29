@@ -121,12 +121,35 @@ class ColumnWorkflowOrchestrator:
                         tools = ColumnWorkflowTools(self.sf, self.ai_sql, self.db)
                         await tools.apply_data_repairs(table_asset_id, column_name)
                         apply_fallback_used = True
+                        workflow_logs.append(
+                            {
+                                "type": "warning",
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "message": "Repair apply fallback executed (apply_data_repairs)",
+                                "data": {
+                                    "column": column_name,
+                                    "table_asset_id": table_asset_id,
+                                },
+                            }
+                        )
                         updated_meta = await self._get_column_meta(table_asset_id, column_name)
                     except Exception as exc:
                         workflow_state = "error"
                         status = {"state": "error", "error": f"repair_apply_failed: {exc}"}
             if allow_fallback and updated_meta and not self._analysis_ready(updated_meta):
                 fallback_used = True
+                workflow_logs.append(
+                    {
+                        "type": "warning",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message": "Preset workflow fallback executed (_run_direct)",
+                        "data": {
+                            "column": column_name,
+                            "table_asset_id": table_asset_id,
+                            "semantic_type": updated_meta.semantic_type,
+                        },
+                    }
+                )
                 await self._run_direct(ColumnWorkflowTools(self.sf, self.ai_sql, self.db), updated_meta)
 
             try:

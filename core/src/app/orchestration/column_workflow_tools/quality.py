@@ -407,7 +407,7 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                 "column": column_name,
                 "approved": False,
                 "approval_key": approval_key,
-                "skipped": True,
+                "status": "pending",
                 "reason": "plan_missing",
             }
         approved_plan_id = overrides.get("data_fix_plan_id") or plan.get("plan_id")
