@@ -253,7 +253,10 @@ class ColumnWorkflowQualityMixin:
                 "method": strategy_key or "manual_review",
             }
             if fill_value is None:
-                null_reason = "No non-null values available to derive a fill value."
+                null_reason = (
+                    "All sampled values were NULL; no non-null basis available. "
+                    "Consider a group-based imputation or a manual default."
+                )
             elif strategy_key in {"median_impute", "median"}:
                 null_reason = "Median of non-null values (robust to outliers)."
             elif strategy_key in {"mean_impute", "mean"}:
@@ -278,6 +281,7 @@ class ColumnWorkflowQualityMixin:
                     "estimated_rows": null_count,
                     "fill_expr": fill_expr,
                     "fill_value": fill_value,
+                    "requires_manual_default": fill_value is None,
                     "reason": null_reason,
                     "basis": basis,
                 }
@@ -417,6 +421,53 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         }
         await self._update_column_analysis(ctx, {"repair_plan": plan})
         return {"column": column_name, "repair_plan": plan}
+
+
+    @tool
+    async def generate_repair_rationale(
+        self, table_asset_id: int, column_name: str
+    ) -> dict[str, Any]:
+        """Generate a human-readable repair rationale report for the latest plan."""
+        ctx = await self._load_context(table_asset_id, column_name)
+        analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
+        plan = analysis.get("repair_plan", {})
+        if isinstance(plan, str):
+            try:
+                plan = json.loads(plan)
+            except json.JSONDecodeError:
+                plan = {}
+        if not isinstance(plan, dict) or not plan.get("plan_id"):
+            return {"column": column_name, "status": "error", "reason": "plan_missing"}
+
+        payload = {
+            "column": column_name,
+            "semantic_type": ctx.column_meta.semantic_type,
+            "stats": analysis.get("stats"),
+            "nulls": analysis.get("nulls"),
+            "conflicts": analysis.get("conflicts"),
+            "correlations": analysis.get("correlations"),
+            "plan_summary": plan.get("summary"),
+            "plan_steps": plan.get("steps"),
+            "rationale": plan.get("rationale"),
+            "structure_type": ctx.structure_type,
+        }
+        instruction = (
+            "Create a concise repair rationale in Markdown. Return JSON with keys: "
+            "summary (string, <=120 words), why_this_value (string), "
+            "row_level_rules (array, max 4), alternatives (array, max 3), "
+            "risks (array, max 3). "
+            "Be specific about the chosen fill value and basis. "
+            "If no fill value exists, say why and suggest group-based or manual fallbacks."
+        )
+        report = await self._run_ai_agg(payload, instruction)
+        if isinstance(report, dict):
+            normalized = report
+        else:
+            normalized = {"summary": str(report)}
+
+        plan["rationale_report"] = normalized
+        await self._update_column_analysis(ctx, {"repair_plan": plan})
+        return {"column": column_name, "rationale_report": normalized}
 
 
     @tool

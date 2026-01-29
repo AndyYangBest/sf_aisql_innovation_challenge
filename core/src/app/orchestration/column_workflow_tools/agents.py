@@ -309,6 +309,7 @@ Rules:
         - Always use the provided table_asset_id ({table_asset_id}) and column_name ({column_name}) in tool calls.
         - Run scan_nulls first, then scan_conflicts if a grouping is provided.
         - Create repair plans with plan_data_repairs when issues are detected.
+        - After plan_data_repairs returns a plan, call repair_rationale_agent to explain the logic.
         - Do not apply repairs directly; only plan and request approval.
         - Only call require_user_approval after plan_data_repairs returns a plan.
         - When multiple independent tools are needed, call them in the same response to allow parallel execution.
@@ -321,8 +322,35 @@ Rules:
                 self.scan_nulls,
                 self.scan_conflicts,
                 self.plan_data_repairs,
+                self.repair_rationale_agent,
                 self.require_user_approval,
             ],
+            prompt=prompt,
+            table_asset_id=table_asset_id,
+            column_name=column_name,
+        )
+        return {"column": column_name, "summary": summary}
+
+    @tool
+    async def repair_rationale_agent(
+        self,
+        table_asset_id: int,
+        column_name: str,
+    ) -> dict[str, Any]:
+        """Agent specialized in generating repair rationale reports."""
+        prompt = f"""
+You generate a repair rationale report for column {column_name}.
+Table asset id: {table_asset_id}
+
+Rules:
+- Always use the provided table_asset_id ({table_asset_id}) and column_name ({column_name}) in tool calls.
+- Call generate_repair_rationale to produce a concise explanation report.
+- You must call at least one tool.
+""".strip()
+        summary = await self._run_sub_agent(
+            name="Repair Rationale Agent",
+            system_prompt="You write concise repair rationale reports.",
+            tools=[self.generate_repair_rationale],
             prompt=prompt,
             table_asset_id=table_asset_id,
             column_name=column_name,

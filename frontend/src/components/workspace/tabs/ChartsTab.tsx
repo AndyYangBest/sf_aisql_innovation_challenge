@@ -39,6 +39,8 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
   const artifacts = useTableStore((s) => s.artifacts);
   const deleteArtifact = useTableStore((s) => s.deleteArtifact);
   const toggleArtifactPin = useTableStore((s) => s.toggleArtifactPin);
+  const tableResult = useTableStore((s) => s.getTableResult(tableId));
+  const loadTableResult = useTableStore((s) => s.loadTableResult);
 
   const [layout, setLayout] = useState<LayoutItem[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -204,6 +206,9 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
                 <div key={spec.id} style={{ width: '100%', height: '100%' }}>
                   <ChartCard
                     spec={spec}
+                    tableId={tableId}
+                    tableResult={tableResult}
+                    onRequestTableResult={() => loadTableResult(tableId)}
                     isPinned={artifact?.pinned}
                     onPin={() => toggleArtifactPin(spec.id)}
                     onDelete={() => deleteArtifact(spec.id)}

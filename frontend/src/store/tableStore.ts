@@ -86,6 +86,7 @@ interface TableStore {
   selectedColumn: string | null;
   reportOverrides: Record<string, ReportOverrides>;
   reportStatus: Record<string, ReportStatus>;
+  approvedPlansByTable: Record<string, number>;
 
   // Actions
   addTableAsset: (asset: TableAsset) => void;
@@ -104,6 +105,7 @@ interface TableStore {
   getArtifactsByTable: (tableId: string) => Artifact[];
   getReportStatus: (tableId: string) => ReportStatus | undefined;
   getChangelog: (tableId?: string) => ChangelogEntry[];
+  getApprovedPlansCount: (tableId?: string) => number;
 }
 
 export const useTableStore = create<TableStore>()(
@@ -128,6 +130,7 @@ export const useTableStore = create<TableStore>()(
         selectedColumn: null,
         reportOverrides: {},
         reportStatus: {},
+        approvedPlansByTable: {},
 
         addTableAsset: (asset) =>
           set((state) => ({
@@ -150,11 +153,13 @@ export const useTableStore = create<TableStore>()(
           set((state) => {
             const { [id]: _unusedOverrides, ...nextOverrides } = state.reportOverrides;
             const { [id]: _unusedStatus, ...nextStatus } = state.reportStatus;
+            const { [id]: _unusedPlans, ...nextApproved } = state.approvedPlansByTable;
             return {
               tableAssets: state.tableAssets.filter((asset) => asset.id !== id),
               artifacts: state.artifacts.filter((artifact) => artifact.tableId !== id),
               reportOverrides: nextOverrides,
               reportStatus: nextStatus,
+              approvedPlansByTable: nextApproved,
             };
           }),
 
@@ -376,6 +381,26 @@ export const useTableStore = create<TableStore>()(
           const overrides = extractReportOverrides(data.table?.overrides);
           const artifacts = buildReportArtifacts(data.columns, tableId, overrides);
           const hasReport = artifacts.length > 0 || !!overrides.notes;
+          const approvedPlansCount = data.columns.reduce((count, column) => {
+            const analysis = column.metadata?.analysis;
+            if (!analysis) {
+              return count;
+            }
+            let plan = analysis.repair_plan;
+            if (typeof plan === "string") {
+              try {
+                plan = JSON.parse(plan);
+              } catch {
+                plan = null;
+              }
+            }
+            if (!plan || typeof plan !== "object") {
+              return count;
+            }
+            const approved = (plan as Record<string, any>).approved;
+            const status = (plan as Record<string, any>).approval_status;
+            return approved || status === "approved" ? count + 1 : count;
+          }, 0);
 
           set((state) => ({
             artifacts: [
@@ -386,6 +411,10 @@ export const useTableStore = create<TableStore>()(
             reportStatus: {
               ...state.reportStatus,
               [tableId]: { loaded: true, hasReport },
+            },
+            approvedPlansByTable: {
+              ...state.approvedPlansByTable,
+              [tableId]: approvedPlansCount,
             },
           }));
         },
@@ -434,17 +463,31 @@ export const useTableStore = create<TableStore>()(
           const logs = get().changelog;
           return tableId ? logs.filter((l) => l.tableId === tableId) : logs;
         },
+
+        getApprovedPlansCount: (tableId) => {
+          const approvedPlans = get().approvedPlansByTable;
+          if (tableId) {
+            return approvedPlans[tableId] || 0;
+          }
+          return Object.values(approvedPlans).reduce((sum, value) => sum + value, 0);
+        },
       };
     },
     {
       name: "table-workspace-storage",
-      version: 3,
+      version: 4,
       migrate: (state: any, version: number) => {
         if (version < 3) {
-          return {
+          state = {
             ...state,
             tableResults: {},
             reportStatus: {},
+          };
+        }
+        if (version < 4) {
+          return {
+            ...state,
+            approvedPlansByTable: {},
           };
         }
         return state;

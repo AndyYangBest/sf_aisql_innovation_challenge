@@ -412,6 +412,13 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
     if (savedIds.has(artifact.id)) return;
     addArtifact(artifact);
     toast({ title: "Saved to report" });
+    if (artifact.type === "repair_plan" && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("workflow-outputs-refresh", {
+          detail: { tableAssetId: Number(tableId) },
+        })
+      );
+    }
   };
 
   const handleSaveGroup = (group: OutputGroup) => {
@@ -426,6 +433,13 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
     }
     pending.forEach((item) => addArtifact(item));
     toast({ title: `Saved ${pending.length} outputs` });
+    if (group.repairs.length > 0 && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("workflow-outputs-refresh", {
+          detail: { tableAssetId: Number(tableId) },
+        })
+      );
+    }
   };
 
   const PanelBody = () => (

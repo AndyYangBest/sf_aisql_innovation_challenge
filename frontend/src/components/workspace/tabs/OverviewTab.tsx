@@ -74,6 +74,25 @@ const OverviewTab = ({ tableAsset, tableResult, variant = "full" }: OverviewTabP
     };
   }, [loadRepairs]);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ tableAssetId?: number }>).detail;
+      if (detail?.tableAssetId && detail.tableAssetId !== tableId) return;
+      void (async () => {
+        const plans = await loadRepairs();
+        setRepairPlans(plans);
+      })();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("workflow-outputs-refresh", handler as EventListener);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("workflow-outputs-refresh", handler as EventListener);
+      }
+    };
+  }, [loadRepairs, tableId]);
+
   const pendingRepairs = useMemo(
     () => repairPlans.filter((item) => item.plan && !item.plan.approved),
     [repairPlans]

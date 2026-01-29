@@ -133,14 +133,16 @@ const InsightCard = ({ artifact, onPin, onDelete, formatDate }: InsightCardProps
       </div>
 
       {artifact.content.summary && (
-        <p className="text-sm text-muted-foreground mb-3 break-words">{artifact.content.summary}</p>
+        <p className="text-sm text-muted-foreground mb-3 break-words">
+          {formatInlineStyles(artifact.content.summary)}
+        </p>
       )}
 
       <ul className="space-y-2 mb-4">
         {artifact.content.bullets.map((bullet: string, i: number) => (
           <li key={i} className="flex items-start gap-2 text-sm break-words min-w-0">
             <span className="text-primary mt-1 flex-shrink-0">•</span>
-            <span className="break-words min-w-0">{bullet}</span>
+            <span className="break-words min-w-0">{formatInlineStyles(bullet)}</span>
           </li>
         ))}
       </ul>
@@ -157,6 +159,20 @@ const InsightCard = ({ artifact, onPin, onDelete, formatDate }: InsightCardProps
       </div>
     </div>
   );
+};
+
+const formatInlineStyles = (text: string) => {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={i} className="font-semibold text-foreground">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return part;
+  });
 };
 
 export default InsightsTab;

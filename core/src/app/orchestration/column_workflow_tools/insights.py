@@ -3,10 +3,38 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 from strands import tool
 
 class ColumnWorkflowInsightsMixin:
     """Tool mixin."""
+
+    def _normalize_insight_items(self, raw_items: Any, max_items: int = 3) -> list[str]:
+        if raw_items is None:
+            return []
+        items: list[Any]
+        if isinstance(raw_items, list):
+            items = raw_items
+        else:
+            items = [raw_items]
+
+        normalized: list[str] = []
+        for item in items:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if not text:
+                continue
+            # Split on common bullet/numbered patterns or newlines.
+            parts = re.split(r"(?:\n+|^\\s*[-•]\\s+|\\s*\\d+\\.\\s+)", text)
+            for part in parts:
+                cleaned = part.strip(" \t-•")
+                if not cleaned:
+                    continue
+                normalized.append(cleaned)
+                if len(normalized) >= max_items:
+                    return normalized[:max_items]
+        return normalized[:max_items]
 
     @tool
     async def generate_column_summary(self, table_asset_id: int, column_name: str) -> dict[str, Any]:
@@ -74,8 +102,9 @@ class ColumnWorkflowInsightsMixin:
         }
 
         instruction = (
-            "Summarize the numeric column insights based on the provided stats and visuals. "
-            "Return JSON with keys: insights (array, max 3), caveats (array)."
+            "Summarize numeric column insights based on the provided stats and visuals. "
+            "Return JSON with keys: insights (array of Markdown bullet strings, max 3), "
+            "caveats (array, max 3). Avoid tool/meta lists. Each insight should be 1–2 sentences."
         )
         focus_hint = overrides.get("insights_focus") or overrides.get("insight_focus")
         user_notes = overrides.get("insights_user_notes") or overrides.get("insight_user_notes")
@@ -86,8 +115,12 @@ class ColumnWorkflowInsightsMixin:
         token_estimate = await self._estimate_ai_agg_tokens(payload, instruction)
         insights = await self._run_ai_agg(payload, instruction)
 
-        normalized_insights = insights.get("insights", []) if isinstance(insights, dict) else insights
-        normalized_caveats = insights.get("caveats", []) if isinstance(insights, dict) else []
+        normalized_insights = self._normalize_insight_items(
+            insights.get("insights") if isinstance(insights, dict) else insights
+        )
+        normalized_caveats = self._normalize_insight_items(
+            insights.get("caveats") if isinstance(insights, dict) else []
+        )
         analysis.update(
             {
                 "insights": normalized_insights,
@@ -118,7 +151,8 @@ class ColumnWorkflowInsightsMixin:
 
         instruction = (
             "Summarize category distribution insights based on the provided stats and visuals. "
-            "Return JSON with keys: insights (array, max 3), caveats (array)."
+            "Return JSON with keys: insights (array of Markdown bullet strings, max 3), "
+            "caveats (array, max 3). Avoid tool/meta lists. Each insight should be 1–2 sentences."
         )
         focus_hint = overrides.get("insights_focus") or overrides.get("insight_focus")
         user_notes = overrides.get("insights_user_notes") or overrides.get("insight_user_notes")
@@ -129,8 +163,12 @@ class ColumnWorkflowInsightsMixin:
         token_estimate = await self._estimate_ai_agg_tokens(payload, instruction)
         insights = await self._run_ai_agg(payload, instruction)
 
-        normalized_insights = insights.get("insights", []) if isinstance(insights, dict) else insights
-        normalized_caveats = insights.get("caveats", []) if isinstance(insights, dict) else []
+        normalized_insights = self._normalize_insight_items(
+            insights.get("insights") if isinstance(insights, dict) else insights
+        )
+        normalized_caveats = self._normalize_insight_items(
+            insights.get("caveats") if isinstance(insights, dict) else []
+        )
         analysis.update(
             {
                 "insights": normalized_insights,

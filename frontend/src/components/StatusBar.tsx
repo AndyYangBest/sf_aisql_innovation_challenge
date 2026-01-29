@@ -7,7 +7,7 @@ const StatusBar = () => {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5">
             <Users className="h-3.5 w-3.5 text-[hsl(var(--viz-blue))]" />
-            <span>Team: SynogizeLab</span>
+            <span>Members: 3</span>
           </div>
           <span className="opacity-40">•</span>
           <div className="flex items-center gap-1.5">

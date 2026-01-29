@@ -43,7 +43,7 @@ const TopNav = ({ onNewTable }: TopNavProps) => {
                 className="h-7 w-7 hidden dark:block"
               />
             </div>
-            <span className="font-semibold text-lg hidden sm:block">Scrat</span>
+            <span className="font-semibold text-lg hidden sm:block" style={{ fontFamily: "'Orbitron', sans-serif", letterSpacing: '0.05em' }}>Scrat</span>
           </div>
 
           <nav className="flex items-center gap-1">

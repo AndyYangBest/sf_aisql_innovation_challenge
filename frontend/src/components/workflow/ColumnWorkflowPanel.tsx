@@ -1947,10 +1947,11 @@ const ColumnWorkflowPanel = ({
     let active = true;
     const poll = async () => {
       if (!active) return;
+      if (typeof document !== "undefined" && document.hidden) return;
       await refreshWorkflowSnapshots();
     };
     void poll();
-    const intervalId = setInterval(poll, 1200);
+    const intervalId = setInterval(poll, 3000);
     return () => {
       active = false;
       clearInterval(intervalId);
@@ -2603,9 +2604,12 @@ const ColumnWorkflowPanel = ({
             </TabsList>
           </Tabs>
           <div className="flex items-center gap-2">
-            <Button size="sm" variant="surface" onClick={handleAddBoard}>
-              Scrat!
-            </Button>
+            <img
+              src="/black-theme.svg"
+              alt="Scrat"
+              className="h-8 w-8 cursor-pointer hover:opacity-80 transition-opacity"
+              onClick={handleAddBoard}
+            />
             <Badge variant="outline" className="text-xs">
               {selectedColumns.length} selected
             </Badge>

@@ -6,7 +6,7 @@ import {
   ChevronRight,
   Sparkles,
   TrendingUp,
-  Users,
+  ShieldCheck,
   Search,
   Plus,
   Table,
@@ -27,7 +27,7 @@ const TablesPage = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const { tableAssets, artifacts, setTableAssets } = useTableStore();
+  const { tableAssets, artifacts, setTableAssets, loadReport, reportStatus, getApprovedPlansCount } = useTableStore();
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -35,6 +35,18 @@ const TablesPage = () => {
   useEffect(() => {
     loadTablesFromDatabase();
   }, []);
+
+  useEffect(() => {
+    if (!tableAssets.length) return;
+    tableAssets.forEach((table) => {
+      const status = reportStatus[table.id];
+      if (!status?.loaded) {
+        loadReport(table.id).catch((error) => {
+          console.error("Failed to load report metadata", error);
+        });
+      }
+    });
+  }, [tableAssets, loadReport, reportStatus]);
 
   const loadTablesFromDatabase = async () => {
     setIsLoading(true);
@@ -103,8 +115,15 @@ const TablesPage = () => {
     ).length;
   };
 
-  const chartCount = artifacts.filter((a) => a.type === "chart").length;
-  const insightCount = artifacts.filter((a) => a.type === "insight").length;
+  const chartCount = useMemo(
+    () => new Set(artifacts.filter((a) => a.type === "chart").map((a) => a.id)).size,
+    [artifacts]
+  );
+  const insightCount = useMemo(
+    () => new Set(artifacts.filter((a) => a.type === "insight").map((a) => a.id)).size,
+    [artifacts]
+  );
+  const approvedPlansCount = getApprovedPlansCount();
 
   return (
     <div className="min-h-screen bg-background pb-10">
@@ -125,8 +144,8 @@ const TablesPage = () => {
               />
             </div>
             <div className="min-w-0">
-              <h1 className="text-lg sm:text-xl font-bold truncate">Scrat</h1>
-              <p className="text-xs text-muted-foreground hidden sm:block">
+              <h1 className="text-lg sm:text-xl font-bold truncate" style={{ fontFamily: "'Orbitron', sans-serif", letterSpacing: '0.05em' }}>Scrat</h1>
+              <p className="text-xs text-muted-foreground hidden sm:block" style={{ fontFamily: "'Fredoka One', cursive", fontSize: '0.85rem' }}>
                 Digesting Yummy Snowflake large Data
               </p>
             </div>
@@ -183,9 +202,9 @@ const TablesPage = () => {
             variant="warning"
           />
           <StatCard
-            icon={Users}
-            value={3}
-            label="Team Members"
+            icon={ShieldCheck}
+            value={approvedPlansCount}
+            label="Approved Plans"
             variant="info"
           />
         </div>
