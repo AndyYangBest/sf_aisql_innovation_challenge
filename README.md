@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="frontend/public/black-theme.svg" alt="Scrat Logo" width="240"/>
+  <img src="frontend/public/white-theme.svg" alt="Scrat Logo" width="240"/>
 
 # Scrat — Snowflake Centric Raw Analytics Toolkit
 
