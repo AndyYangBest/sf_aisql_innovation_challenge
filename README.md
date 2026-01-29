@@ -1,17 +1,77 @@
 <div align="center">
-  <img src="frontend/public/white-theme.svg" alt="SCRAT Logo" width="200"/>
+  <img src="frontend/public/white-theme.svg" alt="Scrat Logo" width="240"/>
 
-  # SCRAT - Snowflake AI SQL Innovation Challenge
+# Scrat — Snowflake Centric Raw Analytics Toolkit
 
-  Snowflake AI-powered data analysis and visualization platform with automated EDA, collaborative dashboards, and comprehensive Cortex AI SQL functions.
+Snowflake AI-powered data analysis and visualization platform with automated EDA, collaborative dashboards, and comprehensive Cortex AI SQL functions.
+
 </div>
 
 ## Project Overview
 
 This project demonstrates advanced usage of Snowflake Cortex AI SQL functions across three diverse datasets:
+
 - **Finance**: China A-Shares stock market data (1990-2023)
 - **Travel**: Flight itineraries and pricing data (82M+ records)
 - **Retail**: Fashion product catalog
+
+## Quick Start (Backend + Frontend + Postgres)
+
+### 1) Backend (FastAPI)
+
+```bash
+cd core
+source .venv/bin/activate
+uv pip install -r requirements.txt
+uv run uvicorn src.app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+API docs: `http://localhost:8000/docs`
+
+### 2) Frontend (Vite)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+UI: `http://localhost:5173`
+
+### 3) Postgres (metadata DB)
+
+Scrat stores metadata (workflow logs, repair plans, charts, insights, users) in Postgres.
+You can either use a local Postgres instance or run the docker compose below.
+
+**Env vars (core/src/.env or shell):**
+
+```bash
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_SERVER=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=postgres
+```
+
+Connection string (async):
+
+```
+postgresql+asyncpg://POSTGRES_USER:POSTGRES_PASSWORD@POSTGRES_SERVER:POSTGRES_PORT/POSTGRES_DB
+```
+
+### 4) Postgres via Docker Compose (optional)
+
+```bash
+cd core/scripts/local_with_uvicorn
+docker compose up -d
+```
+
+This spins up:
+
+- `db` (Postgres 13)
+- `redis`
+- `web` (FastAPI)
+- optional `worker`
 
 ## Python Environment Setup
 
@@ -41,11 +101,11 @@ deactivate
 
 Three databases following standardized naming convention:
 
-| Database | Schema | Table | Description | Records |
-|----------|--------|-------|-------------|---------|
-| `FINANCE_DB` | PUBLIC | `CHINA_A_SHARES_STOCK_DATA` | Historical Chinese stock market data | ~85K |
-| `TRAVEL_DB` | PUBLIC | `FLIGHT_ITINERARIES` | Flight booking and pricing data | 82M+ |
-| `RETAIL_DB` | PUBLIC | `FASHION_PRODUCTS` | Fashion product catalog | Variable |
+| Database     | Schema | Table                       | Description                          | Records  |
+| ------------ | ------ | --------------------------- | ------------------------------------ | -------- |
+| `FINANCE_DB` | PUBLIC | `CHINA_A_SHARES_STOCK_DATA` | Historical Chinese stock market data | ~85K     |
+| `TRAVEL_DB`  | PUBLIC | `FLIGHT_ITINERARIES`        | Flight booking and pricing data      | 82M+     |
+| `RETAIL_DB`  | PUBLIC | `FASHION_PRODUCTS`          | Fashion product catalog              | Variable |
 
 ### Data Upload
 
@@ -56,6 +116,7 @@ cd data
 ```
 
 **Setup databases:**
+
 ```bash
 # Create all three databases
 python snowflake_setup.py --warehouse AI_SQL_COMP --database FINANCE_DB
@@ -64,6 +125,7 @@ python snowflake_setup.py --warehouse AI_SQL_COMP --database RETAIL_DB
 ```
 
 **Upload datasets:**
+
 ```bash
 # Finance data (China A-Shares)
 python upload_china_stocks.py
@@ -77,6 +139,7 @@ python upload_large_csv.py
 ```
 
 **Verify uploads:**
+
 ```python
 python -c "
 import snowflake.connector
@@ -119,10 +182,13 @@ Access the API documentation at: `http://localhost:8000/docs`
 All Snowflake Cortex AI SQL functions are exposed as REST API endpoints under `/api/v1/ai-sql/`:
 
 #### 1. AI_COMPLETE - LLM Text Generation
+
 ```bash
 POST /api/v1/ai-sql/complete
 ```
+
 **Request:**
+
 ```json
 {
   "model": "claude-3-7-sonnet",
@@ -132,10 +198,13 @@ POST /api/v1/ai-sql/complete
 ```
 
 #### 2. AI_TRANSCRIBE - Audio to Text
+
 ```bash
 POST /api/v1/ai-sql/transcribe
 ```
+
 **Request:**
+
 ```json
 {
   "audio_file_column": "audio_file",
@@ -144,10 +213,13 @@ POST /api/v1/ai-sql/transcribe
 ```
 
 #### 3. AI_CLASSIFY - Multi-label Classification
+
 ```bash
 POST /api/v1/ai-sql/classify
 ```
+
 **Request:**
+
 ```json
 {
   "content_column": "review_text",
@@ -158,10 +230,13 @@ POST /api/v1/ai-sql/classify
 ```
 
 #### 4. AI_FILTER - Intelligent Filtering
+
 ```bash
 POST /api/v1/ai-sql/filter
 ```
+
 **Request:**
+
 ```json
 {
   "filter_condition": "Is this stock from the technology sector? {0}",
@@ -171,10 +246,13 @@ POST /api/v1/ai-sql/filter
 ```
 
 #### 5. AI_AGG - AI-Powered Aggregation
+
 ```bash
 POST /api/v1/ai-sql/aggregate
 ```
+
 **Request:**
+
 ```json
 {
   "column_to_aggregate": "INDUSTRY_CATEGORY",
@@ -185,10 +263,13 @@ POST /api/v1/ai-sql/aggregate
 ```
 
 #### 6. AI_SENTIMENT - Sentiment Analysis
+
 ```bash
 POST /api/v1/ai-sql/sentiment
 ```
+
 **Request:**
+
 ```json
 {
   "text_column": "customer_feedback",
@@ -197,10 +278,13 @@ POST /api/v1/ai-sql/sentiment
 ```
 
 #### 7. SUMMARIZE - Text Summarization
+
 ```bash
 POST /api/v1/ai-sql/summarize
 ```
+
 **Request:**
+
 ```json
 {
   "text_column": "article_content",
@@ -209,10 +293,13 @@ POST /api/v1/ai-sql/summarize
 ```
 
 #### 8. Semantic JOIN - AI-Powered Table Joining
+
 ```bash
 POST /api/v1/ai-sql/semantic-join
 ```
+
 **Request:**
+
 ```json
 {
   "left_table": "customer_issues",
@@ -224,10 +311,13 @@ POST /api/v1/ai-sql/semantic-join
 ```
 
 #### 9. Extract Structured Data
+
 ```bash
 POST /api/v1/ai-sql/extract-structured
 ```
+
 **Request:**
+
 ```json
 {
   "text_column": "email_body",
@@ -236,9 +326,9 @@ POST /api/v1/ai-sql/extract-structured
   "schema": {
     "type": "object",
     "properties": {
-      "name": {"type": "string"},
-      "email": {"type": "string"},
-      "phone": {"type": "string"}
+      "name": { "type": "string" },
+      "email": { "type": "string" },
+      "phone": { "type": "string" }
     }
   }
 }
@@ -247,6 +337,7 @@ POST /api/v1/ai-sql/extract-structured
 ## Example Use Cases
 
 ### Finance: Stock Market Analysis
+
 ```python
 import requests
 
@@ -260,6 +351,7 @@ response = requests.post("http://localhost:8000/api/v1/ai-sql/classify", json={
 ```
 
 ### Travel: Flight Route Insights
+
 ```python
 # Aggregate insights about popular routes
 response = requests.post("http://localhost:8000/api/v1/ai-sql/aggregate", json={
@@ -271,6 +363,7 @@ response = requests.post("http://localhost:8000/api/v1/ai-sql/aggregate", json={
 ```
 
 ### Retail: Product Analysis
+
 ```python
 # Use AI to filter fashion products
 response = requests.post("http://localhost:8000/api/v1/ai-sql/filter", json={
@@ -290,6 +383,7 @@ pytest tests/ -v
 ```
 
 Run specific test modules:
+
 ```bash
 # Test AI SQL endpoints
 pytest tests/test_ai_sql.py -v
@@ -300,19 +394,51 @@ pytest tests/test_user.py -v
 
 ## Architecture
 
+### system logic
+
+  <img src="frontend/public/arch.png" width="740"/>
+
+### System Overview (Frontend Included)
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ Frontend (React + Flowgram + Report UI)                    │
+│  - Workflow graph + approvals                              │
+│  - Visuals/Insights/Notes                                  │
+│  - Boards + Column Map                                     │
+└───────────────▲────────────────────────────────────────────┘
+                │ REST/WebSocket (metadata + workflow logs)
+┌───────────────┴────────────────────────────────────────────┐
+│ Core API (FastAPI)                                         │
+│  - Column workflows + agents                               │
+│  - AI SQL endpoints                                        │
+│  - Report artifacts + approvals                            │
+└───────▲───────────────▲───────────────────────────▲────────┘
+        │               │                           │
+        │               │                           │
+┌───────┴───────┐  ┌────┴────────────────┐  ┌───────┴────────┐
+│ Snowflake     │  │ Postgres (metadata) │  │ Redis (cache)  │
+│  - Data tables│  │  - workflows/logs   │  │  - rate limit  │
+│  - AI SQL     │  │  - artifacts        │  │  - job state   │
+└───────────────┘  └─────────────────────┘  └────────────────┘
+```
+
 ### Services Layer
+
 - `SnowflakeService`: Database connection and query execution
 - `AISQLService`: Comprehensive Cortex AI SQL functions wrapper
 - `EDAService`: Exploratory data analysis utilities
 - `ChartService`: Visualization generation
 
 ### API Layer
+
 - FastAPI with automatic OpenAPI documentation
 - Rate limiting and caching
 - Background task processing with ARQ
 - Comprehensive error handling
 
 ### Database Layer
+
 - Snowflake as primary data warehouse
 - Three domain-specific databases
 - Standardized naming conventions
@@ -336,6 +462,9 @@ SNOWFLAKE_ROLE = "ACCOUNTADMIN"
 
 ```
 sf_aisql_innovation_challenge/
+├── frontend/                  # React + Vite UI (Flowgram, Reports, Boards)
+│   ├── src/
+│   └── public/
 ├── core/                      # FastAPI application
 │   ├── src/
 │   │   └── app/
@@ -362,6 +491,7 @@ sf_aisql_innovation_challenge/
 │   ├── universal_uploader.py # General purpose uploader
 │   ├── upload_large_csv.py   # Large file handler
 │   └── snowflake_config.ini  # Credentials
+├── refs/                      # Papers + references
 └── examples/                  # Snowflake AI SQL examples
     ├── sfguide-getting-started-with-cortex-aisql/
     ├── sfguide-building-cortex-aisql-powered-callcentre-analytics/
@@ -387,6 +517,7 @@ sf_aisql_innovation_challenge/
 ## Contributing
 
 This project follows best practices:
+
 - Type hints throughout
 - Comprehensive docstrings
 - Unit tests for all endpoints
