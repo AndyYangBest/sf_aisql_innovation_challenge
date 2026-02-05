@@ -7,7 +7,7 @@
 
 Automated data understanding, quality scanning, and repair workflows powered by Snowflake Cortex AI.
 
-[![Demo Video](https://img.shields.io/badge/Demo-Video-red?style=for-the-badge&logo=youtube)](https://youtu.be/tSP-viYXWWM)
+[![Demo Video](https://img.shields.io/badge/Demo-Video-red?style=for-the-badge&logo=youtube)](https://www.youtube.com/watch?v=BbLv0nCH8Kg)
 
 </div>
 
@@ -197,17 +197,17 @@ Full API documentation: `http://localhost:8000/docs`
 
 All Snowflake Cortex AI functions available at `/api/v1/ai-sql/`:
 
-| Endpoint | Function | Use Case |
-|----------|----------|----------|
-| `/complete` | AI_COMPLETE | Text generation, Q&A, multi-modal understanding |
-| `/classify` | AI_CLASSIFY | Multi-label classification |
-| `/filter` | AI_FILTER | Intelligent row filtering |
-| `/aggregate` | AI_AGG | Semantic aggregation |
-| `/sentiment` | AI_SENTIMENT | Sentiment analysis |
-| `/summarize` | SUMMARIZE | Text summarization |
-| `/semantic-join` | - | AI-powered table joining |
-| `/extract-structured` | - | Structured data extraction |
-| `/transcribe` | AI_TRANSCRIBE | Audio to text |
+| Endpoint              | Function      | Use Case                                        |
+| --------------------- | ------------- | ----------------------------------------------- |
+| `/complete`           | AI_COMPLETE   | Text generation, Q&A, multi-modal understanding |
+| `/classify`           | AI_CLASSIFY   | Multi-label classification                      |
+| `/filter`             | AI_FILTER     | Intelligent row filtering                       |
+| `/aggregate`          | AI_AGG        | Semantic aggregation                            |
+| `/sentiment`          | AI_SENTIMENT  | Sentiment analysis                              |
+| `/summarize`          | SUMMARIZE     | Text summarization                              |
+| `/semantic-join`      | -             | AI-powered table joining                        |
+| `/extract-structured` | -             | Structured data extraction                      |
+| `/transcribe`         | AI_TRANSCRIBE | Audio to text                                   |
 
 ### Example: Stock Classification
 
