@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
+from ...api.dependencies import get_snowflake_service
 from ...core.db.database import get_async_db_session
 from ...models.table_asset import TableAsset
 from ...models.table_asset_metadata import TableAssetMetadata
@@ -23,10 +24,6 @@ from ...schemas.table_asset import (
 )
 
 router = APIRouter(prefix="/table-assets", tags=["Table Assets"])
-
-
-async def get_snowflake_service() -> SnowflakeService:
-    return SnowflakeService()
 
 
 def _looks_like_table_ref(text: str) -> bool:

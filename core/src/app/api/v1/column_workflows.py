@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...api.dependencies import get_ai_sql_service, get_snowflake_service
 from ...core.db.database import get_async_db_session
 from ...services.snowflake_service import SnowflakeService
 from ...services.modular_ai_sql_service import ModularAISQLService
@@ -17,16 +18,6 @@ router = APIRouter(prefix="/column-workflows", tags=["Column Workflows"])
 class ColumnWorkflowSelectedRunRequest(BaseModel):
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     focus: str | None = None
-
-
-async def get_snowflake_service() -> SnowflakeService:
-    return SnowflakeService()
-
-
-async def get_ai_sql_service(
-    sf_service: SnowflakeService = Depends(get_snowflake_service),
-) -> ModularAISQLService:
-    return ModularAISQLService(sf_service)
 
 
 @router.post("/{table_asset_id}/{column_name}/estimate")
@@ -99,8 +90,8 @@ async def run_selected_tools(
             focus=payload.focus,
         )
         if execution:
-            logs = result.get("logs", [])
-            tool_calls = result.get("tool_calls", [])
+            logs = result.get("workflow_logs") or result.get("logs") or []
+            tool_calls = result.get("workflow_tool_calls") or result.get("tool_calls") or []
             summary = {
                 "tool_calls": len(tool_calls),
                 "log_entries": len(logs),

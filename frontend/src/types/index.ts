@@ -50,16 +50,20 @@ export type ChartArtifact = {
   id: string;
   tableId: string;
   content: {
-    chartType: "bar" | "line" | "pie" | "area";
+    chartType: "bar" | "line" | "pie" | "area" | "heatmap";
     title: string;
     xKey: string;
     yKey: string;
+    valueKey?: string;
     xTitle?: string;
     yTitle?: string;
     yScale?: "linear" | "log";
     data: any[];
     narrative: string[];
     sourceColumns: string[];
+    series?: { key: string; label?: string; highlight?: boolean }[];
+    insight?: string;
+    aiSelected?: boolean;
   };
   createdAt: string;
   pinned?: boolean;

@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import PreviewTable from "@/components/PreviewTable";
 import ColumnNotesEditor, { ColumnNotesMap } from "@/components/ColumnNotesEditor";
+import { SNOWFLAKE_CONFIG_UPDATED_EVENT } from "@/lib/snowflakeConfig";
 
 interface NewTableDrawerProps {
   open: boolean;
@@ -81,9 +82,33 @@ const NewTableDrawer = ({ open, onOpenChange }: NewTableDrawerProps) => {
   }, [open, selectedDatabase]);
 
   useEffect(() => {
-    if (!open) return;
-    fetchSnowflakeTables(selectedDatabase || undefined, selectedSchema || undefined);
+    if (!open || !selectedDatabase) return;
+    fetchSnowflakeTables(selectedDatabase, selectedSchema || undefined);
   }, [open, selectedDatabase, selectedSchema]);
+
+  useEffect(() => {
+    if (!open || typeof window === "undefined") {
+      return;
+    }
+
+    const handleConfigUpdated = () => {
+      setDatabases([]);
+      setSchemas([]);
+      setSnowflakeTables([]);
+      setSelectedDatabase("");
+      setSelectedSchema("");
+      fetchSnowflakeDatabases();
+      toast({
+        title: "Snowflake config applied",
+        description: "Refreshed database and table list",
+      });
+    };
+
+    window.addEventListener(SNOWFLAKE_CONFIG_UPDATED_EVENT, handleConfigUpdated);
+    return () => {
+      window.removeEventListener(SNOWFLAKE_CONFIG_UPDATED_EVENT, handleConfigUpdated);
+    };
+  }, [open, toast]);
 
   useEffect(() => {
     if (!previewData?.columns) {

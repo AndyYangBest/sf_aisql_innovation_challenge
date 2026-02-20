@@ -94,6 +94,24 @@ interface InsightCardProps {
 
 const InsightCard = ({ artifact, onPin, onDelete, formatDate }: InsightCardProps) => {
   if (artifact.type !== "insight") return null;
+  const stripBullet = (text: string) =>
+    text.replace(/^\s*[-•*]\s+/, "").trim();
+  const isJunkInsight = (text: string) => {
+    const cleaned = stripBullet(text).trim();
+    if (!cleaned) return true;
+    if (/^\{/.test(cleaned) || /^\[/.test(cleaned)) return true;
+    if (/\"insights\"\s*:/.test(cleaned)) return true;
+    if (/^\]$/.test(cleaned) || /^\}$/.test(cleaned)) return true;
+    return false;
+  };
+  const bullets = Array.isArray(artifact.content?.bullets)
+    ? artifact.content.bullets
+        .map((bullet: string) => stripBullet(String(bullet)))
+        .filter((bullet: string) => !isJunkInsight(bullet))
+    : [];
+  if (bullets.length === 0) {
+    return null;
+  }
 
   return (
     <div className="p-5 rounded-xl glass animate-slide-up break-words min-w-0">
@@ -139,7 +157,7 @@ const InsightCard = ({ artifact, onPin, onDelete, formatDate }: InsightCardProps
       )}
 
       <ul className="space-y-2 mb-4">
-        {artifact.content.bullets.map((bullet: string, i: number) => (
+        {bullets.map((bullet: string, i: number) => (
           <li key={i} className="flex items-start gap-2 text-sm break-words min-w-0">
             <span className="text-primary mt-1 flex-shrink-0">•</span>
             <span className="break-words min-w-0">{formatInlineStyles(bullet)}</span>

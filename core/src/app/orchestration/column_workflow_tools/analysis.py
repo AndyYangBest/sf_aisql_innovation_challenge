@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
+import json
+import re
 from strands import tool
 
 class ColumnWorkflowAnalysisMixin:
@@ -195,6 +197,18 @@ class ColumnWorkflowAnalysisMixin:
         col_expr = self._numeric_expr(self._quote_ident(column_name))
         base_query = self._build_windowed_query(ctx, sample_size, window_days, target_time_column)
 
+        if self._log_buffer:
+            self._log_buffer.add_entry(
+                "workflow_log",
+                "Starting numeric distribution analysis",
+                {
+                    "column": column_name,
+                    "sample_size": sample_size,
+                    "window_days": window_days,
+                    "time_column": target_time_column,
+                },
+            )
+
         stats_query = f"""
         WITH base AS (
             {base_query}
@@ -210,13 +224,18 @@ class ColumnWorkflowAnalysisMixin:
             APPROX_PERCENTILE({col_expr}, 0.5) AS p50,
             APPROX_PERCENTILE({col_expr}, 0.9) AS p90
         FROM base
-        WHERE {col_expr} IS NOT NULL
         """
         try:
             stats_rows = await self.sf.execute_query(stats_query)
         except Exception as exc:
             analysis_update = {"distribution": {"error": str(exc)}}
             await self._update_column_analysis(ctx, analysis_update)
+            if self._log_buffer:
+                self._log_buffer.add_entry(
+                    "error",
+                    "Numeric distribution stats query failed",
+                    {"column": column_name, "error": str(exc)},
+                )
             return {"column": column_name, "distribution": analysis_update["distribution"]}
         stats_row = stats_rows[0] if stats_rows else {}
         distribution = {
@@ -247,8 +266,189 @@ class ColumnWorkflowAnalysisMixin:
                 distribution_shape = "roughly_symmetric"
         distribution["shape"] = distribution_shape
 
-        await self._update_column_analysis(ctx, {"distribution": distribution})
-        return {"column": column_name, "distribution": distribution}
+        temporal_distribution: dict[str, Any] | None = None
+        if target_time_column:
+            bucket_override = (
+                overrides.get("numeric_distribution_bucket")
+                or overrides.get("numeric_distribution_time_bucket")
+                or overrides.get("visual_time_bucket")
+                or overrides.get("visual_time_granularity")
+            )
+            bucket_key = str(bucket_override or "day").lower()
+            if bucket_key not in {"hour", "day", "week", "month"}:
+                bucket_key = "day"
+            limit_override = (
+                overrides.get("numeric_distribution_time_limit")
+                or overrides.get("numeric_distribution_bucket_limit")
+                or overrides.get("visual_time_limit")
+                or overrides.get("visual_point_limit")
+            )
+            if isinstance(limit_override, str) and limit_override.lower() == "all":
+                time_limit = None
+            elif limit_override in (-1, 0, ""):
+                time_limit = None
+            elif limit_override is not None:
+                time_limit = max(1, self._coerce_int(limit_override, 30))
+            else:
+                time_limit = 30
+            time_expr = self._resolve_temporal_expr(ctx, self._quote_ident(target_time_column))
+            temporal_query = f"""
+            WITH base AS (
+                {base_query}
+            )
+            SELECT
+                DATE_TRUNC('{bucket_key}', {time_expr}) AS bucket,
+                COUNT(*) AS total_count,
+                COUNT_IF({col_expr} IS NULL) AS null_count,
+                AVG({col_expr}) AS mean_value,
+                APPROX_PERCENTILE({col_expr}, 0.1) AS p10,
+                APPROX_PERCENTILE({col_expr}, 0.5) AS p50,
+                APPROX_PERCENTILE({col_expr}, 0.9) AS p90
+            FROM base
+            WHERE {time_expr} IS NOT NULL
+            GROUP BY 1
+            ORDER BY bucket DESC
+            {"" if time_limit is None else f"LIMIT {int(time_limit)}"}
+            """
+            try:
+                temporal_rows = await self.sf.execute_query(temporal_query)
+                temporal_rows = temporal_rows or []
+                temporal_rows = list(reversed(temporal_rows))
+                temporal_distribution = {
+                    "bucket": bucket_key,
+                    "time_column": target_time_column,
+                    "rows": [
+                        {
+                            "bucket": row.get("BUCKET"),
+                            "total_count": self._coerce_int(row.get("TOTAL_COUNT")),
+                            "null_count": self._coerce_int(row.get("NULL_COUNT")),
+                            "null_rate": (
+                                self._coerce_int(row.get("NULL_COUNT"))
+                                / max(self._coerce_int(row.get("TOTAL_COUNT")), 1)
+                            ),
+                            "mean_value": row.get("MEAN_VALUE"),
+                            "p10": row.get("P10"),
+                            "p50": row.get("P50"),
+                            "p90": row.get("P90"),
+                        }
+                        for row in temporal_rows
+                    ],
+                }
+            except Exception as exc:
+                temporal_distribution = {
+                    "bucket": bucket_key,
+                    "time_column": target_time_column,
+                    "error": str(exc),
+                }
+                if self._log_buffer:
+                    self._log_buffer.add_entry(
+                        "error",
+                        "Numeric temporal distribution query failed",
+                        {"column": column_name, "error": str(exc)},
+                    )
+
+        ai_analysis: dict[str, Any] | None = None
+        ai_error: str | None = None
+        if distribution and (distribution.get("total_count") or temporal_distribution):
+            prompt_payload = {
+                "column": column_name,
+                "semantic_type": ctx.column_meta.semantic_type,
+                "sample_size": sample_size,
+                "window_days": window_days,
+                "distribution": distribution,
+                "temporal_summary": temporal_distribution,
+            }
+            prompt = (
+                "You are a data quality analyst. Analyze the numeric distribution and temporal summary. "
+                "Focus on shape, outliers, null impact, and temporal trend or drift if present. "
+                "Return JSON with keys: distribution_summary (string), shape (string), outlier_risk (low|medium|high), "
+                "null_impact (string), temporal_summary (string), temporal_trend (string), drift (string), "
+                "volatility (low|medium|high), recommended_focus (array of strings, max 4). "
+                f"Context: {json.dumps(prompt_payload, default=str)}"
+            )
+            response_format = {
+                "type": "object",
+                "properties": {
+                    "distribution_summary": {"type": "string"},
+                    "shape": {"type": "string"},
+                    "outlier_risk": {"type": "string"},
+                    "null_impact": {"type": "string"},
+                    "temporal_summary": {"type": "string"},
+                    "temporal_trend": {"type": "string"},
+                    "drift": {"type": "string"},
+                    "volatility": {"type": "string"},
+                    "recommended_focus": {"type": "array", "items": {"type": "string"}},
+                },
+            }
+            raw_response = ""
+            try:
+                raw_response = await self.ai_sql.ai_complete(
+                    self.model_id, prompt, response_format=response_format
+                )
+            except Exception as exc:
+                ai_error = str(exc)
+            if raw_response:
+                cleaned = str(raw_response).strip()
+                if cleaned.startswith("```"):
+                    cleaned = re.sub(r"^```[a-zA-Z]*", "", cleaned).strip()
+                    cleaned = cleaned.rsplit("```", 1)[0].strip()
+                try:
+                    ai_analysis = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+                    if match:
+                        try:
+                            ai_analysis = json.loads(match.group(0))
+                        except json.JSONDecodeError as exc:
+                            ai_error = f"ai_complete_parse_failed:{exc}"
+                    else:
+                        ai_error = "ai_complete_parse_failed"
+            if self._log_buffer:
+                self._log_buffer.add_entry(
+                    "workflow_log",
+                    "AI_COMPLETE distribution analysis completed",
+                    {
+                        "column": column_name,
+                        "success": bool(ai_analysis),
+                        "error": ai_error,
+                    },
+                )
+
+        analysis_update: dict[str, Any] = {
+            "distribution": distribution,
+        }
+        if ai_analysis is not None:
+            analysis_update["distribution_analysis"] = ai_analysis
+        elif ai_error:
+            analysis_update["distribution_analysis"] = {"error": ai_error}
+        if temporal_distribution:
+            analysis_update["temporal_distribution"] = temporal_distribution
+
+        await self._update_column_analysis(ctx, analysis_update)
+
+        if self._log_buffer:
+            self._log_buffer.add_entry(
+                "workflow_log",
+                "Numeric distribution analysis completed",
+                {
+                    "column": column_name,
+                    "shape": distribution_shape,
+                    "temporal_summary": (
+                        {"bucket": temporal_distribution.get("bucket"), "rows": len(temporal_distribution.get("rows", []))}
+                        if isinstance(temporal_distribution, dict)
+                        else None
+                    ),
+                    "ai_analysis": bool(ai_analysis),
+                    "ai_error": ai_error,
+                },
+            )
+
+        return {
+            "column": column_name,
+            "distribution": distribution,
+            "temporal_distribution": temporal_distribution,
+            "distribution_analysis": ai_analysis,
+        }
 
 
     @tool

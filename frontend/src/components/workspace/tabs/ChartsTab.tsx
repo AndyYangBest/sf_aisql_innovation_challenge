@@ -62,12 +62,15 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
           title: artifact.content.title || "Untitled",
           xKey: artifact.content.xKey || "x",
           yKey: artifact.content.yKey || "y",
+          valueKey: artifact.content.valueKey,
           xTitle: artifact.content.xTitle,
           yTitle: artifact.content.yTitle,
           yScale: artifact.content.yScale,
           data: artifact.content.data || [],
           narrative: artifact.content.narrative || [],
+          series: artifact.content.series,
           sourceColumns: artifact.content.sourceColumns || [],
+          insight: artifact.content.insight,
         };
       }).filter(Boolean) as ChartSpec[],
     [chartArtifacts]

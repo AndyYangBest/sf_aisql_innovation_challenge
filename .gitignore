@@ -39,3 +39,4 @@ examples/*
 data/*
 .claude/*
 .venv/*
+.agents/*

@@ -6,6 +6,7 @@
 import { TableAsset, TableResult } from '@/types';
 import { ApiResponse } from './types';
 import { apiRequest, AuthenticationError } from './client';
+import { getSnowflakeConfigHeaders } from '@/lib/snowflakeConfig';
 
 // Snowflake table interface
 export interface SnowflakeTable {
@@ -27,6 +28,11 @@ export interface SnowflakeDatabase {
 export interface SnowflakeSchema {
   SCHEMA_NAME: string;
 }
+
+const withSnowflakeHeaders = (headers: Record<string, string> = {}): Record<string, string> => ({
+  ...headers,
+  ...getSnowflakeConfigHeaders(),
+});
 
 // API 方法
 export const tablesApi = {
@@ -114,9 +120,9 @@ export const tablesApi = {
     return apiRequest(async () => {
       const response = await fetch(`/api/v1/table-assets/${id}/preview`, {
         cache: 'no-store',
-        headers: {
+        headers: withSnowflakeHeaders({
           'Cache-Control': 'no-store',
-        },
+        }),
       });
       if (!response.ok) {
         if (response.status === 404) {
@@ -234,7 +240,9 @@ export const tablesApi = {
   // Get Snowflake tables from backend
   async getSnowflakeDatabases(): Promise<ApiResponse<SnowflakeDatabase[]>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/tables/databases');
+      const response = await fetch('/api/v1/tables/databases', {
+        headers: withSnowflakeHeaders(),
+      });
       let result: any = null;
       try {
         result = await response.json();
@@ -256,7 +264,9 @@ export const tablesApi = {
     return apiRequest(async () => {
       const params = new URLSearchParams();
       params.append('database', database);
-      const response = await fetch(`/api/v1/tables/schemas?${params.toString()}`);
+      const response = await fetch(`/api/v1/tables/schemas?${params.toString()}`, {
+        headers: withSnowflakeHeaders(),
+      });
       let result: any = null;
       try {
         result = await response.json();
@@ -280,7 +290,9 @@ export const tablesApi = {
       if (database) params.append('database', database);
       if (schema) params.append('schema', schema);
 
-      const response = await fetch(`/api/v1/tables/?${params.toString()}`);
+      const response = await fetch(`/api/v1/tables/?${params.toString()}`, {
+        headers: withSnowflakeHeaders(),
+      });
       let result: any = null;
       try {
         result = await response.json();
@@ -309,7 +321,7 @@ export const tablesApi = {
     return apiRequest(async () => {
       const response = await fetch('/api/v1/ai-sql/execute', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withSnowflakeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ sql, limit }),
       });
 
@@ -338,7 +350,7 @@ export const tablesApi = {
     return apiRequest(async () => {
       const response = await fetch('/api/v1/ai-sql/suggest-metadata', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withSnowflakeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           sql,
           table_name: tableName,

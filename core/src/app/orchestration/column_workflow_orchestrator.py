@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timezone
+import time
 from typing import Any
 
 from sqlalchemy import select
@@ -110,6 +111,151 @@ class ColumnWorkflowOrchestrator:
             )
         finally:
             updated_meta = await self._get_column_meta(table_asset_id, column_name)
+            if updated_meta and updated_meta.semantic_type in {"numeric", "temporal", "categorical"}:
+                analysis = (updated_meta.metadata_payload or {}).get("analysis", {})
+                has_summary = bool(str(analysis.get("summary") or "").strip())
+                if not has_summary:
+                    try:
+                        tools = ColumnWorkflowTools(self.sf, self.ai_sql, self.db)
+                        await tools.generate_column_summary(table_asset_id, column_name)
+                        workflow_logs.append(
+                            {
+                                "type": "warning",
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "message": "Post-run summary fallback executed (generate_column_summary)",
+                                "data": {
+                                    "column": column_name,
+                                    "table_asset_id": table_asset_id,
+                                },
+                            }
+                        )
+                        updated_meta = await self._get_column_meta(table_asset_id, column_name)
+                    except Exception as exc:
+                        workflow_logs.append(
+                            {
+                                "type": "warning",
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "message": f"Post-run summary fallback failed: {exc}",
+                                "data": {
+                                    "column": column_name,
+                                    "table_asset_id": table_asset_id,
+                                },
+                            }
+                        )
+            if updated_meta and updated_meta.semantic_type in {"categorical", "text"}:
+                fallback_started = time.perf_counter()
+                try:
+                    tools = ColumnWorkflowTools(self.sf, self.ai_sql, self.db)
+                    scan_output = await tools.scan_conflicts(table_asset_id, column_name)
+                    duration_ms = int((time.perf_counter() - fallback_started) * 1000)
+                    workflow_logs.append(
+                        {
+                            "type": "warning",
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "message": "Post-run conflict scan executed (scan_conflicts)",
+                            "data": {
+                                "column": column_name,
+                                "table_asset_id": table_asset_id,
+                            },
+                        }
+                    )
+                    workflow_tool_calls.append(
+                        {
+                            "tool_name": "scan_conflicts",
+                            "status": "completed",
+                            "input": {
+                                "table_asset_id": table_asset_id,
+                                "column_name": column_name,
+                            },
+                            "output_preview": str(scan_output)[:500],
+                            "duration_ms": duration_ms,
+                            "agent_name": "orchestrator_post_run",
+                        }
+                    )
+                    updated_meta = await self._get_column_meta(table_asset_id, column_name)
+                    scan_conflicts_payload: dict[str, Any] = {}
+                    if isinstance(scan_output, dict):
+                        payload = scan_output.get("conflicts")
+                        if isinstance(payload, dict):
+                            scan_conflicts_payload = payload
+                    conflict_groups = scan_conflicts_payload.get("conflict_groups")
+                    value_conflict_count = scan_conflicts_payload.get("value_conflict_count")
+                    has_conflicts = False
+                    try:
+                        has_conflicts = int(conflict_groups or 0) > 0 or int(value_conflict_count or 0) > 0
+                    except (TypeError, ValueError):
+                        has_conflicts = bool(conflict_groups) or bool(value_conflict_count)
+                    if has_conflicts:
+                        plan_started = time.perf_counter()
+                        plan_output = await tools.plan_data_repairs(table_asset_id, column_name)
+                        workflow_tool_calls.append(
+                            {
+                                "tool_name": "plan_data_repairs",
+                                "status": "completed",
+                                "input": {
+                                    "table_asset_id": table_asset_id,
+                                    "column_name": column_name,
+                                },
+                                "output_preview": str(plan_output)[:500],
+                                "duration_ms": int((time.perf_counter() - plan_started) * 1000),
+                                "agent_name": "orchestrator_post_run",
+                            }
+                        )
+                        summary_started = time.perf_counter()
+                        summary_output = await tools.generate_column_summary(table_asset_id, column_name)
+                        workflow_tool_calls.append(
+                            {
+                                "tool_name": "generate_column_summary",
+                                "status": "completed",
+                                "input": {
+                                    "table_asset_id": table_asset_id,
+                                    "column_name": column_name,
+                                },
+                                "output_preview": str(summary_output)[:500],
+                                "duration_ms": int((time.perf_counter() - summary_started) * 1000),
+                                "agent_name": "orchestrator_post_run",
+                            }
+                        )
+                        workflow_logs.append(
+                            {
+                                "type": "warning",
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "message": "Post-run repair planning executed after detected conflicts",
+                                "data": {
+                                    "column": column_name,
+                                    "table_asset_id": table_asset_id,
+                                    "conflict_groups": conflict_groups,
+                                    "value_conflict_count": value_conflict_count,
+                                },
+                            }
+                        )
+                        updated_meta = await self._get_column_meta(table_asset_id, column_name)
+                except Exception as exc:
+                    duration_ms = int((time.perf_counter() - fallback_started) * 1000)
+                    workflow_logs.append(
+                        {
+                            "type": "warning",
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "message": f"Post-run conflict scan failed: {exc}",
+                            "data": {
+                                "column": column_name,
+                                "table_asset_id": table_asset_id,
+                            },
+                        }
+                    )
+                    workflow_tool_calls.append(
+                        {
+                            "tool_name": "scan_conflicts",
+                            "status": "error",
+                            "input": {
+                                "table_asset_id": table_asset_id,
+                                "column_name": column_name,
+                            },
+                            "error": str(exc),
+                            "duration_ms": duration_ms,
+                            "agent_name": "orchestrator_post_run",
+                        }
+                    )
             if focus == "repairs" and updated_meta:
                 overrides = updated_meta.overrides or {}
                 analysis = (updated_meta.metadata_payload or {}).get("analysis", {})

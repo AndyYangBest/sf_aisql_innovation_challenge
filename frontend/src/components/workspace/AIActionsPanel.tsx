@@ -36,6 +36,12 @@ type OutputGroup = {
   insights: InsightArtifact[];
   features: FeatureOutput[];
   repairs: RepairPlanOutput[];
+  runKey?: string;
+  visualSelection?: {
+    selectedCount?: number;
+    total?: number;
+    rationale?: string;
+  };
 };
 
 type FeatureOutput = {
@@ -52,12 +58,14 @@ type RepairPlanOutput = {
   columnName: string;
   tableId: string;
   plan: Record<string, any>;
+  conflicts?: Record<string, any>;
 };
 
-const buildRepairPlanArtifact = (repair: RepairPlanOutput): Artifact => {
+const buildRepairPlanArtifact = (repair: RepairPlanOutput, runKey?: string): Artifact => {
   const plan = repair.plan || {};
   const planKey =
     plan.plan_hash || plan.snapshot?.signature || plan.plan_id || "latest";
+  const suffix = runKey ? `::${runKey}` : "";
   const steps = Array.isArray(plan.steps) ? plan.steps : [];
   const sqlPreviews = plan.sql_previews || {};
   const rollback = plan.rollback || {};
@@ -112,7 +120,7 @@ const buildRepairPlanArtifact = (repair: RepairPlanOutput): Artifact => {
 
   return {
     type: "doc",
-    id: `repair_plan_${repair.tableId}_${repair.columnName}_${planKey}`,
+    id: `repair_plan_${repair.tableId}_${repair.columnName}_${planKey}${suffix}`,
     tableId: repair.tableId,
     content: {
       title: `${repair.columnName} repair plan`,
@@ -127,6 +135,9 @@ const normalizeChartType = (value?: string): ChartArtifact["content"]["chartType
     return "bar";
   }
   const normalized = value.toLowerCase().replace(/[^a-z]/g, "");
+  if (normalized.includes("heatmap") || normalized.includes("matrix")) {
+    return "heatmap";
+  }
   if (normalized.includes("pie") || normalized.includes("donut")) {
     return "pie";
   }
@@ -142,13 +153,187 @@ const normalizeChartType = (value?: string): ChartArtifact["content"]["chartType
   return "bar";
 };
 
+const stripBullet = (text: string) =>
+  text.replace(/^\s*[-•*]\s+/, "").trim();
+
+const isJunkInsight = (text: string) => {
+  const cleaned = stripBullet(text).trim();
+  if (!cleaned) return true;
+  if (/^\{/.test(cleaned) || /^\[/.test(cleaned)) return true;
+  if (/\"insights\"\s*:/.test(cleaned)) return true;
+  if (/^\]$/.test(cleaned) || /^\}$/.test(cleaned)) return true;
+  return false;
+};
+
+const normalizeInsightItems = (items: string[]) =>
+  items
+    .map((item) => stripBullet(String(item)))
+    .filter((item) => !isJunkInsight(item));
+
+const dedupeInsights = (items: string[]) => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  items.forEach((item) => {
+    const normalized = stripBullet(String(item || "")).trim();
+    if (!normalized) return;
+    const key = normalized.toLowerCase().replace(/\s+/g, " ");
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(normalized);
+  });
+  return result;
+};
+
+const parseInsightsFromString = (text: string): string[] => {
+  let cleaned = text.trim();
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
+    cleaned = cleaned.replace(/```$/, "");
+  }
+  cleaned = cleaned.replace(/^\s*[-•*]\s+/, "").trim();
+  const tryParse = (value: string) => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  };
+  const parsed = tryParse(cleaned);
+  if (parsed) {
+    if (Array.isArray(parsed)) return parsed.map(String);
+    if (typeof parsed === "string") return [parsed];
+    if (parsed.insights) return extractInsightBullets(parsed.insights);
+    if (Array.isArray(parsed.key_findings)) return parsed.key_findings.map(String);
+  }
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    const sliced = cleaned.slice(start, end + 1);
+    const slicedParsed = tryParse(sliced);
+    if (slicedParsed) {
+      if (Array.isArray(slicedParsed)) return slicedParsed.map(String);
+      if (typeof slicedParsed === "string") return [slicedParsed];
+      if (slicedParsed.insights) return extractInsightBullets(slicedParsed.insights);
+      if (Array.isArray(slicedParsed.key_findings))
+        return slicedParsed.key_findings.map(String);
+    }
+  }
+  return [];
+};
+
 const extractInsightBullets = (payload: any): string[] => {
   if (!payload) return [];
-  if (Array.isArray(payload)) return payload.map((item) => String(item));
-  if (typeof payload === "string") return [payload];
+  if (Array.isArray(payload)) return normalizeInsightItems(payload.map(String));
+  if (typeof payload === "string") {
+    const parsed = parseInsightsFromString(payload);
+    if (parsed.length > 0) return normalizeInsightItems(parsed);
+    return normalizeInsightItems([payload]);
+  }
   if (payload.insights) return extractInsightBullets(payload.insights);
-  if (Array.isArray(payload.key_findings)) return payload.key_findings.map(String);
+  if (Array.isArray(payload.key_findings))
+    return normalizeInsightItems(payload.key_findings.map(String));
   return [];
+};
+
+const extractSeriesKeys = (visual: any): string[] => {
+  const series = Array.isArray(visual?.series) ? visual.series : [];
+  const highlight = series
+    .filter((item: any) => item?.key && item?.highlight)
+    .map((item: any) => String(item.key));
+  if (highlight.length) return highlight;
+  const keys = series
+    .filter((item: any) => item?.key)
+    .map((item: any) => String(item.key));
+  if (keys.length) return keys;
+  if (visual?.yKey) return [String(visual.yKey)];
+  if (visual?.y_key) return [String(visual.y_key)];
+  return [];
+};
+
+const extractNumericSeries = (data: any[], key: string): number[] => {
+  if (!Array.isArray(data)) return [];
+  const values: number[] = [];
+  data.forEach((row) => {
+    if (!row || typeof row !== "object") return;
+    const raw = row[key];
+    if (raw === null || raw === undefined || typeof raw === "boolean") return;
+    if (typeof raw === "number") {
+      values.push(raw);
+      return;
+    }
+    const parsed = Number(raw);
+    if (!Number.isNaN(parsed)) values.push(parsed);
+  });
+  return values;
+};
+
+const computeTrend = (values: number[]): "upward" | "downward" | "flat" => {
+  if (values.length < 2) return "flat";
+  const start = values[0];
+  const end = values[values.length - 1];
+  if (start === end) return "flat";
+  const delta = end - start;
+  if (Math.abs(delta) < Math.max(Math.abs(start), 1) * 0.02) return "flat";
+  return delta > 0 ? "upward" : "downward";
+};
+
+const buildVisualInsightFallback = (visual: any, columnName: string): string | undefined => {
+  const title = String(visual?.title || columnName || "Chart");
+  const chartType = String(visual?.chartType || visual?.chart_type || "bar").toLowerCase();
+  const data = Array.isArray(visual?.data) ? visual.data : [];
+  const xKey = visual?.xKey || visual?.x_key;
+  if (chartType === "heatmap") {
+    const valueKey =
+      visual?.valueKey ||
+      visual?.value_key ||
+      (Array.isArray(visual?.series) && visual.series[0]?.key) ||
+      "correlation";
+    const values = extractNumericSeries(data, String(valueKey));
+    if (values.length === 0) {
+      return `${title} summarizes pairwise relationships but has no valid correlation values.`;
+    }
+    const minVal = Math.min(...values);
+    const maxVal = Math.max(...values);
+    return `${title} shows pairwise correlations ranging from ${minVal.toFixed(3)} to ${maxVal.toFixed(3)}.`;
+  }
+  const seriesKeys = extractSeriesKeys(visual);
+  const primaryKey = seriesKeys[0];
+  if (!primaryKey || data.length === 0) {
+    return `${title} summarizes ${columnName} but lacks enough numeric points for detail.`;
+  }
+  const values = extractNumericSeries(data, primaryKey);
+  if (values.length === 0) {
+    return `${title} summarizes ${columnName} but lacks enough numeric points for detail.`;
+  }
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  if (title.toLowerCase().includes("correlation") || String(primaryKey).toLowerCase() === "correlation") {
+    if (xKey && data.length === values.length) {
+      const maxIdx = values.indexOf(maxVal);
+      const minIdx = values.indexOf(minVal);
+      const maxLabel = data[maxIdx]?.[xKey];
+      const minLabel = data[minIdx]?.[xKey];
+      if (maxLabel !== undefined && minLabel !== undefined) {
+        return `Correlations span ${minVal.toFixed(3)} to ${maxVal.toFixed(3)}; strongest positive is ${maxLabel}, strongest negative is ${minLabel}.`;
+      }
+    }
+    return `Correlations span ${minVal.toFixed(3)} to ${maxVal.toFixed(3)}, highlighting the most related peers.`;
+  }
+  if (chartType === "line" || chartType === "area") {
+    const trend = computeTrend(values);
+    return `${title} ranges from ${minVal.toFixed(2)} to ${maxVal.toFixed(2)} across ${values.length} points, with an overall ${trend} trend.`;
+  }
+  if (chartType === "bar") {
+    if (xKey && data.length === values.length) {
+      const maxIdx = values.indexOf(maxVal);
+      const maxLabel = data[maxIdx]?.[xKey];
+      if (maxLabel !== undefined) {
+        return `${title} spans ${minVal.toFixed(2)}-${maxVal.toFixed(2)}; highest category is ${maxLabel}.`;
+      }
+    }
+    return `${title} spans ${minVal.toFixed(2)}-${maxVal.toFixed(2)} across categories.`;
+  }
+  return `${title} ranges from ${minVal.toFixed(2)} to ${maxVal.toFixed(2)} across ${values.length} points.`;
 };
 
 const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): OutputGroup[] => {
@@ -158,32 +343,105 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
       if (!analysis) return null;
 
       const createdAt = column.last_updated || column.updated_at || new Date().toISOString();
-      const visuals = Array.isArray(analysis.visuals) ? analysis.visuals : [];
-      const charts: ChartArtifact[] = visuals.map((visual: any, idx: number) => ({
-        type: "chart",
-        id: visual.id || `chart_${tableId}_${column.column_name}_${idx}`,
-        tableId,
-        content: {
-          chartType: normalizeChartType(visual.chartType || visual.chart_type),
-          title: visual.title || `${column.column_name} chart`,
-          xKey: visual.xKey || visual.x_key || "x",
-          yKey: visual.yKey || visual.y_key || "y",
-          xTitle: visual.xTitle || visual.x_title || visual.xKey || visual.x_key,
-          yTitle: visual.yTitle || visual.y_title || visual.yKey || visual.y_key,
-          yScale: visual.yScale || visual.y_scale,
-          data: Array.isArray(visual.data) ? visual.data : [],
-          narrative: Array.isArray(visual.narrative) ? visual.narrative : [],
-          sourceColumns: Array.isArray(visual.sourceColumns)
-            ? visual.sourceColumns
-            : [column.column_name],
-        },
+      const workflowMeta = column.metadata?.workflow as Record<string, any> | undefined;
+      const runKeyParts = [
+        workflowMeta?.workflow_id,
+        workflowMeta?.last_run_at,
+        column.last_updated,
+        column.updated_at,
         createdAt,
-      }));
+      ].filter((value) => Boolean(value));
+      const runKey = runKeyParts.length > 0 ? runKeyParts.join("::") : "";
+      const withRunKey = (id: string) => (runKey ? `${id}::${runKey}` : id);
+      const visuals = Array.isArray(analysis.visuals) ? analysis.visuals : [];
+      const visualIdSet = new Set<string>(
+        visuals
+          .map((visual: any) => String(visual?.id || ""))
+          .filter((id: string) => id.length > 0)
+      );
+      const selectedIdsRaw = Array.isArray((analysis as any)?.visual_selection?.selected_ids)
+        ? (analysis as any).visual_selection.selected_ids
+        : [];
+      const selectionIds = new Set<string>(
+        selectedIdsRaw
+          .map((id: any) => String(id))
+          .filter((id: string) => visualIdSet.has(id))
+      );
+      const visualInsights = Array.isArray((analysis as any)?.visual_insights)
+        ? (analysis as any).visual_insights
+        : [];
+      const visualInsightMap = new Map<string, string>();
+      visualInsights.forEach((item: any) => {
+        if (!item || typeof item !== "object") return;
+        const visualId = item.visual_id || item.visualId || item.id || item.chart_id;
+        const insight = item.insight;
+        if (visualId && insight) {
+          visualInsightMap.set(String(visualId), String(insight));
+        }
+      });
+      const selectedVisuals = visuals.filter((visual: any) => {
+        const visualId = String(visual?.id || "");
+        return visual?.selected || selectionIds.has(visualId);
+      });
+      const aiSelectedIdSet = new Set<string>(
+        selectedVisuals
+          .map((visual: any) => String(visual?.id || ""))
+          .filter((id: string) => id.length > 0)
+      );
+      // Always keep all generated visuals available to avoid hiding non-selected charts.
+      // If AI made selections, surface them first but do not drop the remaining charts.
+      const effectiveVisuals =
+        aiSelectedIdSet.size > 0
+          ? [...visuals].sort((left: any, right: any) => {
+              const leftPicked =
+                left?.selected || aiSelectedIdSet.has(String(left?.id || ""));
+              const rightPicked =
+                right?.selected || aiSelectedIdSet.has(String(right?.id || ""));
+              if (leftPicked === rightPicked) return 0;
+              return leftPicked ? -1 : 1;
+            })
+          : visuals;
+      const charts: ChartArtifact[] = effectiveVisuals.map((visual: any, idx: number) => {
+        const visualInsight =
+          visual?.insight ??
+          visualInsightMap.get(String(visual.id)) ??
+          buildVisualInsightFallback(visual, column.column_name);
+        return {
+          type: "chart",
+          id: withRunKey(visual.id || `chart_${tableId}_${column.column_name}_${idx}`),
+          tableId,
+          content: {
+            chartType: normalizeChartType(visual.chartType || visual.chart_type),
+            title: visual.title || `${column.column_name} chart`,
+            xKey: visual.xKey || visual.x_key || "x",
+            yKey: visual.yKey || visual.y_key || "y",
+            valueKey: visual.valueKey || visual.value_key,
+            xTitle: visual.xTitle || visual.x_title || visual.xKey || visual.x_key,
+            yTitle: visual.yTitle || visual.y_title || visual.yKey || visual.y_key,
+            yScale: visual.yScale || visual.y_scale,
+            data: Array.isArray(visual.data) ? visual.data : [],
+            narrative: Array.isArray(visual.narrative) ? visual.narrative : [],
+            series: Array.isArray(visual.series) ? visual.series : undefined,
+            sourceColumns: Array.isArray(visual.sourceColumns)
+              ? visual.sourceColumns
+              : [column.column_name],
+            insight: visualInsight,
+            aiSelected:
+              visual?.selected || selectionIds.has(String(visual?.id || "")),
+          },
+          createdAt,
+        };
+      });
 
+      const columnSummaryText =
+        typeof analysis.summary === "string" ? stripBullet(analysis.summary) : "";
+      const summaryKeyPoints = Array.isArray(analysis.summary_key_points)
+        ? normalizeInsightItems(analysis.summary_key_points.map(String))
+        : [];
+      const summaryRisks = Array.isArray(analysis.summary_risks)
+        ? normalizeInsightItems(analysis.summary_risks.map(String))
+        : [];
       let bullets = extractInsightBullets(analysis.insights);
-      if (!bullets.length && typeof analysis.summary === "string" && analysis.summary.trim()) {
-        bullets = [analysis.summary.trim()];
-      }
       if (
         !bullets.length &&
         typeof analysis.agent_summary === "string" &&
@@ -191,28 +449,57 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
       ) {
         bullets = [analysis.agent_summary.trim()];
       }
+      bullets = dedupeInsights(bullets);
       const caveats = Array.isArray(analysis.caveats)
         ? analysis.caveats
         : Array.isArray((analysis.insights as any)?.caveats)
           ? (analysis.insights as any).caveats
           : [];
 
-      const insights: InsightArtifact[] = bullets.length
-        ? [
-            {
-              type: "insight",
-              id: `insight_${tableId}_${column.column_name}`,
-              tableId,
-              content: {
-                title: `${column.column_name} insights`,
-                bullets,
-                summary: caveats.length ? caveats.join(" ") : undefined,
-                sourceColumns: [column.column_name],
-              },
-              createdAt,
-            },
-          ]
-        : [];
+      const insights: InsightArtifact[] = [];
+      const overviewBullets = dedupeInsights(
+        normalizeInsightItems(
+          [columnSummaryText, ...summaryKeyPoints].filter((item) => String(item).trim())
+        )
+      ).slice(0, 4);
+      if (overviewBullets.length > 0) {
+        insights.push({
+          type: "insight",
+          id: withRunKey(`insight_${tableId}_${column.column_name}_overview`),
+          tableId,
+          content: {
+            title: `${column.column_name} overview`,
+            bullets: overviewBullets,
+            summary:
+              summaryRisks.length > 0
+                ? summaryRisks.join(" ")
+                : caveats.length > 0
+                  ? caveats.join(" ")
+                  : undefined,
+            sourceColumns: [column.column_name],
+          },
+          createdAt,
+        });
+      }
+      const overviewSet = new Set(
+        overviewBullets.map((item) => item.toLowerCase().replace(/\s+/g, " "))
+      );
+      const detailBullets = bullets.filter(
+        (item) => !overviewSet.has(item.toLowerCase().replace(/\s+/g, " "))
+      );
+      detailBullets.forEach((bullet: string, idx: number) => {
+        insights.push({
+          type: "insight",
+          id: withRunKey(`insight_${tableId}_${column.column_name}_${idx}`),
+          tableId,
+          content: {
+            title: `${column.column_name} insight ${idx + 1}`,
+            bullets: [bullet],
+            sourceColumns: [column.column_name],
+          },
+          createdAt,
+        });
+      });
 
       const featureOutputs: FeatureOutput[] = [];
       if (Array.isArray(analysis.feature_outputs)) {
@@ -257,6 +544,7 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
           columnName: column.column_name,
           tableId,
           plan,
+          conflicts: analysis.conflicts,
         });
       }
 
@@ -275,12 +563,21 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
         insights,
         features: featureOutputs,
         repairs,
+        runKey,
+        visualSelection: analysis?.visual_selection
+          ? {
+              selectedCount: selectionIds.size || undefined,
+              total: visuals.length || analysis.visual_selection.total,
+              rationale: analysis.visual_selection.rationale,
+            }
+          : undefined,
       };
     })
     .filter(Boolean) as OutputGroup[];
 };
 
-const featureToArtifact = (feature: FeatureOutput, tableId: string): Artifact => {
+const featureToArtifact = (feature: FeatureOutput, tableId: string, runKey?: string): Artifact => {
+  const suffix = runKey ? `::${runKey}` : "";
   const title = `${feature.outputColumn} (derived)`;
   const lines = [
     `**Output column:** ${feature.outputColumn}`,
@@ -295,7 +592,7 @@ const featureToArtifact = (feature: FeatureOutput, tableId: string): Artifact =>
   }
   return {
     type: "doc",
-    id: feature.id,
+    id: `${feature.id}${suffix}`,
     tableId,
     content: {
       title,
@@ -326,6 +623,7 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
     (repair: RepairPlanOutput): RepairPlanItem => ({
       columnName: repair.columnName,
       plan: repair.plan || {},
+      conflicts: repair.conflicts,
     }),
     []
   );
@@ -361,10 +659,10 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
       const pendingCharts = group.charts.filter((item) => !savedIds.has(item.id)).length;
       const pendingInsights = group.insights.filter((item) => !savedIds.has(item.id)).length;
       const pendingRepairs = group.repairs.filter(
-        (repair) => !savedIds.has(buildRepairPlanArtifact(repair).id)
+        (repair) => !savedIds.has(buildRepairPlanArtifact(repair, group.runKey).id)
       ).length;
       const pendingFeatures = group.features.filter(
-        (feature) => !savedIds.has(featureToArtifact(feature, tableId).id)
+        (feature) => !savedIds.has(featureToArtifact(feature, tableId, group.runKey).id)
       ).length;
       return pendingCharts + pendingInsights + pendingRepairs + pendingFeatures > 0;
     });
@@ -373,6 +671,12 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
   useEffect(() => {
     void refreshOutputs();
   }, [activeTab, refreshOutputs]);
+
+  useEffect(() => {
+    if (isOpen) {
+      void refreshOutputs(true);
+    }
+  }, [isOpen, refreshOutputs]);
 
   useEffect(() => {
     if (isOpen) {
@@ -422,8 +726,12 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
   };
 
   const handleSaveGroup = (group: OutputGroup) => {
-    const featureArtifacts = group.features.map((feature) => featureToArtifact(feature, tableId));
-    const repairArtifacts = group.repairs.map((repair) => buildRepairPlanArtifact(repair));
+    const featureArtifacts = group.features.map((feature) =>
+      featureToArtifact(feature, tableId, group.runKey)
+    );
+    const repairArtifacts = group.repairs.map((repair) =>
+      buildRepairPlanArtifact(repair, group.runKey)
+    );
     const pending = [...group.charts, ...group.insights, ...featureArtifacts, ...repairArtifacts].filter(
       (item) => !savedIds.has(item.id)
     );
@@ -488,10 +796,10 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
               const pendingCharts = group.charts.filter((item) => !savedIds.has(item.id));
               const pendingInsights = group.insights.filter((item) => !savedIds.has(item.id));
               const pendingFeatures = group.features.filter(
-                (feature) => !savedIds.has(featureToArtifact(feature, tableId).id)
+                (feature) => !savedIds.has(featureToArtifact(feature, tableId, group.runKey).id)
               );
               const pendingRepairs = group.repairs.filter(
-                (repair) => !savedIds.has(buildRepairPlanArtifact(repair).id)
+                (repair) => !savedIds.has(buildRepairPlanArtifact(repair, group.runKey).id)
               );
               const pendingCount =
                 pendingCharts.length +
@@ -509,6 +817,18 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                       <div className="text-[11px] text-muted-foreground truncate">
                       {pendingCharts.length} charts · {pendingInsights.length} insights · {pendingFeatures.length} features · {pendingRepairs.length} repair plans
                       </div>
+                      {group.visualSelection?.selectedCount && (
+                        <div className="mt-1 text-[10px] text-muted-foreground">
+                          AI recommended {group.visualSelection.selectedCount}
+                          {group.visualSelection.total
+                            ? ` of ${group.visualSelection.total}`
+                            : ""}{" "}
+                          charts for review.
+                          {group.visualSelection.rationale
+                            ? ` ${group.visualSelection.rationale}`
+                            : ""}
+                        </div>
+                      )}
                     </div>
                     <Button
                       size="sm"
@@ -537,6 +857,11 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                               <div className="flex items-center gap-1.5 text-foreground">
                                 <BarChart3 className="h-3.5 w-3.5 text-[hsl(var(--viz-cyan))]" />
                                 <span className="truncate">{chart.content.title}</span>
+                                {chart.content.aiSelected && (
+                                  <Badge variant="outline" className="text-[10px] border-emerald-500/40 text-emerald-600">
+                                    AI pick
+                                  </Badge>
+                                )}
                                 {isSaved && (
                                   <Badge variant="secondary" className="text-[10px]">Saved</Badge>
                                 )}
@@ -544,6 +869,11 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                               <div className="text-[10px] text-muted-foreground">
                                 {chart.content.chartType} · {chart.content.data.length} rows
                               </div>
+                              {chart.content.insight && (
+                                <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">
+                                  {chart.content.insight}
+                                </div>
+                              )}
                             </div>
                             <Button
                               size="icon-sm"
@@ -608,7 +938,7 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                 {pendingFeatures.length > 0 && (
                   <div className="space-y-2 max-w-full">
                     {pendingFeatures.map((feature) => {
-                      const featureArtifact = featureToArtifact(feature, tableId);
+                      const featureArtifact = featureToArtifact(feature, tableId, group.runKey);
                       const isSaved = savedIds.has(featureArtifact.id);
                       return (
                         <div
@@ -648,7 +978,7 @@ const AIActionsPanel = ({ tableId, activeTab, isOpen, onToggle }: AIActionsPanel
                     {pendingRepairs.map((repair) => {
                       const plan = repair.plan || {};
                       const tokenCount = plan.token_estimate?.token_count ?? 0;
-                      const repairArtifact = buildRepairPlanArtifact(repair);
+                      const repairArtifact = buildRepairPlanArtifact(repair, group.runKey);
                       const isSaved = savedIds.has(repairArtifact.id);
                       return (
                         <div

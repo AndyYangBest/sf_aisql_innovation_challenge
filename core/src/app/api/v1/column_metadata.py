@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...api.dependencies import get_ai_sql_service, get_snowflake_service
 from ...core.db.database import get_async_db_session
 from ...services.snowflake_service import SnowflakeService
 from ...services.modular_ai_sql_service import ModularAISQLService
@@ -17,16 +18,6 @@ from ...schemas.column_metadata import (
 )
 
 router = APIRouter(prefix="/column-metadata", tags=["Column Metadata"])
-
-
-async def get_snowflake_service() -> SnowflakeService:
-    return SnowflakeService()
-
-
-async def get_ai_sql_service(
-    sf_service: SnowflakeService = Depends(get_snowflake_service),
-) -> ModularAISQLService:
-    return ModularAISQLService(sf_service)
 
 
 @router.get("/{table_asset_id}", response_model=ColumnMetadataList)

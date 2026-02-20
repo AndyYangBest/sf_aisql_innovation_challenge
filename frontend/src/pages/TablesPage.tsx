@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import NewTableDrawer from "@/components/NewTableDrawer";
+import SnowflakeConfigDialog from "@/components/SnowflakeConfigDialog";
 import { StatCard } from "@/components/shared/StatCard";
 import { PageContainer, PageHeader } from "@/components/shared/PageContainer";
 import StatusBar from "@/components/StatusBar";
@@ -190,14 +191,16 @@ const TablesPage = () => {
               </p>
             </div>
           </div>
-          <Button
-            onClick={() => setDrawerOpen(true)}
-            size="sm"
-            className="flex-shrink-0"
-          >
-            <Plus className="h-4 w-4 sm:mr-2" />
-            <span className="hidden sm:inline">New Table</span>
-          </Button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <SnowflakeConfigDialog />
+            <Button
+              onClick={() => setDrawerOpen(true)}
+              size="sm"
+            >
+              <Plus className="h-4 w-4 sm:mr-2" />
+              <span className="hidden sm:inline">New Table</span>
+            </Button>
+          </div>
         </div>
       </PageHeader>
 

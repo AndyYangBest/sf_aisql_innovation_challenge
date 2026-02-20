@@ -1,9 +1,15 @@
 // Chart utility functions for generating varied chart data
 
-export type ChartType = "bar" | "line" | "pie" | "area";
+export type ChartType = "bar" | "line" | "pie" | "area" | "heatmap";
 
 export interface ChartData {
   [key: string]: string | number;
+}
+
+export interface ChartSeries {
+  key: string;
+  label?: string;
+  highlight?: boolean;
 }
 
 export interface ChartSpec {
@@ -12,12 +18,15 @@ export interface ChartSpec {
   title: string;
   xKey: string;
   yKey: string;
+  valueKey?: string;
   xTitle?: string;
   yTitle?: string;
   yScale?: "linear" | "log";
   data: ChartData[];
   narrative: string[];
   sourceColumns: string[];
+  series?: ChartSeries[];
+  insight?: string;
 }
 
 // Color palette for charts - using direct HSL values for recharts compatibility

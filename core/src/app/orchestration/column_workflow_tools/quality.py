@@ -4,12 +4,315 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import re
 import uuid
 from typing import Any
 from strands import tool
 
 class ColumnWorkflowQualityMixin:
     """Tool mixin."""
+
+    def _normalize_group_by(self, value: Any) -> list[str]:
+        if not value:
+            return []
+        if isinstance(value, str):
+            items = [item.strip() for item in value.split(",") if item.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            items = list(value)
+        else:
+            items = []
+        return [str(item) for item in items if item]
+
+    def _normalize_plan_payload(self, plan: Any) -> dict[str, Any]:
+        if isinstance(plan, str):
+            try:
+                plan = json.loads(plan)
+            except json.JSONDecodeError:
+                return {}
+        return plan if isinstance(plan, dict) else {}
+
+    def _coerce_table_ref(
+        self,
+        value: Any,
+        ctx_table_ref: str | None,
+        *,
+        allow_cross_schema: bool = False,
+    ) -> str | None:
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        if not re.fullmatch(r'[A-Za-z0-9_."$]+', raw):
+            return None
+        parts = self._split_table_ref(raw)
+        if not parts:
+            return None
+        if ctx_table_ref and not allow_cross_schema:
+            ctx_parts = self._split_table_ref(ctx_table_ref)
+            if len(parts) >= 2 and len(ctx_parts) >= 2:
+                if parts[:-1] != ctx_parts[:-1]:
+                    return None
+        return raw
+
+    def _coerce_sql_type(self, value: Any, default: str = "VARIANT") -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return default
+        if not re.fullmatch(r"[A-Za-z0-9_(), ]+", raw):
+            return default
+        return raw
+
+    def _resolve_fixing_table_config(
+        self,
+        ctx: Any,
+        column_name: str,
+        overrides: dict[str, Any],
+        plan: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        override_table = (
+            overrides.get("data_fix_target_table")
+            or overrides.get("fixing_table_name")
+            or overrides.get("fixing_table")
+        )
+        target_table = self._coerce_table_ref(override_table, ctx.table_ref)
+        if not target_table:
+            target_table = self._build_fixing_table_ref(ctx.table_ref, column_name)
+
+        column_mode = (
+            overrides.get("data_fix_column_mode")
+            or overrides.get("fixing_column_mode")
+            or "overwrite"
+        )
+        column_mode = str(column_mode).lower()
+        if column_mode in {"new", "new_column", "append", "copy"}:
+            column_mode = "new_column"
+        else:
+            column_mode = "overwrite"
+
+        target_column = column_name
+        if column_mode == "new_column":
+            override_column = (
+                overrides.get("data_fix_target_column")
+                or overrides.get("fixing_column_name")
+            )
+            target_column = str(override_column) if override_column else f"{column_name}__fixed"
+
+        create_mode = (
+            overrides.get("data_fix_table_mode")
+            or overrides.get("fixing_table_create_mode")
+            or "replace"
+        )
+        create_mode = str(create_mode).lower()
+        if create_mode in {"create_if_missing", "if_missing", "if_not_exists", "create"}:
+            create_mode = "create_if_missing"
+        else:
+            create_mode = "replace"
+
+        return {
+            "target_table": target_table,
+            "target_column": target_column,
+            "column_mode": column_mode,
+            "create_mode": create_mode,
+        }
+
+    def _snapshots_compatible(
+        self, plan_snapshot: dict[str, Any] | None, current_snapshot: dict[str, Any] | None
+    ) -> bool:
+        if not isinstance(plan_snapshot, dict) or not isinstance(current_snapshot, dict):
+            return False
+        if plan_snapshot.get("error") or current_snapshot.get("error"):
+            return False
+        plan_fp = plan_snapshot.get("query_fingerprint")
+        current_fp = current_snapshot.get("query_fingerprint")
+        if plan_fp and current_fp and plan_fp != current_fp:
+            return False
+
+        def _coerce_optional_int(value: Any) -> int | None:
+            if value is None:
+                return None
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            try:
+                return int(float(str(value)))
+            except (TypeError, ValueError):
+                return None
+
+        for key in ("total_count", "null_count", "conflict_rows"):
+            left = _coerce_optional_int(plan_snapshot.get(key))
+            right = _coerce_optional_int(current_snapshot.get(key))
+            if left is not None and right is not None and left != right:
+                return False
+        return True
+
+    async def _infer_conflict_group_by_columns(
+        self,
+        ctx: Any,
+        column_name: str,
+        *,
+        max_columns: int = 1,
+    ) -> list[str]:
+        """Infer stable grouping keys for conflict detection when user did not configure any."""
+        try:
+            all_columns = await self._list_all_columns(ctx.table_asset_id)
+            semantic_map = await self._get_semantic_type_map(ctx.table_asset_id)
+        except Exception:
+            return []
+        scored: list[tuple[float, str]] = []
+        for raw_name in all_columns or []:
+            name = str(raw_name or "").strip()
+            if not name or name.lower() == column_name.lower():
+                continue
+            lowered = name.lower()
+            semantic = str(semantic_map.get(name) or "").lower()
+            score = 0.0
+            if semantic == "id":
+                score += 120.0
+            elif semantic == "temporal":
+                score += 24.0
+            elif semantic in {"categorical", "text"}:
+                score += 6.0
+            elif semantic in {"numeric", "image", "binary"}:
+                score -= 28.0
+
+            if lowered in {"legid", "routeid", "bookingid", "itineraryid", "pnr"}:
+                score += 60.0
+            if lowered.endswith("id") or "_id" in lowered or "uuid" in lowered:
+                score += 45.0
+            if any(token in lowered for token in ("date", "time", "timestamp")):
+                score += 8.0
+            if any(
+                token in lowered
+                for token in (
+                    "fare",
+                    "price",
+                    "distance",
+                    "duration",
+                    "amount",
+                    "count",
+                    "rate",
+                    "score",
+                )
+            ):
+                score -= 24.0
+            if score > 0:
+                scored.append((score, name))
+
+        scored.sort(key=lambda item: (item[0], item[1].lower()), reverse=True)
+        if not scored:
+            return []
+        selected: list[str] = []
+        for score, name in scored:
+            if score < 40:
+                continue
+            selected.append(name)
+            if len(selected) >= max(1, max_columns):
+                break
+        return selected
+
+    def _confusable_signature(self, value: str) -> str:
+        normalized = re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+        if not normalized:
+            return ""
+        table = str.maketrans(
+            {
+                "0": "O",
+                "1": "I",
+                "2": "Z",
+                "5": "S",
+                "6": "G",
+                "8": "B",
+                "9": "G",
+            }
+        )
+        return normalized.translate(table)
+
+    async def _detect_categorical_value_conflicts(
+        self,
+        ctx: Any,
+        column_name: str,
+        sample_size: int,
+        *,
+        max_candidates: int = 400,
+        max_pairs: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Detect likely categorical typos / near-duplicates (e.g. SFO vs SF0)."""
+        col = self._quote_ident(column_name)
+        base_query = self._build_windowed_query(ctx, sample_size, None, None)
+        query = f"""
+        WITH base AS (
+            {base_query}
+        )
+        SELECT
+            TO_VARCHAR({col}) AS category,
+            COUNT(*) AS count
+        FROM base
+        WHERE {col} IS NOT NULL
+        GROUP BY 1
+        ORDER BY count DESC
+        LIMIT {int(max_candidates)}
+        """
+        try:
+            rows = await self.sf.execute_query(query)
+        except Exception:
+            return []
+        entries: list[dict[str, Any]] = []
+        total = 0
+        for row in rows or []:
+            value = str(row.get("CATEGORY") or row.get("category") or "").strip()
+            count = self._coerce_int(row.get("COUNT") or row.get("count"))
+            if not value or count <= 0:
+                continue
+            total += count
+            entries.append({"value": value, "count": count, "sig": self._confusable_signature(value)})
+        if not entries:
+            return []
+
+        rare_threshold = max(2, int(total * 0.01))
+        anomalies: list[dict[str, Any]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+
+        by_sig: dict[str, list[dict[str, Any]]] = {}
+        for item in entries:
+            sig = item.get("sig") or ""
+            if not sig:
+                continue
+            by_sig.setdefault(sig, []).append(item)
+
+        for group in by_sig.values():
+            if len(group) < 2:
+                continue
+            ranked = sorted(group, key=lambda item: item.get("count", 0), reverse=True)
+            canonical = ranked[0]
+            canonical_value = str(canonical.get("value"))
+            canonical_count = self._coerce_int(canonical.get("count"))
+            for variant in ranked[1:]:
+                variant_value = str(variant.get("value"))
+                variant_count = self._coerce_int(variant.get("count"))
+                if variant_value == canonical_value:
+                    continue
+                pair = tuple(sorted((variant_value, canonical_value)))
+                if pair in seen_pairs:
+                    continue
+                if variant_count > max(rare_threshold, int(canonical_count * 0.35)):
+                    continue
+                anomalies.append(
+                    {
+                        "value": variant_value,
+                        "value_count": variant_count,
+                        "likely_canonical": canonical_value,
+                        "canonical_count": canonical_count,
+                        "reason": "confusable_characters",
+                    }
+                )
+                seen_pairs.add(pair)
+                if len(anomalies) >= max_pairs:
+                    return anomalies
+        return anomalies
 
     @tool
     async def scan_nulls(
@@ -72,6 +375,8 @@ class ColumnWorkflowQualityMixin:
         column_name: str,
         group_by_columns: list[str] | str | None = None,
         sample_size: int = 20000,
+        sample_group_limit: int = 12,
+        sample_value_limit: int = 5,
         window_days: int | None = None,
         time_column: str | None = None,
     ) -> dict[str, Any]:
@@ -82,6 +387,20 @@ class ColumnWorkflowQualityMixin:
         override_sample_size = overrides.get("scan_conflicts_sample_size")
         if override_sample_size is not None:
             sample_size = self._coerce_int(override_sample_size) or sample_size
+        override_group_limit = overrides.get("scan_conflicts_group_limit") or overrides.get(
+            "conflict_group_limit"
+        )
+        if override_group_limit is not None:
+            sample_group_limit = (
+                self._coerce_int(override_group_limit) or sample_group_limit
+            )
+        override_value_limit = overrides.get("scan_conflicts_value_limit") or overrides.get(
+            "conflict_value_limit"
+        )
+        if override_value_limit is not None:
+            sample_value_limit = (
+                self._coerce_int(override_value_limit) or sample_value_limit
+            )
         override_window_days = overrides.get("scan_conflicts_window_days")
         if override_window_days is not None:
             window_days = self._coerce_int(override_window_days)
@@ -91,8 +410,44 @@ class ColumnWorkflowQualityMixin:
         if isinstance(group_by, str):
             group_by = [item.strip() for item in group_by.split(",") if item.strip()]
         group_by = [str(item) for item in group_by if item]
+        auto_group_by: list[str] = []
         if not group_by:
-            conflicts = {"skipped": True, "reason": "group_by_columns_missing"}
+            auto_group_by = await self._infer_conflict_group_by_columns(
+                ctx, column_name, max_columns=1
+            )
+            group_by = auto_group_by
+        if not group_by:
+            value_conflicts: list[dict[str, Any]] = []
+            if ctx.column_meta.semantic_type in {"categorical", "text"}:
+                value_conflicts = await self._detect_categorical_value_conflicts(
+                    ctx, column_name, sample_size
+                )
+            if value_conflicts:
+                conflicts = {
+                    "type": "categorical_value_anomaly",
+                    "definition": "Potential category typos or inconsistent spellings detected.",
+                    "group_by_columns": [],
+                    "group_count": None,
+                    "conflict_groups": len(value_conflicts),
+                    "conflict_rate": None,
+                    "max_distinct": None,
+                    "sample_group_limit": sample_group_limit,
+                    "sample_value_limit": sample_value_limit,
+                    "sample_size": sample_size,
+                    "sampled_rows": sample_size,
+                    "sample_size_requested": sample_size,
+                    "sample_window_days": window_days,
+                    "auto_group_by_columns": [],
+                    "value_conflict_count": len(value_conflicts),
+                    "value_conflicts": value_conflicts,
+                }
+                await self._update_column_analysis(ctx, {"conflicts": conflicts})
+                return {"column": column_name, "conflicts": conflicts}
+            conflicts = {
+                "skipped": True,
+                "reason": "group_by_columns_missing",
+                "auto_group_by_columns": [],
+            }
             await self._update_column_analysis(ctx, {"conflicts": conflicts})
             return {"column": column_name, "conflicts": conflicts}
         try:
@@ -132,6 +487,7 @@ class ColumnWorkflowQualityMixin:
             GROUP BY {group_exprs}
         )
         SELECT
+            (SELECT COUNT(*) FROM base WHERE {col} IS NOT NULL) AS sampled_rows,
             COUNT(*) AS group_count,
             SUM(CASE WHEN distinct_values > 1 THEN 1 ELSE 0 END) AS conflict_groups,
             MAX(distinct_values) AS max_distinct
@@ -144,16 +500,157 @@ class ColumnWorkflowQualityMixin:
             await self._update_column_analysis(ctx, {"conflicts": conflicts})
             return {"column": column_name, "conflicts": conflicts}
         row = rows[0] if rows else {}
+        sampled_rows = self._coerce_int(row.get("SAMPLED_ROWS"))
         group_count = self._coerce_int(row.get("GROUP_COUNT"))
         conflict_groups = self._coerce_int(row.get("CONFLICT_GROUPS"))
         conflict_rate = round(conflict_groups / group_count, 6) if group_count else None
         conflicts = {
+            "type": "group_by_inconsistency",
+            "definition": "Multiple distinct values appear within the same group.",
             "group_by_columns": group_by,
+            "auto_group_by_columns": auto_group_by or None,
             "group_count": group_count,
             "conflict_groups": conflict_groups,
             "conflict_rate": conflict_rate,
             "max_distinct": self._coerce_int(row.get("MAX_DISTINCT")),
+            "sample_group_limit": sample_group_limit,
+            "sample_value_limit": sample_value_limit,
+            # Keep sample_size as the actual scanned row count for UI accuracy.
+            "sample_size": sampled_rows,
+            "sampled_rows": sampled_rows,
+            "sample_size_requested": sample_size,
+            "sample_window_days": window_days,
         }
+        if conflict_groups and group_by and sample_group_limit and sample_value_limit:
+            try:
+                group_exprs = ", ".join(self._quote_ident(name) for name in group_by)
+                group_aliases = ", ".join(
+                    f"ranked.{self._quote_ident(name)} AS group_{idx}"
+                    for idx, name in enumerate(group_by)
+                )
+                join_on_ranked = " AND ".join(
+                    [
+                        f"ranked.{self._quote_ident(name)} = conflict_groups.{self._quote_ident(name)}"
+                        for name in group_by
+                    ]
+                )
+                join_on_base = " AND ".join(
+                    [
+                        f"base.{self._quote_ident(name)} = conflict_groups.{self._quote_ident(name)}"
+                        for name in group_by
+                    ]
+                )
+                group_exprs_base = ", ".join(
+                    f"base.{self._quote_ident(name)}" for name in group_by
+                )
+                group_exprs_ranked = ", ".join(
+                    f"ranked.{self._quote_ident(name)}" for name in group_by
+                )
+                sample_query = f"""
+                WITH base AS (
+                    {base_query}
+                ),
+                grouped AS (
+                    SELECT
+                        {group_exprs},
+                        COUNT(DISTINCT {col}) AS distinct_values
+                    FROM base
+                    WHERE {col} IS NOT NULL
+                    GROUP BY {group_exprs}
+                ),
+                conflict_groups AS (
+                    SELECT {group_exprs}, distinct_values
+                    FROM grouped
+                    WHERE distinct_values > 1
+                    ORDER BY distinct_values DESC
+                    LIMIT {int(sample_group_limit)}
+                ),
+                value_counts AS (
+                    SELECT
+                        {group_exprs_base},
+                        base.{col} AS val,
+                        COUNT(*) AS value_count
+                    FROM base
+                    JOIN conflict_groups
+                    ON {join_on_base}
+                    WHERE base.{col} IS NOT NULL
+                    GROUP BY {group_exprs_base}, base.{col}
+                ),
+                ranked AS (
+                    SELECT
+                        {group_exprs},
+                        val,
+                        value_count,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY {group_exprs}
+                            ORDER BY value_count DESC, val
+                        ) AS rn
+                    FROM value_counts
+                )
+                SELECT
+                    {group_aliases},
+                    MAX(conflict_groups.distinct_values) AS distinct_values,
+                    SUM(ranked.value_count) AS total_rows,
+                    ARRAY_AGG(
+                        OBJECT_CONSTRUCT('value', ranked.val, 'count', ranked.value_count)
+                    ) WITHIN GROUP (ORDER BY ranked.value_count DESC, ranked.val) AS value_samples
+                FROM ranked
+                JOIN conflict_groups
+                ON {join_on_ranked}
+                WHERE ranked.rn <= {int(sample_value_limit)}
+                GROUP BY {group_exprs_ranked}
+                ORDER BY total_rows DESC, distinct_values DESC
+                """.strip()
+                sample_rows = await self.sf.execute_query(sample_query)
+                sample_groups: list[dict[str, Any]] = []
+                for row in sample_rows or []:
+                    group_payload: dict[str, Any] = {}
+                    for idx, name in enumerate(group_by):
+                        key = f"GROUP_{idx}"
+                        if key in row:
+                            group_payload[name] = row.get(key)
+                        else:
+                            group_payload[name] = row.get(key.upper())
+                    values = None
+                    if isinstance(row, dict):
+                        values = row.get("VALUE_SAMPLES")
+                        if values is None:
+                            values = row.get("value_samples")
+                    distinct_values = None
+                    total_rows = None
+                    if isinstance(row, dict):
+                        distinct_values = row.get("DISTINCT_VALUES")
+                        if distinct_values is None:
+                            distinct_values = row.get("distinct_values")
+                        total_rows = row.get("TOTAL_ROWS")
+                        if total_rows is None:
+                            total_rows = row.get("total_rows")
+                    sample_groups.append(
+                        {
+                            "group": group_payload,
+                            "distinct_values": self._coerce_int(distinct_values),
+                            "total_rows": self._coerce_int(total_rows),
+                            "values": values or [],
+                        }
+                    )
+                conflicts["sample_groups"] = sample_groups
+                conflicts["sampled_groups"] = len(sample_groups)
+            except Exception as exc:
+                conflicts["sample_error"] = str(exc)
+        if ctx.column_meta.semantic_type in {"categorical", "text"}:
+            value_conflicts = await self._detect_categorical_value_conflicts(
+                ctx, column_name, sample_size
+            )
+            if value_conflicts:
+                conflicts["value_conflict_count"] = len(value_conflicts)
+                conflicts["value_conflicts"] = value_conflicts
+                if not self._coerce_int(conflicts.get("conflict_groups")):
+                    conflicts["type"] = "categorical_value_anomaly"
+                    conflicts["definition"] = (
+                        "Potential category typos or inconsistent spellings detected."
+                    )
+                    conflicts["conflict_groups"] = len(value_conflicts)
+                    conflicts["conflict_rate"] = None
         await self._update_column_analysis(ctx, {"conflicts": conflicts})
         return {"column": column_name, "conflicts": conflicts}
 
@@ -187,10 +684,19 @@ class ColumnWorkflowQualityMixin:
         )
         conflict_plan = conflict_strategy or overrides.get("conflict_strategy") or "manual_review"
 
-        group_by = conflicts.get("group_by_columns") or overrides.get("conflict_group_columns") or []
-        if isinstance(group_by, str):
-            group_by = [item.strip() for item in group_by.split(",") if item.strip()]
-        group_by = [str(item) for item in group_by if item]
+        group_by = self._normalize_group_by(
+            conflicts.get("group_by_columns") or overrides.get("conflict_group_columns")
+        )
+
+        if group_by and not conflicts.get("conflict_groups") and not conflicts.get("skipped") and not conflicts.get("error"):
+            try:
+                scan_result = await self.scan_conflicts(
+                    table_asset_id, column_name, group_by_columns=group_by
+                )
+                if isinstance(scan_result, dict):
+                    conflicts = scan_result.get("conflicts") or conflicts
+            except Exception:
+                pass
 
         snapshot = await self._ensure_analysis_snapshot(ctx, column_name, group_by)
         conflict_groups = self._coerce_int(conflicts.get("conflict_groups"))
@@ -212,10 +718,23 @@ class ColumnWorkflowQualityMixin:
         inconsistency_reasons: list[str] = []
         if not total_count and sample_total:
             inconsistency_reasons.append("full_snapshot_missing")
-        if sample_snapshot_id and sample_snapshot_id != snapshot.get("snapshot_id"):
-            inconsistency_reasons.append("snapshot_mismatch_nulls")
-        if distribution_snapshot_id and distribution_snapshot_id != snapshot.get("snapshot_id"):
-            inconsistency_reasons.append("snapshot_mismatch_distribution")
+        snapshot_id = snapshot.get("snapshot_id")
+        if sample_snapshot_id and snapshot_id and sample_snapshot_id != snapshot_id:
+            mismatch = True
+            if total_count and sample_total and sample_total > 0:
+                ratio = abs(total_count - sample_total) / max(total_count, sample_total)
+                if ratio <= 0.1 and null_count == sample_nulls:
+                    mismatch = False
+            if mismatch:
+                inconsistency_reasons.append("snapshot_mismatch_nulls")
+        if distribution_snapshot_id and snapshot_id and distribution_snapshot_id != snapshot_id:
+            mismatch = True
+            if total_count and sample_total and sample_total > 0:
+                ratio = abs(total_count - sample_total) / max(total_count, sample_total)
+                if ratio <= 0.1:
+                    mismatch = False
+            if mismatch:
+                inconsistency_reasons.append("snapshot_mismatch_distribution")
         if null_count == 0 and (sample_nulls or 0) > 0:
             inconsistency_reasons.append("full_null_zero_sample_nonzero")
 
@@ -250,6 +769,7 @@ class ColumnWorkflowQualityMixin:
             or table_overrides.get("repair_audit_table")
             or table_overrides.get("audit_table")
         )
+        audit_table = self._coerce_table_ref(audit_table, ctx.table_ref)
         apply_mode = (
             overrides.get("data_fix_target")
             or overrides.get("apply_mode")
@@ -288,6 +808,22 @@ class ColumnWorkflowQualityMixin:
                     or overrides.get("impute_sample_size")
                     or 20000
                 )
+                if group_columns and not group_by:
+                    group_by = [str(item) for item in group_columns if item]
+                    try:
+                        scan_result = await self.scan_conflicts(
+                            table_asset_id, column_name, group_by_columns=group_by
+                        )
+                        if isinstance(scan_result, dict):
+                            conflicts = scan_result.get("conflicts") or conflicts
+                    except Exception:
+                        pass
+                    snapshot = await self._ensure_analysis_snapshot(ctx, column_name, group_by)
+                    conflict_groups = self._coerce_int(conflicts.get("conflict_groups"))
+                    snapshot["conflict_groups"] = conflict_groups
+                    total_count = self._coerce_int(snapshot.get("total_count"))
+                    null_count = self._coerce_int(snapshot.get("null_count"))
+                    conflict_rows = snapshot.get("conflict_rows")
                 if group_columns or segment_expr:
                     group_exprs = [self._quote_ident(col) for col in group_columns if col]
                     segment_expr_base = None
@@ -375,7 +911,7 @@ class ColumnWorkflowQualityMixin:
                     "estimated_rows": null_count,
                     "fill_expr": fill_expr,
                     "fill_value": fill_value,
-                    "requires_manual_default": fill_value is None,
+                    "requires_manual_default": fill_expr is None,
                     "reason": null_reason,
                     "basis": basis,
                     "requires_base_alias": strategy_key == "group_median_impute",
@@ -550,12 +1086,7 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         """Generate a human-readable repair rationale report for the latest plan."""
         ctx = await self._load_context(table_asset_id, column_name)
         analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
-        plan = analysis.get("repair_plan", {})
-        if isinstance(plan, str):
-            try:
-                plan = json.loads(plan)
-            except json.JSONDecodeError:
-                plan = {}
+        plan = self._normalize_plan_payload(analysis.get("repair_plan", {}))
         if isinstance(plan, dict) and (
             plan.get("forbidden")
             or plan.get("inconsistent")
@@ -684,18 +1215,8 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
         nulls = analysis.get("nulls", {})
         conflicts = analysis.get("conflicts", {})
-        plan = analysis.get("repair_plan", {})
-        if isinstance(plan, str):
-            try:
-                plan = json.loads(plan)
-            except json.JSONDecodeError:
-                plan = {}
-        if isinstance(plan, str):
-            try:
-                plan = json.loads(plan)
-            except json.JSONDecodeError:
-                plan = {}
-        if isinstance(plan, dict) and (
+        plan = self._normalize_plan_payload(analysis.get("repair_plan", {}))
+        if plan and (
             plan.get("forbidden")
             or plan.get("inconsistent")
             or plan.get("requires_manual_review")
@@ -710,6 +1231,20 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             return {"column": column_name, "skipped": True, "reason": "approval_required"}
         if not ctx.table_ref:
             return {"column": column_name, "skipped": True, "reason": "table_ref_missing"}
+
+        table_overrides = ctx.table_meta.overrides or {}
+        row_id_column = plan.get("row_id_column") or self._resolve_row_id_column(ctx)
+        audit_table = (
+            overrides.get("repair_audit_table")
+            or overrides.get("audit_table")
+            or table_overrides.get("repair_audit_table")
+            or table_overrides.get("audit_table")
+        )
+        audit_table = self._coerce_table_ref(audit_table, ctx.table_ref)
+        audit_disabled_reason = None
+        if audit_table and not row_id_column:
+            audit_disabled_reason = "row_id_column_missing"
+            audit_table = None
 
         async def record_skip(reason: str) -> dict[str, Any]:
             plan_update = dict(plan) if isinstance(plan, dict) else {}
@@ -738,33 +1273,26 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             refreshed = await self.plan_data_repairs(
                 table_asset_id, column_name, null_strategy, conflict_strategy
             )
-            plan = refreshed.get("repair_plan") if isinstance(refreshed, dict) else None
+            plan = self._normalize_plan_payload(
+                refreshed.get("repair_plan") if isinstance(refreshed, dict) else None
+            )
             if not plan or not plan.get("plan_id") or not plan.get("plan_hash"):
                 return await record_skip("plan_missing")
         if not plan.get("plan_id") or not plan.get("plan_hash"):
             return await record_skip("plan_missing")
 
-        group_by = (plan.get("snapshot") or {}).get("group_by_columns") or conflicts.get(
-            "group_by_columns"
-        ) or overrides.get("conflict_group_columns") or []
-        if isinstance(group_by, str):
-            group_by = [item.strip() for item in group_by.split(",") if item.strip()]
-        group_by = [str(item) for item in group_by if item]
+        if plan.get("row_id_column"):
+            row_id_column = plan.get("row_id_column") or row_id_column
+            if audit_table and not row_id_column:
+                audit_disabled_reason = "row_id_column_missing"
+                audit_table = None
 
-        if isinstance(plan, dict) and not (plan.get("snapshot") or {}).get("signature"):
-            snapshot = await self._compute_snapshot(ctx, column_name, group_by)
-            plan = dict(plan)
-            plan["snapshot"] = snapshot
-            await self._update_column_analysis(ctx, {"repair_plan": plan})
-
-        group_by = (plan.get("snapshot") or {}).get("group_by_columns") or conflicts.get(
-            "group_by_columns"
-        ) or overrides.get("conflict_group_columns") or []
-        if isinstance(group_by, str):
-            group_by = [item.strip() for item in group_by.split(",") if item.strip()]
-        group_by = [str(item) for item in group_by if item]
-
-        if isinstance(plan, dict) and not (plan.get("snapshot") or {}).get("signature"):
+        group_by = self._normalize_group_by(
+            (plan.get("snapshot") or {}).get("group_by_columns")
+            or conflicts.get("group_by_columns")
+            or overrides.get("conflict_group_columns")
+        )
+        if not (plan.get("snapshot") or {}).get("signature"):
             snapshot = await self._compute_snapshot(ctx, column_name, group_by)
             plan = dict(plan)
             plan["snapshot"] = snapshot
@@ -832,13 +1360,19 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         expected_snapshot = approved_snapshot or (plan.get("snapshot") or {}).get("signature")
         current_snapshot = await self._compute_snapshot(ctx, column_name, group_by)
         if expected_snapshot and current_snapshot.get("signature") != expected_snapshot:
-            refreshed = await self.plan_data_repairs(
-                table_asset_id, column_name, null_strategy, conflict_strategy
-            )
-            plan = (
-                refreshed.get("repair_plan") if isinstance(refreshed, dict) else plan
-            )
-            return await record_skip("snapshot_mismatch")
+            plan_snapshot = plan.get("snapshot") if isinstance(plan, dict) else None
+            if self._snapshots_compatible(plan_snapshot, current_snapshot):
+                plan = dict(plan)
+                plan["snapshot"] = current_snapshot
+                await self._update_column_analysis(ctx, {"repair_plan": plan})
+            else:
+                refreshed = await self.plan_data_repairs(
+                    table_asset_id, column_name, null_strategy, conflict_strategy
+                )
+                plan = (
+                    refreshed.get("repair_plan") if isinstance(refreshed, dict) else plan
+                )
+                return await record_skip("snapshot_mismatch")
 
         if approved and (
             overrides.get("data_fix_plan_id") is None
@@ -872,9 +1406,11 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         repair_results: list[dict[str, Any]] = []
         sql_previews = plan.get("sql_previews") or {}
         dry_run = bool(overrides.get("data_fix_dry_run") or overrides.get("repair_dry_run"))
-        audit_table = (plan.get("rollback") or {}).get("audit_table") or overrides.get(
-            "repair_audit_table"
-        )
+        audit_table = audit_table or (plan.get("rollback") or {}).get("audit_table")
+        audit_table = self._coerce_table_ref(audit_table, ctx.table_ref)
+        if audit_table and not row_id_column:
+            audit_disabled_reason = audit_disabled_reason or "row_id_column_missing"
+            audit_table = None
         if audit_table:
             create_audit = f"""
             CREATE TABLE IF NOT EXISTS {audit_table} (
@@ -1074,10 +1610,15 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
 
         applied_any = any(item.get("status") == "applied" for item in repair_results)
         plan_update = dict(plan) if isinstance(plan, dict) else {}
+        if approved:
+            plan_update["approved"] = True
+            plan_update["approval_status"] = "approved"
         if applied_any:
             plan_update["applied"] = True
             plan_update["applied_at"] = datetime.utcnow().isoformat()
         plan_update["apply_mode"] = "source_table"
+        if audit_disabled_reason:
+            plan_update["audit_disabled_reason"] = audit_disabled_reason
         analysis_update = {"repair_results": repair_results, "repair_plan": plan_update}
         await self._update_column_analysis(ctx, analysis_update)
         return {
@@ -1114,18 +1655,7 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         analysis = (ctx.column_meta.metadata_payload or {}).get("analysis", {})
         nulls = analysis.get("nulls", {})
         conflicts = analysis.get("conflicts", {})
-        plan = analysis.get("repair_plan", {})
-        if isinstance(plan, str):
-            try:
-                plan = json.loads(plan)
-            except json.JSONDecodeError:
-                plan = {}
-        approved = bool(overrides.get(approval_key) or (isinstance(plan, dict) and plan.get("approved")))
-        if not approved:
-            return {"column": column_name, "skipped": True, "reason": "approval_required"}
-        if not ctx.table_ref:
-            return {"column": column_name, "skipped": True, "reason": "table_ref_missing"}
-
+        plan = self._normalize_plan_payload(analysis.get("repair_plan", {}))
         async def record_skip(reason: str) -> dict[str, Any]:
             plan_update = dict(plan) if isinstance(plan, dict) else {}
             plan_update["apply_mode"] = "fixing_table"
@@ -1149,22 +1679,29 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             )
             return {"column": column_name, "skipped": True, "reason": reason}
 
+        approved = bool(overrides.get(approval_key) or (isinstance(plan, dict) and plan.get("approved")))
+        if not approved:
+            return await record_skip("approval_required")
+        if not ctx.table_ref:
+            return await record_skip("table_ref_missing")
+
         if not plan or not plan.get("plan_id") or not plan.get("plan_hash"):
             refreshed = await self.plan_data_repairs(
                 table_asset_id, column_name, null_strategy, conflict_strategy
             )
-            plan = refreshed.get("repair_plan") if isinstance(refreshed, dict) else None
+            plan = self._normalize_plan_payload(
+                refreshed.get("repair_plan") if isinstance(refreshed, dict) else None
+            )
             if not plan or not plan.get("plan_id") or not plan.get("plan_hash"):
                 return await record_skip("plan_missing")
         if not plan.get("plan_id") or not plan.get("plan_hash"):
             return await record_skip("plan_missing")
 
-        group_by = (plan.get("snapshot") or {}).get("group_by_columns") or conflicts.get(
-            "group_by_columns"
-        ) or overrides.get("conflict_group_columns") or []
-        if isinstance(group_by, str):
-            group_by = [item.strip() for item in group_by.split(",") if item.strip()]
-        group_by = [str(item) for item in group_by if item]
+        group_by = self._normalize_group_by(
+            (plan.get("snapshot") or {}).get("group_by_columns")
+            or conflicts.get("group_by_columns")
+            or overrides.get("conflict_group_columns")
+        )
 
         if isinstance(plan, dict) and not (plan.get("snapshot") or {}).get("signature"):
             snapshot = await self._compute_snapshot(ctx, column_name, group_by)
@@ -1234,13 +1771,19 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
         expected_snapshot = approved_snapshot or (plan.get("snapshot") or {}).get("signature")
         current_snapshot = await self._compute_snapshot(ctx, column_name, group_by)
         if expected_snapshot and current_snapshot.get("signature") != expected_snapshot:
-            refreshed = await self.plan_data_repairs(
-                table_asset_id, column_name, null_strategy, conflict_strategy
-            )
-            plan = (
-                refreshed.get("repair_plan") if isinstance(refreshed, dict) else plan
-            )
-            return await record_skip("snapshot_mismatch")
+            plan_snapshot = plan.get("snapshot") if isinstance(plan, dict) else None
+            if self._snapshots_compatible(plan_snapshot, current_snapshot):
+                plan = dict(plan)
+                plan["snapshot"] = current_snapshot
+                await self._update_column_analysis(ctx, {"repair_plan": plan})
+            else:
+                refreshed = await self.plan_data_repairs(
+                    table_asset_id, column_name, null_strategy, conflict_strategy
+                )
+                plan = (
+                    refreshed.get("repair_plan") if isinstance(refreshed, dict) else plan
+                )
+                return await record_skip("snapshot_mismatch")
 
         if approved and (
             overrides.get("data_fix_plan_id") is None
@@ -1272,7 +1815,12 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                     break
 
         col = self._quote_ident(column_name)
-        target_table = self._build_fixing_table_ref(ctx.table_ref, column_name)
+        fixing_config = self._resolve_fixing_table_config(ctx, column_name, overrides, plan)
+        target_table = fixing_config["target_table"]
+        target_column = fixing_config["target_column"]
+        column_mode = fixing_config["column_mode"]
+        create_mode = fixing_config["create_mode"]
+        target_col = self._quote_ident(target_column)
         dry_run = bool(overrides.get("data_fix_dry_run") or overrides.get("repair_dry_run"))
 
         repair_results: list[dict[str, Any]] = []
@@ -1282,6 +1830,8 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             plan_update = dict(plan) if isinstance(plan, dict) else {}
             plan_update["apply_mode"] = "fixing_table"
             plan_update["target_table"] = target_table
+            plan_update["target_column"] = target_column
+            plan_update["column_mode"] = column_mode
             await self._update_column_analysis(
                 ctx,
                 {"repair_results": [{"type": "repair_apply", "status": "dry_run"}], "repair_plan": plan_update},
@@ -1291,12 +1841,35 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                 "repairs": repair_results,
                 "approved": approved,
                 "target_table": target_table,
+                "target_column": target_column,
+                "column_mode": column_mode,
                 "dry_run": True,
             }
 
-        await self.sf.execute_query(
-            f"CREATE OR REPLACE TABLE {target_table} AS SELECT * FROM {ctx.table_ref}"
-        )
+        try:
+            create_select = "*"
+            if target_column != column_name:
+                create_select = f"*, {col} AS {target_col}"
+            if create_mode == "create_if_missing":
+                create_sql = (
+                    f"CREATE TABLE IF NOT EXISTS {target_table} "
+                    f"AS SELECT {create_select} FROM {ctx.table_ref}"
+                )
+            else:
+                create_sql = (
+                    f"CREATE OR REPLACE TABLE {target_table} "
+                    f"AS SELECT {create_select} FROM {ctx.table_ref}"
+                )
+            await self.sf.execute_query(create_sql)
+            if target_column != column_name:
+                column_sql_type = self._coerce_sql_type(
+                    (ctx.column_meta.metadata_payload or {}).get("sql_type")
+                )
+                await self.sf.execute_query(
+                    f"ALTER TABLE {target_table} ADD COLUMN IF NOT EXISTS {target_col} {column_sql_type}"
+                )
+        except Exception as exc:
+            return await record_skip(f"fixing_table_create_failed:{exc}")
 
         null_count = self._coerce_int(nulls.get("null_count"))
         if null_count and planned_null_strategy:
@@ -1319,22 +1892,33 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                 uses_alias = bool(null_step.get("requires_base_alias"))
                 if uses_alias:
                     update_query = (
-                        f"UPDATE {target_table} AS base SET {col} = {fill_expr} WHERE {col} IS NULL"
+                        f"UPDATE {target_table} AS base SET {target_col} = {fill_expr} WHERE {target_col} IS NULL"
                     )
                 else:
                     update_query = (
-                        f"UPDATE {target_table} SET {col} = {fill_expr} WHERE {col} IS NULL"
+                        f"UPDATE {target_table} SET {target_col} = {fill_expr} WHERE {target_col} IS NULL"
                     )
-                await self.sf.execute_query(update_query)
-                repair_results.append(
-                    {
-                        "type": "null_repair",
-                        "status": "applied",
-                        "strategy": planned_null_strategy,
-                        "fill_value": fill_value,
-                        "targeted_rows": null_count,
-                    }
-                )
+                try:
+                    await self.sf.execute_query(update_query)
+                    repair_results.append(
+                        {
+                            "type": "null_repair",
+                            "status": "applied",
+                            "strategy": planned_null_strategy,
+                            "fill_value": fill_value,
+                            "targeted_rows": null_count,
+                        }
+                    )
+                except Exception as exc:
+                    repair_results.append(
+                        {
+                            "type": "null_repair",
+                            "status": "error",
+                            "strategy": planned_null_strategy,
+                            "error": str(exc),
+                            "update_sql": update_query,
+                        }
+                    )
 
         conflict_groups = self._coerce_int(conflicts.get("conflict_groups"))
         if conflict_groups and group_by and planned_conflict_strategy:
@@ -1352,15 +1936,28 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                 preview = sql_previews.get("conflict_repair") or {}
                 update_query = preview.get("update_sql")
                 if update_query:
-                    update_query = update_query.replace(ctx.table_ref, target_table, 1)
-                    await self.sf.execute_query(update_query)
-                    repair_results.append(
-                        {
-                            "type": "conflict_repair",
-                            "status": "applied",
-                            "strategy": planned_conflict_strategy,
-                        }
-                    )
+                    update_query = update_query.replace(ctx.table_ref, target_table)
+                    if target_column != column_name:
+                        update_query = update_query.replace(col, target_col)
+                    try:
+                        await self.sf.execute_query(update_query)
+                        repair_results.append(
+                            {
+                                "type": "conflict_repair",
+                                "status": "applied",
+                                "strategy": planned_conflict_strategy,
+                            }
+                        )
+                    except Exception as exc:
+                        repair_results.append(
+                            {
+                                "type": "conflict_repair",
+                                "status": "error",
+                                "strategy": planned_conflict_strategy,
+                                "error": str(exc),
+                                "update_sql": update_query,
+                            }
+                        )
                 else:
                     repair_results.append(
                         {
@@ -1372,11 +1969,17 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
                     )
 
         plan_update = dict(plan) if isinstance(plan, dict) else {}
+        if approved:
+            plan_update["approved"] = True
+            plan_update["approval_status"] = "approved"
         if any(item.get("status") == "applied" for item in repair_results):
             plan_update["applied"] = True
             plan_update["applied_at"] = datetime.utcnow().isoformat()
         plan_update["apply_mode"] = "fixing_table"
         plan_update["target_table"] = target_table
+        plan_update["target_column"] = target_column
+        plan_update["column_mode"] = column_mode
+        plan_update["create_mode"] = create_mode
         analysis_update = {"repair_results": repair_results, "repair_plan": plan_update}
         await self._update_column_analysis(ctx, analysis_update)
 
@@ -1385,4 +1988,6 @@ ON {" AND ".join([f"base.{self._quote_ident(name)} = conflict_groups.{self._quot
             "repairs": repair_results,
             "approved": approved,
             "target_table": target_table,
+            "target_column": target_column,
+            "column_mode": column_mode,
         }

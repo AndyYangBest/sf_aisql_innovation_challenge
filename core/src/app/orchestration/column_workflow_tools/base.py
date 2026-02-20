@@ -921,14 +921,47 @@ class ColumnWorkflowToolsBase:
             return default
 
     def _resolve_temporal_expr(self, ctx: ColumnContext, col: str) -> str:
-        num_expr = f"TRY_TO_NUMBER(TO_VARCHAR({col}))"
-        ts_expr = f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({col}))"
+        raw_expr = f"TO_VARCHAR({col})"
+        # Only treat as epoch-like when the full value is numeric (optionally delimited by "||").
+        # This avoids mis-parsing clock-like strings (e.g. "10:30") as epoch seconds.
+        numeric_like_expr = (
+            f"REGEXP_LIKE({raw_expr}, '^[[:space:]]*[-]?[0-9]+([.][0-9]+)?([|][|][-]?[0-9]+([.][0-9]+)?)*[[:space:]]*$')"
+        )
+        # Extract the first numeric token so delimited values like "1650795600||1650807300" are parseable.
+        num_expr = (
+            "IFF("
+            f"{numeric_like_expr}, "
+            f"TRY_TO_NUMBER(REGEXP_SUBSTR({raw_expr}, '[-]?[0-9]+([.][0-9]+)?')), "
+            "NULL"
+            ")"
+        )
+        epoch_seconds_rounded = (
+            "CASE "
+            f"WHEN {num_expr} IS NULL THEN NULL "
+            # Nanoseconds
+            f"WHEN ABS({num_expr}) >= 1000000000000000 THEN ROUND({num_expr} / 1000000000, 0) "
+            # Milliseconds (and some 11-digit pseudo-epoch variants)
+            f"WHEN ABS({num_expr}) >= 10000000000 THEN ROUND({num_expr} / 1000, 0) "
+            # Seconds
+            f"ELSE ROUND({num_expr}, 0) "
+            "END"
+        )
+        epoch_seconds_expr = (
+            "IFF("
+            f"{epoch_seconds_rounded} IS NULL, "
+            "NULL, "
+            f"DATEADD('second', {epoch_seconds_rounded}, TO_TIMESTAMP_NTZ('1970-01-01 00:00:00'))"
+            ")"
+        )
+        ts_expr = f"TRY_TO_TIMESTAMP_NTZ({raw_expr})"
+        yyyymmdd_expr = (
+            f"TRY_TO_TIMESTAMP_NTZ(REGEXP_SUBSTR({raw_expr}, '(19|20)[0-9]{{6}}'), 'YYYYMMDD')"
+        )
         return (
             "COALESCE("
             f"{ts_expr}, "
-            f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({num_expr}), 'YYYYMMDD'), "
-            f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({num_expr} / 1000)), "
-            f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR({num_expr}))"
+            f"{yyyymmdd_expr}, "
+            f"{epoch_seconds_expr}"
             ")"
         )
 
@@ -1970,7 +2003,48 @@ class ColumnWorkflowToolsBase:
             try:
                 return json.loads(raw_response)
             except json.JSONDecodeError:
-                return {"insights": [str(raw_response)]}
+                raw_text = str(raw_response)
+                match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+                if match:
+                    try:
+                        parsed = json.loads(match.group(0))
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
+                instruction_lower = instruction.lower()
+                if "insights" in instruction_lower:
+                    extractor = getattr(self, "_extract_insights_from_json_blob", None)
+                    if callable(extractor):
+                        extracted = extractor(raw_text)
+                        if extracted:
+                            return {"insights": extracted}
+                    bullet_items: list[str] = []
+                    for line in raw_text.splitlines():
+                        stripped = line.strip()
+                        if not stripped:
+                            continue
+                        matched = re.match(r"^(?:[-•*]|\d+[.)])\s+(.*)$", stripped)
+                        if matched:
+                            candidate = matched.group(1).strip()
+                            if candidate:
+                                bullet_items.append(candidate)
+                    if bullet_items:
+                        return {"insights": bullet_items}
+                    split_items = [
+                        item.strip(" \t-•*\"'")
+                        for item in re.split(
+                            r"(?:\n+|^\s*[-•*]\s+|^\s*\d+[.)]\s+)",
+                            raw_text,
+                            flags=re.MULTILINE,
+                        )
+                        if item and item.strip()
+                    ]
+                    if split_items:
+                        return {"insights": split_items}
+                if "summary" in instruction_lower:
+                    return {"summary": raw_text}
+                return {"insights": [raw_text]}
         return {"insights": []}
 
     async def _ensure_column(self, table_ref: str, column_name: str) -> None:

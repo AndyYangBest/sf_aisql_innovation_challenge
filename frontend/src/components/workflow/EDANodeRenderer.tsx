@@ -2,7 +2,7 @@
  * EDA Node Renderer
  */
 
-import { useState, type ComponentType, type ReactNode } from 'react';
+import { useState, useEffect, useRef, type ComponentType, type ReactNode } from 'react';
 import { WorkflowNodeProps, WorkflowNodeRenderer, useNodeRender } from '@flowgram.ai/free-layout-editor';
 import {
   Database,
@@ -41,6 +41,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { NodeBubbleAnimation, useBubbleAnimation } from './NodeBubbleAnimation';
 
 // Icon mapping
 const iconMap: Record<string, ComponentType<{ className?: string }>> = {
@@ -165,6 +166,22 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
     : '';
   const showToolOutput = isExpanded && (!isComment && (toolOutput || toolError));
   const showToolInput = isExpanded && (!isComment && toolCallInput);
+
+  // Bubble animation for node creation (rerender-use-ref-transient-values)
+  const { trigger, triggerAnimation } = useBubbleAnimation();
+  const hasTriggeredRef = useRef(false);
+
+  // Trigger animation on node creation (only once)
+  useEffect(() => {
+    if (!hasTriggeredRef.current && node?.id) {
+      hasTriggeredRef.current = true;
+      // Small delay to ensure node is rendered
+      const timer = setTimeout(() => {
+        triggerAnimation();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [node?.id, triggerAnimation]);
 
   // Determine if node should be dimmed (not yet executed)
   const isDimmed = status === 'skipped';
@@ -953,6 +970,9 @@ export const EDANodeRenderer = (props: WorkflowNodeProps) => {
       portErrorColor={portErrorColor}
       portBackgroundColor={portBackgroundColor}
     >
+      {/* Bubble animation for node creation */}
+      <NodeBubbleAnimation trigger={trigger} duration={1000} bubbleCount={24} />
+
       {/* Pulse animation for running state */}
       <PulseRing show={status === 'running' && !isComment} />
 

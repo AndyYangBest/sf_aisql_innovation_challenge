@@ -59,60 +59,42 @@ class SnowflakeService:
         Returns:
             List of table metadata dictionaries
         """
-        if not database:
-            rows: list[dict[str, Any]] = []
-            try:
-                rows = await self.execute_query("SHOW TABLES IN ACCOUNT")
-            except Exception as exc:
-                logger.warning("SHOW TABLES IN ACCOUNT failed: %s", exc)
+        if database and schema:
+            source_query = (
+                "SHOW TABLES IN SCHEMA "
+                f"{_quote_identifier(database)}.{_quote_identifier(schema)}"
+            )
+        elif database:
+            source_query = f"SHOW TABLES IN DATABASE {_quote_identifier(database)}"
+        else:
+            source_query = "SHOW TABLES IN ACCOUNT"
 
-            if rows:
-                results: list[dict[str, Any]] = []
-                for row in rows:
-                    table_name = row.get("name") or row.get("NAME")
-                    database_name = row.get("database_name") or row.get("DATABASE_NAME")
-                    schema_name = row.get("schema_name") or row.get("SCHEMA_NAME")
-                    if schema and schema_name and str(schema_name).upper() != str(schema).upper():
-                        continue
-                    if not table_name or not database_name or not schema_name:
-                        continue
-                    results.append(
-                        {
-                            "DATABASE_NAME": database_name,
-                            "SCHEMA_NAME": schema_name,
-                            "TABLE_NAME": table_name,
-                            "TABLE_TYPE": row.get("kind") or row.get("KIND") or "TABLE",
-                            "ROW_COUNT": row.get("rows") or row.get("ROWS") or row.get("ROW_COUNT"),
-                            "BYTES": row.get("bytes") or row.get("BYTES"),
-                            "CREATED": row.get("created_on") or row.get("CREATED_ON") or row.get("CREATED"),
-                            "LAST_ALTERED": row.get("last_altered") or row.get("LAST_ALTERED"),
-                            "COMMENT": row.get("comment") or row.get("COMMENT"),
-                        }
-                    )
-                results.sort(key=lambda item: (item.get("DATABASE_NAME", ""), item.get("TABLE_NAME", "")))
-                return results
+        rows = await self.execute_query(source_query)
 
-        table_source = _information_schema_source(database, "TABLES")
-        db_clause = f"UPPER(TABLE_CATALOG) = UPPER('{_escape_literal(database)}')" if database else "TRUE"
-        schema_clause = f"UPPER(TABLE_SCHEMA) = UPPER('{_escape_literal(schema)}')" if schema else "TRUE"
-
-        query = f"""
-        SELECT
-            TABLE_CATALOG AS DATABASE_NAME,
-            TABLE_SCHEMA AS SCHEMA_NAME,
-            TABLE_NAME,
-            TABLE_TYPE,
-            ROW_COUNT,
-            BYTES,
-            CREATED,
-            LAST_ALTERED,
-            COMMENT
-        FROM {table_source}
-        WHERE {db_clause}
-          AND {schema_clause}
-        ORDER BY TABLE_NAME
-        """
-        return await self.execute_query(query)
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            table_name = row.get("name") or row.get("NAME") or row.get("table_name") or row.get("TABLE_NAME")
+            database_name = row.get("database_name") or row.get("DATABASE_NAME")
+            schema_name = row.get("schema_name") or row.get("SCHEMA_NAME")
+            if schema and schema_name and str(schema_name).upper() != str(schema).upper():
+                continue
+            if not table_name or not database_name or not schema_name:
+                continue
+            results.append(
+                {
+                    "DATABASE_NAME": database_name,
+                    "SCHEMA_NAME": schema_name,
+                    "TABLE_NAME": table_name,
+                    "TABLE_TYPE": row.get("kind") or row.get("KIND") or "TABLE",
+                    "ROW_COUNT": row.get("rows") or row.get("ROWS") or row.get("ROW_COUNT"),
+                    "BYTES": row.get("bytes") or row.get("BYTES"),
+                    "CREATED": row.get("created_on") or row.get("CREATED_ON") or row.get("CREATED"),
+                    "LAST_ALTERED": row.get("last_altered") or row.get("LAST_ALTERED"),
+                    "COMMENT": row.get("comment") or row.get("COMMENT"),
+                }
+            )
+        results.sort(key=lambda item: (item.get("DATABASE_NAME", ""), item.get("TABLE_NAME", "")))
+        return results
 
     async def get_databases(self) -> list[dict[str, Any]]:
         """Get list of available databases."""
@@ -160,6 +142,42 @@ class SnowflakeService:
         Returns:
             List of column metadata dictionaries
         """
+        if database and schema:
+            scoped_name = (
+                f"{_quote_identifier(database)}.{_quote_identifier(schema)}."
+                f"{_quote_identifier(table_name)}"
+            )
+        elif schema:
+            scoped_name = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+        else:
+            scoped_name = _quote_identifier(table_name)
+
+        try:
+            rows = await self.execute_query(f"SHOW COLUMNS IN TABLE {scoped_name}")
+            mapped_rows: list[dict[str, Any]] = []
+            for row in rows:
+                column_name = row.get("column_name") or row.get("COLUMN_NAME") or row.get("name") or row.get("NAME")
+                data_type = row.get("data_type") or row.get("DATA_TYPE") or row.get("type") or row.get("TYPE")
+                if not column_name:
+                    continue
+                mapped_rows.append(
+                    {
+                        "COLUMN_NAME": column_name,
+                        "ORDINAL_POSITION": row.get("ordinal_position") or row.get("ORDINAL_POSITION"),
+                        "DATA_TYPE": data_type,
+                        "IS_NULLABLE": row.get("is_nullable") or row.get("IS_NULLABLE"),
+                        "COLUMN_DEFAULT": row.get("default") or row.get("COLUMN_DEFAULT"),
+                        "CHARACTER_MAXIMUM_LENGTH": row.get("character_maximum_length"),
+                        "NUMERIC_PRECISION": row.get("numeric_precision"),
+                        "NUMERIC_SCALE": row.get("numeric_scale"),
+                        "COMMENT": row.get("comment") or row.get("COMMENT"),
+                    }
+                )
+            if mapped_rows:
+                return mapped_rows
+        except Exception as exc:
+            logger.warning("SHOW COLUMNS failed for %s: %s", scoped_name, exc)
+
         table_source = _information_schema_source(database, "COLUMNS")
         db_clause = f"TABLE_CATALOG = '{_escape_literal(database)}'" if database else "TRUE"
         schema_clause = f"TABLE_SCHEMA = '{_escape_literal(schema)}'" if schema else "TRUE"

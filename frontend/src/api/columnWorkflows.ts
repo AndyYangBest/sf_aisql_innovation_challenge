@@ -5,6 +5,7 @@
 import { apiRequest } from './client';
 import { ApiResponse } from './types';
 import type { WorkflowLogEvent } from './eda';
+import { getSnowflakeConfigHeaders } from '@/lib/snowflakeConfig';
 
 export interface ColumnWorkflowEstimate {
   column: string;
@@ -48,11 +49,17 @@ export interface ColumnWorkflowSelectedRunRequest {
   focus?: string;
 }
 
+const withSnowflakeHeaders = (headers: Record<string, string> = {}): Record<string, string> => ({
+  ...headers,
+  ...getSnowflakeConfigHeaders(),
+});
+
 export const columnWorkflowsApi = {
   async estimate(tableAssetId: number, columnName: string): Promise<ApiResponse<ColumnWorkflowEstimate>> {
     return apiRequest(async () => {
       const response = await fetch(`/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/estimate`, {
         method: 'POST',
+        headers: withSnowflakeHeaders(),
       });
       if (!response.ok) {
         throw new Error('Failed to estimate workflow tokens');
@@ -74,6 +81,7 @@ export const columnWorkflowsApi = {
       const query = params.toString();
       const response = await fetch(`/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/run${query ? `?${query}` : ''}`, {
         method: 'POST',
+        headers: withSnowflakeHeaders(),
       });
       if (!response.ok) {
         throw new Error('Failed to run column workflow');
@@ -92,7 +100,7 @@ export const columnWorkflowsApi = {
         `/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/run-selected`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: withSnowflakeHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify(payload),
         }
       );

@@ -154,6 +154,15 @@ const ChartCard = memo(
         <ChartRenderer spec={spec} />
       </div>
 
+      {spec.insight && (
+        <div className="px-3 py-2 border-t border-border bg-secondary/20">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            Insight
+          </div>
+          <p className="text-xs text-foreground/80">{spec.insight}</p>
+        </div>
+      )}
+
       {/* Narrative Footer */}
       {spec.narrative && spec.narrative.length > 0 && (
         <div className="px-3 py-2 border-t border-border bg-secondary/20">

@@ -6,6 +6,7 @@
 import type { WorkflowJSON } from '@flowgram.ai/free-layout-editor';
 import { ApiResponse } from './types';
 import { apiRequest } from './client';
+import { getSnowflakeConfigHeaders } from '@/lib/snowflakeConfig';
 
 // ============================================================================
 // Types
@@ -83,6 +84,11 @@ export interface WorkflowLogEvent {
   data?: any;
 }
 
+const withSnowflakeHeaders = (headers: Record<string, string> = {}): Record<string, string> => ({
+  ...headers,
+  ...getSnowflakeConfigHeaders(),
+});
+
 // ============================================================================
 // API Methods
 // ============================================================================
@@ -95,7 +101,7 @@ export const edaApi = {
     return apiRequest(async () => {
       const response = await fetch('/api/v1/eda/run', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withSnowflakeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(request),
       });
 
@@ -204,6 +210,7 @@ export const edaApi = {
     return apiRequest(async () => {
       const response = await fetch(`/api/v1/eda/workflow/${workflowId}/cancel`, {
         method: 'POST',
+        headers: withSnowflakeHeaders(),
       });
 
       if (!response.ok) {
@@ -222,7 +229,9 @@ export const edaApi = {
     limit: number = 10
   ): Promise<ApiResponse<{ table_asset_id: number; total: number; executions: WorkflowExecution[] }>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/eda/history/${tableAssetId}?limit=${limit}`);
+      const response = await fetch(`/api/v1/eda/history/${tableAssetId}?limit=${limit}`, {
+        headers: withSnowflakeHeaders(),
+      });
 
       if (!response.ok) {
         throw new Error('Failed to fetch workflow history');
@@ -237,7 +246,9 @@ export const edaApi = {
    */
   async getWorkflowDetails(workflowId: string): Promise<ApiResponse<WorkflowDetails>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/eda/workflow/${workflowId}`);
+      const response = await fetch(`/api/v1/eda/workflow/${workflowId}`, {
+        headers: withSnowflakeHeaders(),
+      });
 
       if (!response.ok) {
         throw new Error('Failed to fetch workflow details');
@@ -252,7 +263,9 @@ export const edaApi = {
    */
   async getStats(tableAssetId: number): Promise<ApiResponse<WorkflowStats>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/eda/stats/${tableAssetId}`);
+      const response = await fetch(`/api/v1/eda/stats/${tableAssetId}`, {
+        headers: withSnowflakeHeaders(),
+      });
 
       if (!response.ok) {
         throw new Error('Failed to fetch workflow stats');
@@ -267,7 +280,9 @@ export const edaApi = {
    */
   async getWorkflowTypes(): Promise<ApiResponse<{ workflows: Array<{ type: string; name: string; description: string }> }>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/eda/workflows');
+      const response = await fetch('/api/v1/eda/workflows', {
+        headers: withSnowflakeHeaders(),
+      });
 
       if (!response.ok) {
         throw new Error('Failed to fetch workflow types');

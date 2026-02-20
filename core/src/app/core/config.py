@@ -1,5 +1,6 @@
 import os
 from enum import Enum
+from typing import Any
 
 from pydantic import SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -72,39 +73,110 @@ class SnowflakeSettings(BaseSettings):
 
     SNOWFLAKE_ACCOUNT: str = "WKUKTVG-CX42955"
     SNOWFLAKE_USER: str = "andy"
-    SNOWFLAKE_PASSWORD: SecretStr = SecretStr("MyJOBPass123!!!")
+    SNOWFLAKE_USERNAME: str | None = None
+    SNOWFLAKE_PASSWORD: SecretStr | None = SecretStr("MyJOBPass123!!!")
+    SNOWFLAKE_AUTHENTICATOR: str | None = None
+    SNOWFLAKE_PRIVATE_KEY_PATH: str | None = None
+    SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: SecretStr | None = None
     SNOWFLAKE_WAREHOUSE: str = "AI_SQL_COMP"
     SNOWFLAKE_DATABASE: str = "AI_SQL_COMP"
     SNOWFLAKE_SCHEMA: str = "PUBLIC"
     SNOWFLAKE_ROLE: str = "ACCOUNTADMIN"
+    SNOWFLAKE_CLIENT_SESSION_KEEP_ALIVE: bool = True
+    SNOWFLAKE_QUERY_TAG: str = "PLATTII_AI_ASSISTANT"
+    SNOWFLAKE_STATEMENT_TIMEOUT_IN_SECONDS: int = 1800
+    SNOWFLAKE_ABORT_DETACHED_QUERY: bool = False
     SNOWFLAKE_CORTEX_MODEL: str = "mistral-large2"
     SNOWFLAKE_CORTEX_IMAGE_MODEL: str = "pixtral-large"
+
+    def _normalize_account(self, account: str) -> str:
+        normalized = account.strip()
+        normalized = normalized.removeprefix("https://").removeprefix("http://")
+        normalized = normalized.split("/", 1)[0]
+        if normalized.endswith(".snowflakecomputing.com"):
+            normalized = normalized[: -len(".snowflakecomputing.com")]
+        return normalized
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def SNOWFLAKE_EFFECTIVE_USER(self) -> str:
+        username = (self.SNOWFLAKE_USERNAME or "").strip()
+        return username or self.SNOWFLAKE_USER
+
+    def _load_private_key_bytes(self) -> bytes | None:
+        private_key_path = (self.SNOWFLAKE_PRIVATE_KEY_PATH or "").strip()
+        if not private_key_path:
+            return None
+
+        from cryptography.hazmat.primitives import serialization
+
+        with open(private_key_path, "rb") as key_file:
+            key_data = key_file.read()
+
+        passphrase = None
+        if self.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:
+            secret = self.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE.get_secret_value()
+            if secret:
+                passphrase = secret.encode()
+
+        private_key = serialization.load_pem_private_key(key_data, password=passphrase)
+        return private_key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
 
     # Optional: For Snowflake SQLAlchemy integration
     @computed_field  # type: ignore[prop-decorator]
     @property
     def SNOWFLAKE_CONNECTION_STRING(self) -> str:
         """Generate Snowflake connection string for SQLAlchemy."""
-        password = self.SNOWFLAKE_PASSWORD.get_secret_value()
+        password = self.SNOWFLAKE_PASSWORD.get_secret_value() if self.SNOWFLAKE_PASSWORD else ""
+        user = self.SNOWFLAKE_EFFECTIVE_USER
+        credentials = f"{user}:{password}" if password else user
+        account = self._normalize_account(self.SNOWFLAKE_ACCOUNT)
         return (
-            f"snowflake://{self.SNOWFLAKE_USER}:{password}@"
-            f"{self.SNOWFLAKE_ACCOUNT}/{self.SNOWFLAKE_DATABASE}/{self.SNOWFLAKE_SCHEMA}"
+            f"snowflake://{credentials}@"
+            f"{account}/{self.SNOWFLAKE_DATABASE}/{self.SNOWFLAKE_SCHEMA}"
             f"?warehouse={self.SNOWFLAKE_WAREHOUSE}&role={self.SNOWFLAKE_ROLE}"
         )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def SNOWFLAKE_CONNECTOR_PARAMS(self) -> dict:
+    def SNOWFLAKE_CONNECTOR_PARAMS(self) -> dict[str, Any]:
         """Get Snowflake connector parameters as dict."""
-        return {
-            "account": self.SNOWFLAKE_ACCOUNT,
-            "user": self.SNOWFLAKE_USER,
-            "password": self.SNOWFLAKE_PASSWORD.get_secret_value(),
+        params: dict[str, Any] = {
+            "account": self._normalize_account(self.SNOWFLAKE_ACCOUNT),
+            "user": self.SNOWFLAKE_EFFECTIVE_USER,
             "warehouse": self.SNOWFLAKE_WAREHOUSE,
             "database": self.SNOWFLAKE_DATABASE,
             "schema": self.SNOWFLAKE_SCHEMA,
             "role": self.SNOWFLAKE_ROLE,
+            "client_session_keep_alive": self.SNOWFLAKE_CLIENT_SESSION_KEEP_ALIVE,
+            "session_parameters": {
+                "QUERY_TAG": self.SNOWFLAKE_QUERY_TAG,
+                "STATEMENT_TIMEOUT_IN_SECONDS": self.SNOWFLAKE_STATEMENT_TIMEOUT_IN_SECONDS,
+                "ABORT_DETACHED_QUERY": self.SNOWFLAKE_ABORT_DETACHED_QUERY,
+            },
         }
+
+        authenticator = (self.SNOWFLAKE_AUTHENTICATOR or "").strip()
+        if authenticator:
+            params["authenticator"] = authenticator
+
+        if authenticator.lower() == "externalbrowser":
+            return params
+
+        password = self.SNOWFLAKE_PASSWORD.get_secret_value() if self.SNOWFLAKE_PASSWORD else ""
+        if password:
+            params["password"] = password
+            return params
+
+        private_key_bytes = self._load_private_key_bytes()
+        if private_key_bytes:
+            params["private_key"] = private_key_bytes
+
+        return params
 
 
 class ModelProviderSettings(BaseSettings):

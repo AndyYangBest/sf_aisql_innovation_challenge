@@ -31,6 +31,9 @@ class ColumnWorkflowLogBuffer:
         self._last_synced_tool_calls = 0
         self.sync_failed = False
         self.sync_error: str | None = None
+        self._agent_tool_counts: dict[str, dict[str, int]] = {}
+        self._agent_tool_order: dict[str, list[str]] = {}
+        self._agent_visuals: dict[str, list[dict[str, Any]]] = {}
 
     def set_default_context(self, table_asset_id: int, column_name: str) -> None:
         self.default_table_asset_id = table_asset_id
@@ -54,6 +57,44 @@ class ColumnWorkflowLogBuffer:
             "data": data or {},
         }
         self.entries.append(entry)
+
+    def record_tool(self, agent_name: str | None, tool_name: str) -> None:
+        agent_key = agent_name or "unknown"
+        counts = self._agent_tool_counts.setdefault(agent_key, {})
+        counts[tool_name] = counts.get(tool_name, 0) + 1
+        order = self._agent_tool_order.setdefault(agent_key, [])
+        if tool_name not in order:
+            order.append(tool_name)
+
+    def record_visuals(self, agent_name: str | None, visuals: list[dict[str, Any]]) -> None:
+        agent_key = agent_name or "unknown"
+        if not visuals:
+            return
+        stored = self._agent_visuals.setdefault(agent_key, [])
+        for visual in visuals:
+            if not isinstance(visual, dict):
+                continue
+            title = visual.get("title") or visual.get("name") or ""
+            chart_type = visual.get("chartType") or visual.get("chart_type")
+            visual_id = visual.get("id") or visual.get("chart_id")
+            stored.append(
+                {
+                    "id": str(visual_id) if visual_id is not None else None,
+                    "title": str(title) if title else "(untitled)",
+                    "chart_type": str(chart_type) if chart_type else None,
+                }
+            )
+
+    def get_agent_tool_summary(self, agent_name: str | None) -> tuple[list[str], dict[str, int]]:
+        agent_key = agent_name or "unknown"
+        return (
+            list(self._agent_tool_order.get(agent_key, [])),
+            dict(self._agent_tool_counts.get(agent_key, {})),
+        )
+
+    def get_agent_visuals(self, agent_name: str | None) -> list[dict[str, Any]]:
+        agent_key = agent_name or "unknown"
+        return list(self._agent_visuals.get(agent_key, []))
 
     def add_tool_call(
         self,
@@ -227,6 +268,41 @@ class ColumnWorkflowLogHook(HookProvider):
             message,
             {"agent": event.agent.name, "status": status},
         )
+        tool_order, tool_counts = self.buffer.get_agent_tool_summary(event.agent.name)
+        if tool_order:
+            tool_labels = []
+            for name in tool_order:
+                count = tool_counts.get(name, 1)
+                tool_labels.append(f"{name} x{count}" if count > 1 else name)
+            self.buffer.add_entry(
+                "workflow_log",
+                f"Agent tools: {', '.join(tool_labels)}",
+                {
+                    "agent": event.agent.name,
+                    "tools": tool_order,
+                    "tool_counts": tool_counts,
+                },
+            )
+        visuals = self.buffer.get_agent_visuals(event.agent.name)
+        if visuals:
+            chunk_size = 6
+            total = len(visuals)
+            for start in range(0, total, chunk_size):
+                chunk = visuals[start : start + chunk_size]
+                names = []
+                for item in chunk:
+                    title = item.get("title") or "(untitled)"
+                    chart_type = item.get("chart_type")
+                    if chart_type:
+                        names.append(f"{title} [{chart_type}]")
+                    else:
+                        names.append(str(title))
+                self.buffer.add_entry(
+                    "workflow_log",
+                    f"Agent visuals ({start + 1}-{min(start + chunk_size, total)}/{total}): "
+                    + "; ".join(names),
+                    {"agent": event.agent.name, "visuals": chunk, "total": total},
+                )
 
     def log_tool_start(self, event: BeforeToolCallEvent) -> None:
         self._apply_context_overrides(event)
@@ -252,6 +328,13 @@ class ColumnWorkflowLogHook(HookProvider):
         output_preview = None
         if event.result is not None:
             output_preview = self._truncate(self._format_content(event.result))
+        self.buffer.record_tool(event.agent.name, tool_name)
+        if tool_name in {"generate_numeric_visuals", "generate_categorical_visuals"}:
+            visuals_payload = None
+            if isinstance(event.result, dict):
+                visuals_payload = event.result.get("visuals")
+            if isinstance(visuals_payload, list):
+                self.buffer.record_visuals(event.agent.name, visuals_payload)
         self.buffer.update_tool_call(
             tool_use_id,
             status,

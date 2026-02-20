@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import json
 from pydantic import BaseModel, Field
 
-from ...api.dependencies import rate_limiter_dependency
+from ...api.dependencies import get_ai_sql_service, get_snowflake_service, rate_limiter_dependency
 from ...schemas.ai_sql import (
     AIAggregateRequest,
     AIAggregateResponse,
@@ -68,21 +68,6 @@ class SuggestMetadataResponse(BaseModel):
     ai_summary: str | None = None
     use_cases: list[str] = []
     error: str | None = None
-
-
-# Service initialization will be done via dependency injection
-# For now, we'll initialize in each endpoint
-
-
-async def get_ai_sql_service() -> ModularAISQLService:
-    """Get AI SQL service instance."""
-    snowflake_service = SnowflakeService()
-    return ModularAISQLService(snowflake_service)
-
-
-async def get_snowflake_service() -> SnowflakeService:
-    """Get Snowflake service instance."""
-    return SnowflakeService()
 
 
 # ============================================================================

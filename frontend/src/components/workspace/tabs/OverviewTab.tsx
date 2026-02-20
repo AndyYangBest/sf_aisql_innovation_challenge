@@ -55,6 +55,7 @@ const OverviewTab = ({ tableAsset, tableResult, variant = "full" }: OverviewTabP
           plan,
           nullRate: analysis.nulls?.null_rate,
           conflictRate: analysis.conflicts?.conflict_rate,
+          conflicts: analysis.conflicts,
         } satisfies RepairPlanItem;
       })
       .filter(Boolean) as RepairPlanItem[];
@@ -94,7 +95,22 @@ const OverviewTab = ({ tableAsset, tableResult, variant = "full" }: OverviewTabP
   }, [loadRepairs, tableId]);
 
   const pendingRepairs = useMemo(
-    () => repairPlans.filter((item) => item.plan && !item.plan.approved),
+    () =>
+      repairPlans.filter(
+        (item) =>
+          item.plan &&
+          !item.plan.approved &&
+          !item.plan.applied &&
+          item.plan.approval_status !== "approved"
+      ),
+    [repairPlans]
+  );
+
+  const appliedRepairs = useMemo(
+    () =>
+      repairPlans.filter(
+        (item) => item.plan?.applied || item.plan?.approval_status === "approved"
+      ),
     [repairPlans]
   );
 
@@ -107,11 +123,28 @@ const OverviewTab = ({ tableAsset, tableResult, variant = "full" }: OverviewTabP
 
   if (variant === "approvals" && pendingRepairs.length === 0) {
     return (
-      <div className="flex items-center justify-center h-48 text-muted-foreground border border-dashed border-border rounded-lg">
-        <div className="text-center">
-          <ShieldCheck className="h-10 w-10 mx-auto mb-3 opacity-60" />
-          <p className="text-sm">No repair plans awaiting approval</p>
+      <div className="space-y-3">
+        <div className="flex items-center justify-center h-40 text-muted-foreground border border-dashed border-border rounded-lg">
+          <div className="text-center">
+            <ShieldCheck className="h-10 w-10 mx-auto mb-3 opacity-60" />
+            <p className="text-sm">No repair plans awaiting approval</p>
+          </div>
         </div>
+        {appliedRepairs.length > 0 && (
+          <div className="rounded-lg border border-border bg-background px-3 py-2">
+            <div className="text-xs font-medium text-muted-foreground mb-2">Recently applied</div>
+            <div className="space-y-2">
+              {appliedRepairs.slice(0, 3).map((plan) => (
+                <div key={plan.columnName} className="text-xs">
+                  <div className="font-medium">{plan.columnName}</div>
+                  <div className="text-muted-foreground">
+                    {plan.plan?.summary || "Repair applied"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }

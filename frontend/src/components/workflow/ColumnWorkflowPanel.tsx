@@ -366,10 +366,25 @@ function buildGraphFromToolCalls(
     if (aSeq !== bSeq) return aSeq - bSeq;
     return String(a.timestamp || "").localeCompare(String(b.timestamp || ""));
   });
+  const dedupeToolNames = new Set(["plan_data_repairs"]);
+  const dedupedCalls: Array<Record<string, any>> = [];
+  const seenToolNames = new Set<string>();
+  for (let i = sortedCalls.length - 1; i >= 0; i -= 1) {
+    const call = sortedCalls[i];
+    const toolName = String(call.tool_name || "");
+    if (dedupeToolNames.has(toolName)) {
+      if (seenToolNames.has(toolName)) {
+        continue;
+      }
+      seenToolNames.add(toolName);
+    }
+    dedupedCalls.push(call);
+  }
+  dedupedCalls.reverse();
 
   const batches: Array<{ id: string; calls: Array<Record<string, any>> }> = [];
   const batchMap = new Map<string, Array<Record<string, any>>>();
-  sortedCalls.forEach((call, index) => {
+  dedupedCalls.forEach((call, index) => {
     const batchId = String(call.batch_id || call.tool_use_id || call.sequence || index);
     if (!batchMap.has(batchId)) {
       batchMap.set(batchId, []);
@@ -875,6 +890,7 @@ const ColumnWorkflowPanel = ({
   const selectionSourceRef = useRef<"list" | "canvas" | null>(null);
   const selectionResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logCursorRef = useRef<Record<string, number>>({});
+  const logLastTimestampRef = useRef<Record<string, string>>({});
 
   const appendLog = useCallback(
     (type: WorkflowLogEvent["type"], message: string, data?: any) => {
@@ -893,9 +909,28 @@ const ColumnWorkflowPanel = ({
     (columnName: string, events?: WorkflowLogEvent[]) => {
       if (!events || events.length === 0) return;
       const prevCount = logCursorRef.current[columnName] || 0;
-      if (events.length <= prevCount) return;
-      const nextBatch = events.slice(prevCount);
+      const prevLastTimestamp = logLastTimestampRef.current[columnName] || "";
+      const currentLastTimestamp = String(
+        events[events.length - 1]?.timestamp || ""
+      );
+
+      let nextBatch: WorkflowLogEvent[] = [];
+      if (events.length > prevCount) {
+        nextBatch = events.slice(prevCount);
+      } else if (
+        currentLastTimestamp &&
+        currentLastTimestamp !== prevLastTimestamp
+      ) {
+        // New run can reset logs with a shorter list.
+        nextBatch = events;
+      } else {
+        return;
+      }
+
       logCursorRef.current[columnName] = events.length;
+      if (currentLastTimestamp) {
+        logLastTimestampRef.current[columnName] = currentLastTimestamp;
+      }
       setLogs((prev) => {
         const next = [...prev, ...nextBatch];
         return next.slice(-200);
@@ -1181,6 +1216,10 @@ const ColumnWorkflowPanel = ({
       columns.forEach((column) => {
         const columnLogs = (column.metadata as any)?.workflow?.logs ?? [];
         logCursorRef.current[column.column_name] = columnLogs.length;
+        const lastTimestamp = String(
+          columnLogs.length > 0 ? columnLogs[columnLogs.length - 1]?.timestamp || "" : ""
+        );
+        logLastTimestampRef.current[column.column_name] = lastTimestamp;
       });
       const storedLogs = columns.flatMap(
         (column) => (column.metadata as any)?.workflow?.logs ?? []
@@ -1789,6 +1828,8 @@ const ColumnWorkflowPanel = ({
 
     const results = await Promise.allSettled(
       Array.from(nodesByColumn.entries()).map(async ([columnName, nodes]) => {
+        logCursorRef.current[columnName] = 0;
+        logLastTimestampRef.current[columnName] = "";
         const workflow = workflows[columnName];
         if (workflow) {
           const overrides = collectOverrides(workflow.nodes);
@@ -2060,6 +2101,8 @@ const ColumnWorkflowPanel = ({
     const results = await Promise.allSettled(
       targets.map(async (columnName) => {
         try {
+          logCursorRef.current[columnName] = 0;
+          logLastTimestampRef.current[columnName] = "";
           const workflow = workflows[columnName];
           if (workflow) {
             const overrides = collectOverrides(workflow.nodes);
@@ -2175,6 +2218,8 @@ const ColumnWorkflowPanel = ({
       });
 
       try {
+        logCursorRef.current[columnName] = 0;
+        logLastTimestampRef.current[columnName] = "";
         const workflow = workflows[columnName];
         if (workflow) {
           const overrides = {
@@ -2366,6 +2411,8 @@ const ColumnWorkflowPanel = ({
           data_fix_plan_hash: planHash,
           data_fix_snapshot_signature: snapshotSignature,
         });
+        logCursorRef.current[detail.columnName] = 0;
+        logLastTimestampRef.current[detail.columnName] = "";
         await columnMetadataApi.override(tableAssetId, detail.columnName, mergedOverrides);
         const response = await columnWorkflowsApi.runSelected(
           tableAssetId,

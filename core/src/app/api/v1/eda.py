@@ -18,6 +18,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from ...api.dependencies import get_ai_sql_service, get_snowflake_service
 from ...core.db.database import get_async_db_session
 from ...models.table_asset import TableAsset
 from ...services.snowflake_service import SnowflakeService
@@ -82,24 +83,6 @@ class WorkflowCancelResponse(BaseModel):
     workflow_id: str
     status: str
     error: str | None = None
-
-
-# ============================================================================
-# Dependency Injection
-# ============================================================================
-
-
-async def get_snowflake_service() -> SnowflakeService:
-    """Get Snowflake service instance."""
-    return SnowflakeService()
-
-
-async def get_ai_sql_service(
-    sf_service: SnowflakeService = Depends(get_snowflake_service),
-) -> ModularAISQLService:
-    """Get AI SQL service instance."""
-    return ModularAISQLService(sf_service)
-
 
 # ============================================================================
 # API Endpoints

@@ -52,24 +52,31 @@ logger = logging.getLogger(__name__)
 class SnowflakeConnection:
     """Snowflake connection manager for AI SQL and data analysis."""
 
-    def __init__(self):
+    def __init__(self, connector_params: dict[str, Any] | None = None):
         self._connection: snowflake.connector.SnowflakeConnection | None = None
+        self._connector_params = dict(connector_params) if connector_params else None
 
     def get_connection(self) -> snowflake.connector.SnowflakeConnection:
         """Get or create Snowflake connection."""
         if self._connection is None or self._connection.is_closed():
-            params = settings.SNOWFLAKE_CONNECTOR_PARAMS
+            params = self._connector_params or settings.SNOWFLAKE_CONNECTOR_PARAMS
             self._connection = snowflake.connector.connect(**params)
         return self._connection
 
     def _is_auth_error(self, error: Exception) -> bool:
-        """Check if error is due to authentication token expiration."""
+        """Check if error is authentication-related."""
         error_msg = str(error).lower()
         # Check for Snowflake authentication error codes and messages
         if isinstance(error, (ProgrammingError, DatabaseError)):
             # Error code 390114: Authentication token has expired
             # Error code 390144: Authentication token is invalid
             if hasattr(error, 'errno') and error.errno in (390114, 390144):
+                return True
+            if (
+                hasattr(error, 'errno')
+                and error.errno == 250001
+                and "incorrect username or password" in error_msg
+            ):
                 return True
         # Check error message for authentication-related keywords
         auth_keywords = [
@@ -78,8 +85,17 @@ class SnowflakeConnection:
             'user must authenticate again',
             'token expired',
             'session expired',
+            'incorrect username or password',
         ]
         return any(keyword in error_msg for keyword in auth_keywords)
+
+    def _format_auth_error_message(self, error: Exception) -> str:
+        error_msg = str(error).lower()
+        if "incorrect username or password" in error_msg:
+            return "Incorrect Snowflake username or password."
+        if "authentication token has expired" in error_msg or "token expired" in error_msg:
+            return "Authentication token has expired. Please re-authenticate."
+        return "Snowflake authentication failed. Please verify your credentials."
 
     def _reset_connection(self) -> None:
         """Force reset the connection."""
@@ -91,6 +107,48 @@ class SnowflakeConnection:
         finally:
             self._connection = None
 
+    def _quote_identifier(self, value: str) -> str:
+        escaped = value.replace('"', '""')
+        return f'"{escaped}"'
+
+    def _get_configured_warehouse(self) -> str | None:
+        if self._connector_params:
+            warehouse = self._connector_params.get("warehouse")
+            if isinstance(warehouse, str) and warehouse.strip():
+                return warehouse.strip()
+        default_warehouse = (settings.SNOWFLAKE_WAREHOUSE or "").strip()
+        return default_warehouse or None
+
+    def _ensure_active_warehouse(self, cursor: Any) -> None:
+        try:
+            cursor.execute("SELECT CURRENT_WAREHOUSE() AS CURRENT_WAREHOUSE")
+            row = cursor.fetchone()
+            if row and row[0]:
+                return
+        except Exception:
+            pass
+
+        candidate = self._get_configured_warehouse()
+        if candidate:
+            try:
+                cursor.execute(f"USE WAREHOUSE {self._quote_identifier(candidate)}")
+                return
+            except Exception as exc:
+                logger.debug("Configured warehouse unavailable (%s): %s", candidate, exc)
+
+        try:
+            cursor.execute("SHOW WAREHOUSES")
+            rows = cursor.fetchall()
+            if not rows:
+                return
+            columns = [col[0].lower() for col in cursor.description] if cursor.description else []
+            name_index = columns.index("name") if "name" in columns else 1
+            first_name = rows[0][name_index] if len(rows[0]) > name_index else None
+            if isinstance(first_name, str) and first_name.strip():
+                cursor.execute(f"USE WAREHOUSE {self._quote_identifier(first_name.strip())}")
+        except Exception as exc:
+            logger.debug("Auto warehouse selection skipped: %s", exc)
+
     def execute_query(self, query: str) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
         try:
@@ -98,10 +156,10 @@ class SnowflakeConnection:
         except Exception as e:
             # Check if this is an authentication error
             if self._is_auth_error(e):
-                logger.warning("Snowflake authentication token expired, resetting connection")
+                logger.warning("Snowflake authentication failed, resetting connection")
                 self._reset_connection()
                 # Raise a custom exception that can be caught by the API layer
-                raise SnowflakeAuthenticationError("Authentication token has expired. Please re-authenticate.") from e
+                raise SnowflakeAuthenticationError(self._format_auth_error_message(e)) from e
             # Re-raise other errors
             raise
 
@@ -132,6 +190,7 @@ class SnowflakeConnection:
         except ProgrammingError:
             # Older/unsupported params—safe to ignore
             pass
+        self._ensure_active_warehouse(cursor)
 
         executed_query = query
 
