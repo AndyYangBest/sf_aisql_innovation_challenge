@@ -1,4 +1,4 @@
-import { Lightbulb, Pin, Trash2, MessageSquare, Clock, MoreHorizontal } from "lucide-react";
+import { Lightbulb, Pin, Trash2, MessageSquare, Clock, MoreHorizontal, BarChart3 } from "lucide-react";
 import { useTableStore } from "@/store/tableStore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,9 +14,13 @@ interface InsightsTabProps {
 }
 
 const InsightsTab = ({ tableId }: InsightsTabProps) => {
-  const { getArtifactsByTable, deleteArtifact, toggleArtifactPin } = useTableStore();
+  const { getArtifactsByTable, deleteArtifact, toggleArtifactPin, setInsightDisplayInCharts } =
+    useTableStore();
   const artifacts = getArtifactsByTable(tableId);
   const insightArtifacts = artifacts.filter((a) => a.type === "insight");
+  const visibleInsights = insightArtifacts.filter(
+    (artifact) => !artifact.content?.displayInCharts
+  );
 
   const formatDate = (date: string) =>
     new Date(date).toLocaleDateString("en-US", {
@@ -34,21 +38,20 @@ const InsightsTab = ({ tableId }: InsightsTabProps) => {
         </p>
       </div>
 
-      {insightArtifacts.length === 0 ? (
+      {visibleInsights.length === 0 ? (
         <div className="flex items-center justify-center h-64 text-muted-foreground">
           <div className="text-center">
             <Lightbulb className="h-12 w-12 mx-auto mb-3 opacity-50" />
-            <p className="mb-2">No insights yet</p>
-            <p className="text-sm">Save insights from Workflow Outputs to add them to the report</p>
+            <p className="mb-2">No insights here yet</p>
+            <p className="text-sm">Moved cards now appear in the Charts tab</p>
           </div>
         </div>
       ) : (
         <div className="space-y-4">
-          {/* Pinned Insights */}
-          {insightArtifacts.filter((a) => a.pinned).length > 0 && (
+          {visibleInsights.filter((a) => a.pinned).length > 0 && (
             <div className="space-y-3">
               <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Pinned</h3>
-              {insightArtifacts
+              {visibleInsights
                 .filter((a) => a.pinned)
                 .map((artifact) => (
                   <InsightCard
@@ -56,18 +59,18 @@ const InsightsTab = ({ tableId }: InsightsTabProps) => {
                     artifact={artifact}
                     onPin={() => toggleArtifactPin(artifact.id)}
                     onDelete={() => deleteArtifact(artifact.id)}
+                    onMoveToCharts={() => setInsightDisplayInCharts(artifact.id, true)}
                     formatDate={formatDate}
                   />
                 ))}
             </div>
           )}
 
-          {/* All Insights */}
           <div className="space-y-3">
-            {insightArtifacts.filter((a) => a.pinned).length > 0 && (
+            {visibleInsights.filter((a) => a.pinned).length > 0 && (
               <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">All Insights</h3>
             )}
-            {insightArtifacts
+            {visibleInsights
               .filter((a) => !a.pinned)
               .map((artifact) => (
                 <InsightCard
@@ -75,6 +78,7 @@ const InsightsTab = ({ tableId }: InsightsTabProps) => {
                   artifact={artifact}
                   onPin={() => toggleArtifactPin(artifact.id)}
                   onDelete={() => deleteArtifact(artifact.id)}
+                  onMoveToCharts={() => setInsightDisplayInCharts(artifact.id, true)}
                   formatDate={formatDate}
                 />
               ))}
@@ -89,13 +93,13 @@ interface InsightCardProps {
   artifact: any;
   onPin: () => void;
   onDelete: () => void;
+  onMoveToCharts: () => void;
   formatDate: (date: string) => string;
 }
 
-const InsightCard = ({ artifact, onPin, onDelete, formatDate }: InsightCardProps) => {
+const InsightCard = ({ artifact, onPin, onDelete, onMoveToCharts, formatDate }: InsightCardProps) => {
   if (artifact.type !== "insight") return null;
-  const stripBullet = (text: string) =>
-    text.replace(/^\s*[-•*]\s+/, "").trim();
+  const stripBullet = (text: string) => text.replace(/^\s*[-•*]\s+/, "").trim();
   const isJunkInsight = (text: string) => {
     const cleaned = stripBullet(text).trim();
     if (!cleaned) return true;
@@ -137,6 +141,10 @@ const InsightCard = ({ artifact, onPin, onDelete, formatDate }: InsightCardProps
             <DropdownMenuItem onClick={onPin}>
               <Pin className="h-4 w-4 mr-2" />
               {artifact.pinned ? "Unpin" : "Pin"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onMoveToCharts}>
+              <BarChart3 className="h-4 w-4 mr-2" />
+              Move to Charts area
             </DropdownMenuItem>
             <DropdownMenuItem>
               <MessageSquare className="h-4 w-4 mr-2" />

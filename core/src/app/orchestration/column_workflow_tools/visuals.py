@@ -15,10 +15,97 @@ from ...services.eda_service import EDAService
 
 logger = logging.getLogger(__name__)
 MIN_TIME_POINTS = 3
+MIN_ABS_CORRELATION_DEFAULT = 0.08
 
 
 class ColumnWorkflowVisualsMixin:
     """Tool mixin."""
+
+    def _resolve_min_abs_correlation(
+        self,
+        overrides: dict[str, Any] | None = None,
+        default: float = MIN_ABS_CORRELATION_DEFAULT,
+    ) -> float:
+        raw = (overrides or {}).get("visual_correlation_min_abs")
+        parsed = self._coerce_float(raw)
+        if parsed is None:
+            parsed = default
+        try:
+            value = float(parsed)
+        except (TypeError, ValueError):
+            value = default
+        return max(0.0, min(value, 1.0))
+
+    def _build_year_anomaly_warning(
+        self,
+        year_anomaly_context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(year_anomaly_context, dict):
+            return None
+        anomaly_count = self._coerce_int(year_anomaly_context.get("anomaly_count"), 0)
+        if anomaly_count <= 0:
+            return None
+        valid_range = year_anomaly_context.get("valid_range") or {}
+        min_range = self._coerce_int(valid_range.get("min")) if isinstance(valid_range, dict) else None
+        max_range = self._coerce_int(valid_range.get("max")) if isinstance(valid_range, dict) else None
+        samples_raw = year_anomaly_context.get("samples")
+        samples: list[dict[str, Any]] = []
+        if isinstance(samples_raw, list):
+            for item in samples_raw[:6]:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("value")
+                if value is None:
+                    continue
+                entry: dict[str, Any] = {"value": value}
+                value_count = self._coerce_int(item.get("value_count"), 0)
+                if value_count > 0:
+                    entry["count"] = value_count
+                reason = str(item.get("reason") or "").strip()
+                if reason:
+                    entry["reason"] = reason
+                parsed_year = item.get("parsed_year")
+                if parsed_year is not None:
+                    entry["parsed_year"] = parsed_year
+                samples.append(entry)
+        range_text = (
+            f"{min_range}-{max_range}"
+            if min_range is not None and max_range is not None
+            else "expected year range"
+        )
+        return {
+            "code": "year_out_of_range_filtered",
+            "severity": "warning",
+            "title": "Out-of-range years filtered",
+            "message": (
+                f"Filtered {anomaly_count} rows with year values outside {range_text}."
+            ),
+            "anomaly_count": anomaly_count,
+            "valid_range": {
+                "min": min_range,
+                "max": max_range,
+            },
+            "sample_values": samples,
+        }
+
+    def _append_chart_warning(
+        self,
+        chart: dict[str, Any],
+        warning: dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(chart, dict) or not isinstance(warning, dict):
+            return
+        existing = chart.get("warnings")
+        warnings: list[dict[str, Any]] = []
+        if isinstance(existing, list):
+            warnings = [item for item in existing if isinstance(item, dict)]
+        warning_code = str(warning.get("code") or "").strip().lower()
+        for item in warnings:
+            existing_code = str(item.get("code") or "").strip().lower()
+            if warning_code and existing_code == warning_code:
+                return
+        warnings.append(warning)
+        chart["warnings"] = warnings
 
     def _normalize_category_label(self, value: Any) -> str:
         text = str(value or "").strip()
@@ -170,6 +257,579 @@ class ColumnWorkflowVisualsMixin:
         # Keep one chart as fallback instead of returning an empty list.
         return visuals[:1], dropped
 
+    def _fallback_heatmap_insight(
+        self,
+        column_name: str,
+        matrix_columns: list[str],
+        pairs: list[dict[str, Any]],
+    ) -> str:
+        if not pairs:
+            return (
+                f"Correlation heatmap for {column_name} has insufficient valid pairwise "
+                "correlations after recomputation."
+            )
+        top = pairs[0]
+        top_corr = self._coerce_float(top.get("correlation"), 0.0) or 0.0
+        top_left = str(top.get("feature_x") or "")
+        top_right = str(top.get("feature_y") or "")
+        abs_max = max(abs(self._coerce_float(item.get("correlation"), 0.0) or 0.0) for item in pairs)
+        if abs_max < 0.15:
+            return (
+                f"Recomputed correlations for {column_name} are mostly weak "
+                f"(strongest pair {top_left} vs {top_right}, r={top_corr:.3f})."
+            )
+        return (
+            f"Strongest recomputed relationship is {top_left} vs {top_right} "
+            f"(r={top_corr:.3f}) across {len(matrix_columns)} selected columns."
+        )
+
+    def _extract_unique_heatmap_pairs(
+        self, heatmap_data: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        unique_pairs: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in heatmap_data or []:
+            left = str(row.get("feature_x") or "").strip()
+            right = str(row.get("feature_y") or "").strip()
+            if not left or not right or left == right:
+                continue
+            corr = self._coerce_float(row.get("correlation"))
+            if corr is None:
+                continue
+            key = tuple(sorted((left, right)))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_pairs.append(
+                {
+                    "feature_x": left,
+                    "feature_y": right,
+                    "correlation": round(float(corr), 4),
+                    "abs_correlation": round(abs(float(corr)), 4),
+                }
+            )
+        unique_pairs.sort(
+            key=lambda item: abs(float(item.get("correlation") or 0.0)),
+            reverse=True,
+        )
+        return unique_pairs
+
+    def _prune_heatmap_by_target_signal(
+        self,
+        target_column: str,
+        matrix_columns: list[str],
+        heatmap_data: list[dict[str, Any]],
+        min_abs_correlation: float,
+    ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
+        if not matrix_columns or len(matrix_columns) < 2 or not heatmap_data:
+            return matrix_columns, heatmap_data, []
+
+        target = str(target_column or "").strip() or str(matrix_columns[0] or "").strip()
+        if not target:
+            return matrix_columns, heatmap_data, []
+
+        pairs = self._extract_unique_heatmap_pairs(heatmap_data)
+        abs_to_target: dict[str, float] = {}
+        for item in pairs:
+            left = str(item.get("feature_x") or "").strip()
+            right = str(item.get("feature_y") or "").strip()
+            corr = abs(self._coerce_float(item.get("correlation"), 0.0) or 0.0)
+            if left == target and right:
+                abs_to_target[right] = max(abs_to_target.get(right, 0.0), corr)
+            elif right == target and left:
+                abs_to_target[left] = max(abs_to_target.get(left, 0.0), corr)
+
+        peers = [str(column) for column in matrix_columns if str(column) and str(column) != target]
+        if not peers:
+            return matrix_columns, heatmap_data, []
+
+        strong_peers = [
+            peer
+            for peer in peers
+            if (abs_to_target.get(peer) or 0.0) >= max(0.0, float(min_abs_correlation))
+        ]
+
+        # Ensure the chart remains renderable even when all peers are weak.
+        if not strong_peers:
+            best_peer = max(peers, key=lambda peer: abs_to_target.get(peer, 0.0))
+            strong_peers = [best_peer]
+
+        kept_columns = [target, *strong_peers]
+        kept_set = set(kept_columns)
+        filtered_data = [
+            row
+            for row in heatmap_data
+            if str(row.get("feature_x") or "") in kept_set
+            and str(row.get("feature_y") or "") in kept_set
+        ]
+
+        dropped_columns = [
+            {
+                "column": peer,
+                "abs_target_correlation": round(abs_to_target.get(peer, 0.0), 4),
+            }
+            for peer in peers
+            if peer not in strong_peers
+        ]
+
+        if len(kept_columns) < 2 or not filtered_data:
+            return matrix_columns, heatmap_data, []
+        return kept_columns, filtered_data, dropped_columns
+
+    async def _compute_correlation_heatmap_data(
+        self,
+        ctx: Any,
+        matrix_columns: list[str],
+        sample_size: int | None = None,
+        window_days: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if len(matrix_columns) < 2:
+            return []
+        pair_selects: list[str] = []
+        pair_alias_map: dict[str, tuple[str, str]] = {}
+        for left_idx, left_col in enumerate(matrix_columns):
+            left_expr = self._numeric_expr(self._quote_ident(left_col))
+            for right_idx in range(left_idx + 1, len(matrix_columns)):
+                right_col = matrix_columns[right_idx]
+                right_expr = self._numeric_expr(self._quote_ident(right_col))
+                alias = f"corr_{left_idx}_{right_idx}"
+                pair_selects.append(f"CORR({left_expr}, {right_expr}) AS {alias}")
+                pair_alias_map[alias] = (left_col, right_col)
+        if not pair_selects:
+            return []
+        base_query = self._build_windowed_query(
+            ctx, sample_size, window_days, ctx.time_column
+        )
+        matrix_query = f"""
+        WITH base AS (
+            {base_query}
+        )
+        SELECT
+            {", ".join(pair_selects)}
+        FROM base
+        """.strip()
+        matrix_rows = await self.sf.execute_query(matrix_query)
+        matrix_row = matrix_rows[0] if matrix_rows else {}
+        heatmap_data: list[dict[str, Any]] = []
+        for matrix_col in matrix_columns:
+            heatmap_data.append(
+                {
+                    "feature_x": matrix_col,
+                    "feature_y": matrix_col,
+                    "correlation": 1.0,
+                }
+            )
+        for alias, (left_col, right_col) in pair_alias_map.items():
+            raw_value = matrix_row.get(alias.upper())
+            if raw_value is None:
+                raw_value = matrix_row.get(alias)
+            corr_value = self._coerce_float(raw_value)
+            if corr_value is None:
+                continue
+            rounded = round(float(corr_value), 4)
+            heatmap_data.append(
+                {
+                    "feature_x": left_col,
+                    "feature_y": right_col,
+                    "correlation": rounded,
+                }
+            )
+            heatmap_data.append(
+                {
+                    "feature_x": right_col,
+                    "feature_y": left_col,
+                    "correlation": rounded,
+                }
+            )
+        return heatmap_data
+
+    def _score_correlation_combo(
+        self,
+        matrix_columns: list[str],
+        heatmap_data: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        pairs = self._extract_unique_heatmap_pairs(heatmap_data)
+        pair_count = len(pairs)
+        total_possible = max(1, (len(matrix_columns) * (len(matrix_columns) - 1)) // 2)
+        if pair_count <= 0:
+            return {
+                "pair_count": 0,
+                "total_possible_pairs": total_possible,
+                "coverage": 0.0,
+                "mean_abs_corr": 0.0,
+                "strong_pair_count": 0,
+                "near_zero_pair_count": 0,
+                "score": -1.0,
+                "top_pairs": [],
+            }
+        coverage = pair_count / total_possible
+        target_column = str(matrix_columns[0] or "").strip() if matrix_columns else ""
+        abs_values = [abs(float(item.get("correlation") or 0.0)) for item in pairs]
+        target_abs_values = [
+            abs(float(item.get("correlation") or 0.0))
+            for item in pairs
+            if str(item.get("feature_x") or "") == target_column
+            or str(item.get("feature_y") or "") == target_column
+        ]
+        mean_abs_corr = sum(abs_values) / len(abs_values)
+        target_mean_abs_corr = (
+            sum(target_abs_values) / len(target_abs_values) if target_abs_values else 0.0
+        )
+        strong_pair_count = sum(1 for value in abs_values if value >= 0.3)
+        near_zero_pair_count = sum(1 for value in abs_values if value <= 0.05)
+        target_near_zero_count = sum(1 for value in target_abs_values if value <= 0.05)
+        strong_ratio = strong_pair_count / pair_count
+        near_zero_ratio = near_zero_pair_count / pair_count
+        target_near_zero_ratio = (
+            target_near_zero_count / len(target_abs_values) if target_abs_values else 0.0
+        )
+        score = (
+            mean_abs_corr * 1.0
+            + target_mean_abs_corr * 1.35
+            + strong_ratio * 0.7
+            + coverage * 0.25
+            - near_zero_ratio * 0.8
+            - target_near_zero_ratio * 1.0
+        )
+        return {
+            "pair_count": pair_count,
+            "total_possible_pairs": total_possible,
+            "coverage": round(coverage, 4),
+            "mean_abs_corr": round(mean_abs_corr, 4),
+            "target_mean_abs_corr": round(target_mean_abs_corr, 4),
+            "strong_pair_count": strong_pair_count,
+            "near_zero_pair_count": near_zero_pair_count,
+            "target_near_zero_count": target_near_zero_count,
+            "score": round(score, 6),
+            "top_pairs": pairs[:6],
+        }
+
+    def _build_correlation_combo_candidates(
+        self,
+        column_name: str,
+        ranked_peers: list[dict[str, Any]],
+        peer_limit: int,
+    ) -> list[list[str]]:
+        if peer_limit <= 0:
+            return []
+        peers_ranked = [str(item.get("column")) for item in ranked_peers if item.get("column")]
+        if not peers_ranked:
+            return []
+        peers_ranked = peers_ranked[: max(peer_limit * 2, peer_limit)]
+        positives = [
+            str(item.get("column"))
+            for item in ranked_peers
+            if item.get("column") and (self._coerce_float(item.get("correlation"), 0.0) or 0.0) >= 0
+        ]
+        negatives = [
+            str(item.get("column"))
+            for item in ranked_peers
+            if item.get("column") and (self._coerce_float(item.get("correlation"), 0.0) or 0.0) < 0
+        ]
+        moderate = [
+            str(item.get("column"))
+            for item in ranked_peers
+            if item.get("column") and abs(self._coerce_float(item.get("correlation"), 0.0) or 0.0) >= 0.2
+        ]
+
+        size_candidates: list[int] = []
+        for value in (3, 5, peer_limit):
+            if value <= 0:
+                continue
+            size_candidates.append(min(value, len(peers_ranked), peer_limit))
+        size_candidates = [size for size in size_candidates if size > 0]
+        if not size_candidates:
+            size_candidates = [min(len(peers_ranked), peer_limit)]
+
+        combos: list[list[str]] = []
+        for size in size_candidates:
+            base = peers_ranked[:size]
+            if base:
+                combos.append([column_name, *base])
+
+            diversified: list[str] = []
+            pos_take = min(len(positives), max(1, size // 2))
+            neg_take = min(len(negatives), max(1, size - pos_take))
+            diversified.extend(positives[:pos_take])
+            diversified.extend([value for value in negatives[:neg_take] if value not in diversified])
+            for peer in peers_ranked:
+                if len(diversified) >= size:
+                    break
+                if peer in diversified:
+                    continue
+                diversified.append(peer)
+            if diversified:
+                combos.append([column_name, *diversified[:size]])
+
+        if moderate:
+            combos.append([column_name, *moderate[: min(len(moderate), peer_limit)]])
+
+        unique_combos: list[list[str]] = []
+        seen: set[tuple[str, ...]] = set()
+        for combo in combos:
+            normalized: list[str] = []
+            for col in combo:
+                text = str(col or "").strip()
+                if not text or text in normalized:
+                    continue
+                normalized.append(text)
+            if len(normalized) < 2:
+                continue
+            key = tuple(normalized)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_combos.append(normalized[: peer_limit + 1])
+            if len(unique_combos) >= 8:
+                break
+        return unique_combos
+
+    async def _select_best_correlation_combo(
+        self,
+        column_name: str,
+        candidates: list[dict[str, Any]],
+    ) -> tuple[str | None, str | None]:
+        if not candidates:
+            return None, None
+        payload = {
+            "target_column": column_name,
+            "candidates": [
+                {
+                    "id": candidate.get("id"),
+                    "columns": candidate.get("columns"),
+                    "metrics": candidate.get("metrics"),
+                }
+                for candidate in candidates
+            ],
+        }
+        instruction = (
+            "You are a correlation-selection agent. Choose the best candidate to keep in the final heatmap. "
+            "Prefer combinations with meaningful, non-trivial relationships and fewer near-zero pairwise values. "
+            "Keep diverse signal (both positive and negative if present), but avoid noisy weak-only sets. "
+            "Return JSON with keys: selected_id (string), rationale (string)."
+        )
+        prompt = (
+            f"{instruction} Context JSON: {json.dumps(payload, default=str)}"
+        )
+        response_format = {
+            "type": "object",
+            "properties": {
+                "selected_id": {"type": "string"},
+                "rationale": {"type": "string"},
+            },
+        }
+        try:
+            raw = await self.ai_sql.ai_complete(
+                self.model_id, prompt, response_format=response_format
+            )
+        except Exception:
+            return None, None
+        if isinstance(raw, dict):
+            result = raw
+        else:
+            text = str(raw or "").strip()
+            if not text:
+                return None, None
+            result: dict[str, Any] | None = None
+            try:
+                loaded = json.loads(text)
+                if isinstance(loaded, dict):
+                    result = loaded
+            except json.JSONDecodeError:
+                match = re.search(r"\{.*\}", text, re.DOTALL)
+                if match:
+                    try:
+                        loaded = json.loads(match.group(0))
+                        if isinstance(loaded, dict):
+                            result = loaded
+                    except json.JSONDecodeError:
+                        result = None
+            if result is None:
+                return None, None
+        if not isinstance(result, dict):
+            return None, None
+        selected_id = str(result.get("selected_id") or "").strip()
+        rationale = str(result.get("rationale") or "").strip()
+        if not selected_id:
+            return None, rationale or None
+        return selected_id, rationale or None
+
+    async def _generate_heatmap_ai_insight(
+        self,
+        column_name: str,
+        matrix_columns: list[str],
+        heatmap_data: list[dict[str, Any]],
+    ) -> str:
+        unique_pairs = self._extract_unique_heatmap_pairs(heatmap_data)
+        payload = {
+            "target_column": column_name,
+            "selected_columns": matrix_columns,
+            "pairwise_top": unique_pairs[:12],
+        }
+        prompt = (
+            "You are a quantitative analyst. Summarize this recomputed correlation heatmap in 1-2 concise sentences. "
+            "Mention strongest positive/negative relationships and whether overall signal is weak/moderate/strong. "
+            "Do not invent external context. Return JSON only: {\"insight\":\"...\"}. "
+            f"Context: {json.dumps(payload, default=str)}"
+        )
+        response_format = {
+            "type": "object",
+            "properties": {
+                "insight": {"type": "string"},
+            },
+        }
+        fallback = self._fallback_heatmap_insight(column_name, matrix_columns, unique_pairs)
+        try:
+            raw = await self.ai_sql.ai_complete(
+                self.model_id, prompt, response_format=response_format
+            )
+            text = str(raw or "").strip()
+            if not text:
+                return fallback
+            parsed: dict[str, Any] | None = None
+            try:
+                loaded = json.loads(text)
+                if isinstance(loaded, dict):
+                    parsed = loaded
+            except json.JSONDecodeError:
+                match = re.search(r"\{.*\}", text, re.DOTALL)
+                if match:
+                    try:
+                        loaded = json.loads(match.group(0))
+                        if isinstance(loaded, dict):
+                            parsed = loaded
+                    except json.JSONDecodeError:
+                        parsed = None
+            insight = str((parsed or {}).get("insight") or "").strip()
+            return insight or fallback
+        except Exception:
+            return fallback
+
+    @tool
+    async def recompute_correlation_heatmap(
+        self,
+        table_asset_id: int,
+        column_name: str,
+        columns: list[str] | None = None,
+        sample_size: int | None = None,
+        window_days: int | None = None,
+    ) -> dict[str, Any]:
+        """Recompute a correlation heatmap for selected numeric columns and regenerate insight."""
+        ctx = await self._load_context(table_asset_id, column_name)
+        overrides = ctx.column_meta.overrides or {}
+        if sample_size is None:
+            override_sample_size = overrides.get("numeric_correlations_sample_size")
+            if override_sample_size is not None:
+                sample_size = self._coerce_int(override_sample_size)
+        if window_days is None:
+            override_window_days = overrides.get("numeric_correlations_window_days")
+            if override_window_days is not None:
+                window_days = self._coerce_int(override_window_days)
+
+        numeric_columns = await self._list_numeric_columns(table_asset_id)
+        if column_name not in numeric_columns:
+            numeric_columns = [column_name, *numeric_columns]
+        canonical_map = {name.lower(): name for name in numeric_columns}
+
+        heatmap_col_limit = self._coerce_int(
+            overrides.get("visual_correlation_heatmap_columns"), 8
+        )
+        if heatmap_col_limit < 2:
+            heatmap_col_limit = 2
+
+        matrix_columns: list[str] = [column_name]
+        requested = columns if isinstance(columns, list) else []
+        for raw in requested:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            canonical = canonical_map.get(text.lower())
+            if not canonical or canonical in matrix_columns:
+                continue
+            matrix_columns.append(canonical)
+            if len(matrix_columns) >= heatmap_col_limit:
+                break
+
+        if len(matrix_columns) < 2:
+            for peer in numeric_columns:
+                if peer in matrix_columns:
+                    continue
+                matrix_columns.append(peer)
+                if len(matrix_columns) >= min(heatmap_col_limit, 2):
+                    break
+
+        if len(matrix_columns) < 2:
+            return {
+                "column": column_name,
+                "skipped": True,
+                "reason": "insufficient_numeric_columns",
+            }
+        heatmap_data = await self._compute_correlation_heatmap_data(
+            ctx,
+            matrix_columns,
+            sample_size=sample_size,
+            window_days=window_days,
+        )
+        if not heatmap_data:
+            return {
+                "column": column_name,
+                "skipped": True,
+                "reason": "insufficient_pairs",
+                "source_columns": matrix_columns,
+            }
+        min_abs_correlation = self._resolve_min_abs_correlation(overrides)
+        matrix_columns, heatmap_data, dropped_columns = self._prune_heatmap_by_target_signal(
+            column_name,
+            matrix_columns,
+            heatmap_data,
+            min_abs_correlation,
+        )
+        if len(matrix_columns) < 2 or not heatmap_data:
+            return {
+                "column": column_name,
+                "skipped": True,
+                "reason": "weak_correlations_only",
+                "source_columns": [column_name],
+                "dropped_columns": dropped_columns,
+                "min_abs_correlation": min_abs_correlation,
+            }
+
+        narrative = [
+            "Pairwise correlation matrix across selected numeric columns",
+            "Color indicates strength and direction from -1 to 1",
+        ]
+        if dropped_columns:
+            narrative.append(
+                f"Filtered {len(dropped_columns)} weak columns below |r|<{round(min_abs_correlation, 3)} vs target."
+            )
+        chart = self._build_chart_spec(
+            chart_type="heatmap",
+            title=f"Correlation heatmap for {column_name}",
+            x_key="feature_x",
+            y_key="feature_y",
+            data=heatmap_data,
+            narrative=narrative,
+            source_columns=matrix_columns,
+            x_title="Feature",
+            y_title="Feature",
+        )
+        chart["valueKey"] = "correlation"
+        insight = await self._generate_heatmap_ai_insight(
+            column_name, matrix_columns, heatmap_data
+        )
+        if insight:
+            chart["insight"] = insight
+        return {
+            "column": column_name,
+            "chart": chart,
+            "insight": insight,
+            "source_columns": matrix_columns,
+            "sample_size": sample_size,
+            "window_days": window_days,
+            "dropped_columns": dropped_columns,
+            "min_abs_correlation": min_abs_correlation,
+        }
+
     async def _select_visuals_with_ai(
         self,
         ctx: Any,
@@ -294,6 +954,7 @@ class ColumnWorkflowVisualsMixin:
             f"Pick up to {limit} chart IDs from the candidates. "
             "Prefer charts that are informative, non-redundant, highlight the target column, "
             "and include a clear time trend or distribution when available. "
+            "If a chart uses year-like fields, reject options that look epoch-misparsed (e.g. 1970 artifacts). "
             "Return JSON: {\"selected_ids\": [\"id1\"], \"rationale\": \"...\"}."
         )
         prompt += f" Candidates: {json.dumps(summaries)}"
@@ -367,6 +1028,7 @@ class ColumnWorkflowVisualsMixin:
                 "Select the best chart IDs for the target column. "
                 f"Target column: {column_name}. "
                 f"Pick up to {limit} chart IDs. "
+                "Avoid charts with obvious year/epoch parsing artifacts. "
                 "Return JSON only: {\"selected_ids\": [\"id1\"], \"rationale\": \"...\"}."
             )
             retry_prompt += f" Candidates: {json.dumps(simple_candidates)}"
@@ -618,9 +1280,52 @@ class ColumnWorkflowVisualsMixin:
                     self._coerce_int(time_meta.get("unique_count"), 0) >= min_points
                 )
         analysis_errors: list[dict[str, Any]] = []
+        year_anomaly_context: dict[str, Any] | None = None
+        year_anomaly_column: str | None = None
+        if is_temporal and self._looks_like_year_name(column_name):
+            year_anomaly_column = column_name
+        elif (not is_temporal) and ctx.time_column and self._looks_like_year_name(ctx.time_column):
+            year_anomaly_column = ctx.time_column
+        year_conflict_detector = getattr(self, "_detect_year_value_conflicts", None)
+        if year_anomaly_column and callable(year_conflict_detector):
+            try:
+                year_scan_sample = self._coerce_int(
+                    overrides.get("visual_year_scan_sample_size")
+                    or overrides.get("scan_conflicts_sample_size"),
+                    20000,
+                )
+                year_scan_window = overrides.get("visual_year_scan_window_days")
+                year_window_days = (
+                    self._coerce_int(year_scan_window)
+                    if year_scan_window is not None
+                    else None
+                )
+                year_scan = await year_conflict_detector(
+                    ctx,
+                    year_anomaly_column,
+                    year_scan_sample,
+                    max_pairs=8,
+                    window_days=year_window_days,
+                    time_column=ctx.time_column,
+                )
+                if isinstance(year_scan, dict):
+                    year_anomaly_context = {
+                        "column": year_anomaly_column,
+                        "anomaly_count": self._coerce_int(year_scan.get("anomaly_count")),
+                        "anomaly_rate": year_scan.get("anomaly_rate"),
+                        "valid_range": {
+                            "min": year_scan.get("range_min"),
+                            "max": year_scan.get("range_max"),
+                        },
+                        "samples": year_scan.get("value_conflicts") or [],
+                    }
+            except Exception as exc:
+                analysis_errors.append(
+                    {"step": "year_value_validation", "error": str(exc)}
+                )
 
         if is_temporal:
-            time_expr = self._resolve_temporal_expr(ctx, col)
+            time_expr = self._resolve_temporal_expr(ctx, col, column_name)
             used_time_columns.add(column_name)
             stats_query = f"""
             WITH base AS (
@@ -685,8 +1390,11 @@ class ColumnWorkflowVisualsMixin:
             analysis: dict[str, Any] = {
                 "visuals": custom_visuals,
                 "stats": stats,
+                "panel_visual_sampling": None,
                 "queries": {"stats_query": stats_query.strip()},
             }
+            if year_anomaly_context:
+                analysis["year_value_anomalies"] = year_anomaly_context
             if analysis_errors:
                 analysis["errors"] = analysis_errors
             await self._update_column_analysis(ctx, analysis)
@@ -695,6 +1403,7 @@ class ColumnWorkflowVisualsMixin:
         visuals: list[dict[str, Any]] = []
         histogram_data: list[dict[str, Any]] = []
         hist_query: str | None = None
+        panel_visual_sampling: dict[str, Any] | None = None
 
         # ---- Fix 1: 直方图判断 key 修复 + min==max guard ----
         min_v = stats.get("min_value")
@@ -789,7 +1498,9 @@ class ColumnWorkflowVisualsMixin:
         if is_temporal:
             time_col = time_expr or col
         elif ctx.time_column and time_column_ok:
-            time_col = self._resolve_temporal_expr(ctx, self._quote_ident(ctx.time_column))
+            time_col = self._resolve_temporal_expr(
+                ctx, self._quote_ident(ctx.time_column), ctx.time_column
+            )
             used_time_columns.add(ctx.time_column)
 
         if time_col:
@@ -801,7 +1512,7 @@ class ColumnWorkflowVisualsMixin:
                 column_name if is_temporal else ctx.time_column
             )
             bucket = str(bucket_override or default_bucket or "day").lower()
-            if bucket not in {"hour", "day", "week", "month", "raw"}:
+            if bucket not in {"year", "month", "week", "day", "hour", "raw"}:
                 bucket = "day"
             target_points = self._coerce_int(
                 overrides.get("visual_time_target_points"), 96
@@ -825,6 +1536,9 @@ class ColumnWorkflowVisualsMixin:
                     time_bucket_expr = f"{time_col}"
                 else:
                     time_bucket_expr = f"DATE_TRUNC('{bucket_key}', {time_col})"
+                time_bucket_select = self._format_time_bucket_sql(
+                    bucket_key, time_bucket_expr
+                )
                 effective_limit = time_limit
                 if bucket_key == "raw" and effective_limit is None:
                     raw_limit = self._coerce_int(
@@ -836,7 +1550,7 @@ class ColumnWorkflowVisualsMixin:
                     {ctx.analysis_query}
                 )
                 SELECT
-                    TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+                    {time_bucket_select} AS time_bucket,
                     {"COUNT(*) AS count" if is_temporal else f"AVG({col}) AS avg_value"}
                 FROM base
                 WHERE {time_col} IS NOT NULL
@@ -882,7 +1596,9 @@ class ColumnWorkflowVisualsMixin:
             # If points are still sparse, try a finer bucket to surface more detail.
             if len(time_rows) < target_points and bucket != "raw":
                 finer_candidates: list[str] = []
-                if bucket == "month":
+                if bucket == "year":
+                    finer_candidates = ["month", "week", "day", "hour", "raw"]
+                elif bucket == "month":
                     finer_candidates = ["week", "day", "hour", "raw"]
                 elif bucket == "week":
                     finer_candidates = ["day", "hour", "raw"]
@@ -941,30 +1657,58 @@ class ColumnWorkflowVisualsMixin:
             if time_data and len(time_data) >= min_points:
                 time_title = column_name if is_temporal else (ctx.time_column or "time")
                 y_title = "Count" if is_temporal else f"Average {column_name}"
-                visuals.append(
-                    self._build_chart_spec(
-                        chart_type="line",
-                        title=f"{column_name} over time",
-                        x_key="time_bucket",
-                        y_key="count" if is_temporal else "avg_value",
-                        data=time_data,
-                        narrative=[
-                            (
-                                "Daily trend based on counts"
-                                if is_temporal
-                                else "Daily trend based on average values"
-                            ),
-                            "Look for seasonality or breaks in trend",
-                        ],
-                        source_columns=(
-                            [column_name]
-                            if is_temporal
-                            else [ctx.time_column, column_name]
-                        ),
-                        x_title=time_title,
-                        y_title=y_title,
+                time_narrative = [
+                    (
+                        "Daily trend based on counts"
+                        if is_temporal
+                        else "Daily trend based on average values"
+                    ),
+                    "Look for seasonality or breaks in trend",
+                ]
+                if (
+                    year_anomaly_context
+                    and year_anomaly_column
+                    and (
+                        (is_temporal and year_anomaly_column == column_name)
+                        or ((not is_temporal) and year_anomaly_column == ctx.time_column)
                     )
+                ):
+                    min_range = (year_anomaly_context.get("valid_range") or {}).get("min")
+                    max_range = (year_anomaly_context.get("valid_range") or {}).get("max")
+                    anomaly_count = self._coerce_int(
+                        year_anomaly_context.get("anomaly_count")
+                    )
+                    time_narrative.append(
+                        f"Filtered {anomaly_count} out-of-range year values (expected {min_range}-{max_range})"
+                    )
+                time_chart = self._build_chart_spec(
+                    chart_type="line",
+                    title=f"{column_name} over time",
+                    x_key="time_bucket",
+                    y_key="count" if is_temporal else "avg_value",
+                    data=time_data,
+                    narrative=time_narrative,
+                    source_columns=(
+                        [column_name]
+                        if is_temporal
+                        else [ctx.time_column, column_name]
+                    ),
+                    x_title=time_title,
+                    y_title=y_title,
                 )
+                if (
+                    year_anomaly_context
+                    and year_anomaly_column
+                    and (
+                        (is_temporal and year_anomaly_column == column_name)
+                        or ((not is_temporal) and year_anomaly_column == ctx.time_column)
+                    )
+                ):
+                    self._append_chart_warning(
+                        time_chart,
+                        self._build_year_anomaly_warning(year_anomaly_context),
+                    )
+                visuals.append(time_chart)
             elif is_temporal:
                 # temporal 列解析失败时 fallback
                 fallback_query = f"""
@@ -1030,7 +1774,7 @@ class ColumnWorkflowVisualsMixin:
             multi_time_column = ctx.time_column or (temporal_columns[0] if temporal_columns else None)
             if multi_time_column:
                 multi_time_expr = self._resolve_temporal_expr(
-                    ctx, self._quote_ident(multi_time_column)
+                    ctx, self._quote_ident(multi_time_column), multi_time_column
                 )
                 bucket_override = (
                     overrides.get("visual_time_bucket")
@@ -1038,7 +1782,7 @@ class ColumnWorkflowVisualsMixin:
                 )
                 default_bucket = self._default_time_bucket(multi_time_column)
                 bucket = str(bucket_override or default_bucket or "day").lower()
-                if bucket not in {"hour", "day", "week", "month", "raw"}:
+                if bucket not in {"year", "month", "week", "day", "hour", "raw"}:
                     bucket = "day"
                 limit_override = (
                     overrides.get("visual_time_limit") or overrides.get("visual_point_limit")
@@ -1146,12 +1890,15 @@ class ColumnWorkflowVisualsMixin:
                         time_bucket_expr = f"{multi_time_expr}"
                     else:
                         time_bucket_expr = f"DATE_TRUNC('{bucket}', {multi_time_expr})"
+                    time_bucket_select = self._format_time_bucket_sql(
+                        bucket, time_bucket_expr
+                    )
                     multi_query = f"""
                     WITH base AS (
                         {ctx.analysis_query}
                     )
                     SELECT
-                        TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+                        {time_bucket_select} AS time_bucket,
                         {", ".join(select_parts)}
                     FROM base
                     WHERE {multi_time_expr} IS NOT NULL
@@ -1245,6 +1992,206 @@ class ColumnWorkflowVisualsMixin:
                             spec["yScale"] = "linear"
                         visuals.append(spec)
 
+        # ---- Panel entity trend (category × year × value) ----
+        if (
+            not is_temporal
+            and str(ctx.structure_type or "").lower() == "panel"
+        ):
+            panel_time_column = ctx.time_column or (temporal_columns[0] if temporal_columns else None)
+            panel_category_columns = await self._list_categorical_columns(
+                ctx.table_asset_id, max_columns=6
+            )
+            panel_category_meta = None
+            if panel_category_columns:
+                def _panel_rank(item: dict[str, Any]) -> tuple[int, int]:
+                    name = str(item.get("column") or "").lower()
+                    unique_count = self._coerce_int(item.get("unique_count"), 0)
+                    id_hint = any(
+                        token in name
+                        for token in (
+                            "id",
+                            "entity",
+                            "model",
+                            "store",
+                            "customer",
+                            "user",
+                            "account",
+                            "product",
+                            "sku",
+                        )
+                    )
+                    return (1 if id_hint else 0, unique_count)
+
+                panel_candidates = [
+                    item
+                    for item in panel_category_columns
+                    if item.get("column")
+                    and str(item.get("column")) != column_name
+                    and str(item.get("column")) != str(panel_time_column or "")
+                ]
+                if panel_candidates:
+                    panel_category_meta = max(panel_candidates, key=_panel_rank)
+
+            if panel_time_column and panel_category_meta:
+                panel_time_expr = self._resolve_temporal_expr(
+                    ctx, self._quote_ident(panel_time_column), panel_time_column
+                )
+                panel_category_column = str(panel_category_meta.get("column"))
+                panel_category_col = self._quote_ident(panel_category_column)
+                category_limit = self._coerce_int(
+                    overrides.get("visual_panel_category_limit")
+                    or overrides.get("visual_panel_max_categories"),
+                    6,
+                )
+                if category_limit < 2:
+                    category_limit = 2
+                panel_bucket_override = (
+                    overrides.get("visual_panel_time_bucket")
+                    or overrides.get("visual_time_bucket")
+                )
+                panel_bucket = str(panel_bucket_override or "year").lower()
+                if panel_bucket not in {"year", "month", "week", "day", "hour", "raw"}:
+                    panel_bucket = "year"
+                panel_time_bucket_expr = (
+                    panel_time_expr
+                    if panel_bucket == "raw"
+                    else f"DATE_TRUNC('{panel_bucket}', {panel_time_expr})"
+                )
+                panel_time_bucket_select = self._format_time_bucket_sql(
+                    panel_bucket, "bucket_value"
+                )
+                panel_query = f"""
+                WITH base AS (
+                    {ctx.analysis_query}
+                ),
+                top_categories AS (
+                    SELECT
+                        {panel_category_col} AS category,
+                        COUNT(*) AS row_count
+                    FROM base
+                    WHERE {panel_time_expr} IS NOT NULL
+                    AND {panel_category_col} IS NOT NULL
+                    AND {col} IS NOT NULL
+                    GROUP BY {panel_category_col}
+                    ORDER BY row_count DESC
+                    LIMIT {int(category_limit)}
+                ),
+                panel_points AS (
+                    SELECT
+                        {panel_time_bucket_expr} AS bucket_value,
+                        TO_VARCHAR(base.{panel_category_col}) AS category,
+                        AVG({col}) AS avg_value,
+                        COUNT(*) AS point_count
+                    FROM base
+                    JOIN top_categories
+                    ON base.{panel_category_col} = top_categories.category
+                    WHERE {panel_time_expr} IS NOT NULL
+                    AND base.{panel_category_col} IS NOT NULL
+                    AND {col} IS NOT NULL
+                    GROUP BY bucket_value, TO_VARCHAR(base.{panel_category_col})
+                )
+                SELECT
+                    {panel_time_bucket_select} AS time_bucket,
+                    category,
+                    avg_value,
+                    point_count
+                FROM panel_points
+                ORDER BY time_bucket ASC, point_count DESC, category ASC
+                """
+                try:
+                    panel_rows = await self.sf.execute_query(panel_query)
+                except Exception as exc:
+                    logger.warning("Panel trend query failed for %s: %s", column_name, exc)
+                    analysis_errors.append(
+                        {"step": "panel_trend_query", "error": str(exc)}
+                    )
+                    panel_rows = []
+
+                if panel_rows:
+                    bucket_payload: dict[str, dict[str, float]] = {}
+                    category_totals: dict[str, int] = {}
+                    for row in panel_rows:
+                        raw_bucket = row.get("TIME_BUCKET") or row.get("time_bucket")
+                        raw_category = row.get("CATEGORY") or row.get("category")
+                        avg_value = self._coerce_float(
+                            row.get("AVG_VALUE") or row.get("avg_value")
+                        )
+                        point_count = self._coerce_int(
+                            row.get("POINT_COUNT") or row.get("point_count"), 0
+                        )
+                        if raw_bucket is None or raw_category is None or avg_value is None:
+                            continue
+                        bucket_key = str(raw_bucket)
+                        category_label = self._normalize_category_label(raw_category)
+                        if not category_label:
+                            continue
+                        bucket_payload.setdefault(bucket_key, {})[category_label] = float(avg_value)
+                        category_totals[category_label] = category_totals.get(category_label, 0) + max(point_count, 1)
+
+                    selected_categories = [
+                        label
+                        for label, _score in sorted(
+                            category_totals.items(),
+                            key=lambda item: item[1],
+                            reverse=True,
+                        )[:category_limit]
+                    ]
+
+                    if selected_categories and len(bucket_payload) >= min_points:
+                        alias_map: dict[str, str] = {}
+                        for idx, label in enumerate(selected_categories):
+                            alias = f"panel_series_{idx}_{self._normalize_identifier(label)}"
+                            alias_map[label] = alias
+
+                        panel_series_data: list[dict[str, Any]] = []
+                        for bucket_key in sorted(bucket_payload.keys()):
+                            payload: dict[str, Any] = {"time_bucket": bucket_key}
+                            for label in selected_categories:
+                                payload[alias_map[label]] = bucket_payload[bucket_key].get(label)
+                            panel_series_data.append(payload)
+
+                        if len(panel_series_data) >= min_points and len(selected_categories) >= 2:
+                            panel_spec = self._build_chart_spec(
+                                chart_type="line",
+                                title=f"{column_name} panel trend by {panel_category_column}",
+                                x_key="time_bucket",
+                                y_key=alias_map[selected_categories[0]],
+                                data=panel_series_data,
+                                narrative=[
+                                    f"Top {len(selected_categories)} {panel_category_column} groups plotted over {panel_bucket}",
+                                    "Compares entity-level trajectories on the same timeline",
+                                ],
+                                source_columns=[panel_time_column, panel_category_column, column_name],
+                                x_title=panel_time_column,
+                                y_title=f"Average {column_name}",
+                            )
+                            panel_spec["series"] = [
+                                {
+                                    "key": alias_map[label],
+                                    "label": label,
+                                    "highlight": idx == 0,
+                                }
+                                for idx, label in enumerate(selected_categories)
+                            ]
+                            if (
+                                year_anomaly_context
+                                and year_anomaly_column
+                                and panel_time_column == year_anomaly_column
+                            ):
+                                self._append_chart_warning(
+                                    panel_spec,
+                                    self._build_year_anomaly_warning(year_anomaly_context),
+                                )
+                            visuals.append(panel_spec)
+                            panel_visual_sampling = {
+                                "time_column": panel_time_column,
+                                "category_column": panel_category_column,
+                                "bucket": panel_bucket,
+                                "category_count": len(selected_categories),
+                                "selected_categories": selected_categories,
+                                "point_count": len(panel_series_data),
+                            }
+
         # ---- Extra temporal columns for numeric ----
         if not is_temporal:
 
@@ -1263,7 +2210,7 @@ class ColumnWorkflowVisualsMixin:
                 temporal_columns[0] if temporal_columns else None
             )
             bucket = str(bucket_override or default_bucket or "day").lower()
-            if bucket not in {"hour", "day", "week", "month", "raw"}:
+            if bucket not in {"year", "month", "week", "day", "hour", "raw"}:
                 bucket = "day"
             target_points = self._coerce_int(
                 overrides.get("visual_time_target_points"), 96
@@ -1291,14 +2238,14 @@ class ColumnWorkflowVisualsMixin:
                 ):
                     continue
                 temporal_expr = self._resolve_temporal_expr(
-                    ctx, self._quote_ident(temporal_column)
+                    ctx, self._quote_ident(temporal_column), temporal_column
                 )
                 column_bucket = (
                     bucket
                     if bucket_override
                     else str(self._default_time_bucket(temporal_column) or "day").lower()
                 )
-                if column_bucket not in {"hour", "day", "week", "month", "raw"}:
+                if column_bucket not in {"year", "month", "week", "day", "hour", "raw"}:
                     column_bucket = "day"
 
                 def _build_extra_query(bucket_key: str) -> tuple[str, str]:
@@ -1306,6 +2253,9 @@ class ColumnWorkflowVisualsMixin:
                         f"{temporal_expr}"
                         if bucket_key == "raw"
                         else f"DATE_TRUNC('{bucket_key}', {temporal_expr})"
+                    )
+                    time_bucket_select = self._format_time_bucket_sql(
+                        bucket_key, time_bucket_expr
                     )
                     effective_limit = time_limit
                     if bucket_key == "raw" and effective_limit is None:
@@ -1318,7 +2268,7 @@ class ColumnWorkflowVisualsMixin:
                         {ctx.analysis_query}
                     )
                     SELECT
-                        TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+                        {time_bucket_select} AS time_bucket,
                         AVG({col}) AS avg_value
                     FROM base
                     WHERE {temporal_expr} IS NOT NULL
@@ -1385,7 +2335,9 @@ class ColumnWorkflowVisualsMixin:
 
                 if len(extra_data) < target_points and column_bucket != "raw":
                     finer_candidates: list[str] = []
-                    if column_bucket == "month":
+                    if column_bucket == "year":
+                        finer_candidates = ["month", "week", "day", "hour", "raw"]
+                    elif column_bucket == "month":
                         finer_candidates = ["week", "day", "hour", "raw"]
                     elif column_bucket == "week":
                         finer_candidates = ["day", "hour", "raw"]
@@ -1430,22 +2382,30 @@ class ColumnWorkflowVisualsMixin:
                     continue
 
                 if extra_data and len(extra_data) >= min_points:
-                    visuals.append(
-                        self._build_chart_spec(
-                            chart_type="line",
-                            title=f"{column_name} by {temporal_column}",
-                            x_key="time_bucket",
-                            y_key="avg_value",
-                            data=extra_data,
-                            narrative=[
-                                "Daily trend based on average values",
-                                f"Grouped by {temporal_column}",
-                            ],
-                            source_columns=[temporal_column, column_name],
-                            x_title=temporal_column,
-                            y_title=f"Average {column_name}",
-                        )
+                    extra_chart = self._build_chart_spec(
+                        chart_type="line",
+                        title=f"{column_name} by {temporal_column}",
+                        x_key="time_bucket",
+                        y_key="avg_value",
+                        data=extra_data,
+                        narrative=[
+                            "Daily trend based on average values",
+                            f"Grouped by {temporal_column}",
+                        ],
+                        source_columns=[temporal_column, column_name],
+                        x_title=temporal_column,
+                        y_title=f"Average {column_name}",
                     )
+                    if (
+                        year_anomaly_context
+                        and year_anomaly_column
+                        and temporal_column == year_anomaly_column
+                    ):
+                        self._append_chart_warning(
+                            extra_chart,
+                            self._build_year_anomaly_warning(year_anomaly_context),
+                        )
+                    visuals.append(extra_chart)
                     added += 1
 
         # ---- Extra categorical breakdowns for numeric ----
@@ -1618,114 +2578,212 @@ class ColumnWorkflowVisualsMixin:
                 )
             )
 
-        # ---- Correlation heatmap (pairwise matrix among target + top peers) ----
+        # ---- Correlation heatmap (auto combo candidates + AI selection) ----
         heatmap_col_limit = self._coerce_int(
             overrides.get("visual_correlation_heatmap_columns"), 8
         )
         if heatmap_col_limit < 2:
             heatmap_col_limit = 2
-        matrix_columns: list[str] = [column_name]
+        heatmap_peer_limit = max(1, heatmap_col_limit - 1)
+        min_abs_correlation = self._resolve_min_abs_correlation(overrides)
+
+        ranked_peers: list[dict[str, Any]] = []
+        fallback_ranked_peers: list[dict[str, Any]] = []
+        seen_heatmap_peers: set[str] = set()
         for item in corr_items:
             if not isinstance(item, dict):
                 continue
             peer = str(item.get("column") or "").strip()
-            if not peer or peer in matrix_columns:
+            corr_value = self._coerce_float(item.get("correlation"))
+            if not peer or peer == column_name or peer in seen_heatmap_peers:
                 continue
-            matrix_columns.append(peer)
-            if len(matrix_columns) >= heatmap_col_limit:
-                break
-        if len(matrix_columns) < 2:
+            if corr_value is None:
+                continue
+            seen_heatmap_peers.add(peer)
+            entry = {"column": peer, "correlation": corr_value}
+            fallback_ranked_peers.append(entry)
+            if abs(float(corr_value)) >= min_abs_correlation:
+                ranked_peers.append(entry)
+        ranked_peers.sort(
+            key=lambda entry: abs(float(entry.get("correlation") or 0.0)),
+            reverse=True,
+        )
+        fallback_ranked_peers.sort(
+            key=lambda entry: abs(float(entry.get("correlation") or 0.0)),
+            reverse=True,
+        )
+
+        if not ranked_peers and fallback_ranked_peers:
+            ranked_peers = fallback_ranked_peers[
+                : max(1, min(heatmap_peer_limit, 3))
+            ]
+
+        if not ranked_peers:
             fallback_numeric = [
                 name
                 for name in await self._list_numeric_columns(ctx.table_asset_id)
                 if name != column_name
             ]
-            for peer in fallback_numeric:
-                if peer in matrix_columns:
+            for peer in fallback_numeric[: max(heatmap_peer_limit * 2, heatmap_peer_limit)]:
+                ranked_peers.append({"column": peer, "correlation": 0.0})
+
+        candidate_combos = self._build_correlation_combo_candidates(
+            column_name, ranked_peers, heatmap_peer_limit
+        )
+        if not candidate_combos:
+            seed_combo = [column_name]
+            for item in ranked_peers:
+                peer = str(item.get("column") or "").strip()
+                if not peer or peer in seed_combo:
                     continue
-                matrix_columns.append(peer)
-                if len(matrix_columns) >= heatmap_col_limit:
+                seed_combo.append(peer)
+                if len(seed_combo) >= heatmap_col_limit:
                     break
-        if len(matrix_columns) >= 2:
-            pair_selects: list[str] = []
-            pair_alias_map: dict[str, tuple[str, str]] = {}
-            for left_idx, left_col in enumerate(matrix_columns):
-                left_expr = self._numeric_expr(self._quote_ident(left_col))
-                for right_idx in range(left_idx + 1, len(matrix_columns)):
-                    right_col = matrix_columns[right_idx]
-                    right_expr = self._numeric_expr(self._quote_ident(right_col))
-                    alias = f"corr_{left_idx}_{right_idx}"
-                    pair_selects.append(f"CORR({left_expr}, {right_expr}) AS {alias}")
-                    pair_alias_map[alias] = (left_col, right_col)
-            if pair_selects:
-                matrix_query = f"""
-                WITH base AS (
-                    {ctx.analysis_query}
+            if len(seed_combo) >= 2:
+                candidate_combos = [seed_combo]
+
+        combo_limit = self._coerce_int(
+            overrides.get("visual_correlation_combo_candidates"),
+            5,
+        )
+        if combo_limit <= 0:
+            combo_limit = 1
+        candidate_combos = candidate_combos[: min(combo_limit, 8)]
+
+        correlation_sample_size: int | None = None
+        sample_size_override = overrides.get("numeric_correlations_sample_size")
+        if sample_size_override is not None:
+            correlation_sample_size = self._coerce_int(sample_size_override)
+        correlation_window_days: int | None = None
+        window_days_override = overrides.get("numeric_correlations_window_days")
+        if window_days_override is not None:
+            correlation_window_days = self._coerce_int(window_days_override)
+
+        combo_results: list[dict[str, Any]] = []
+        for idx, combo in enumerate(candidate_combos):
+            if len(combo) < 2:
+                continue
+            try:
+                heatmap_data = await self._compute_correlation_heatmap_data(
+                    ctx,
+                    combo,
+                    sample_size=correlation_sample_size,
+                    window_days=correlation_window_days,
                 )
-                SELECT
-                    {", ".join(pair_selects)}
-                FROM base
-                """
-                try:
-                    matrix_rows = await self.sf.execute_query(matrix_query)
-                    matrix_row = matrix_rows[0] if matrix_rows else {}
-                    heatmap_data: list[dict[str, Any]] = []
-                    for matrix_col in matrix_columns:
-                        heatmap_data.append(
-                            {
-                                "feature_x": matrix_col,
-                                "feature_y": matrix_col,
-                                "correlation": 1.0,
-                            }
-                        )
-                    for alias, (left_col, right_col) in pair_alias_map.items():
-                        raw_value = matrix_row.get(alias.upper())
-                        if raw_value is None:
-                            raw_value = matrix_row.get(alias)
-                        corr_value = self._coerce_float(raw_value)
-                        if corr_value is None:
-                            continue
-                        corr_value = round(float(corr_value), 4)
-                        heatmap_data.append(
-                            {
-                                "feature_x": left_col,
-                                "feature_y": right_col,
-                                "correlation": corr_value,
-                            }
-                        )
-                        heatmap_data.append(
-                            {
-                                "feature_x": right_col,
-                                "feature_y": left_col,
-                                "correlation": corr_value,
-                            }
-                        )
-                    if heatmap_data:
-                        heatmap_spec = self._build_chart_spec(
-                            chart_type="heatmap",
-                            title=f"Correlation heatmap for {column_name}",
-                            x_key="feature_x",
-                            y_key="feature_y",
-                            data=heatmap_data,
-                            narrative=[
-                                "Pairwise correlation matrix across the target and top related numeric columns",
-                                "Color indicates strength and direction from -1 to 1",
-                            ],
-                            source_columns=matrix_columns,
-                            x_title="Feature",
-                            y_title="Feature",
-                        )
-                        heatmap_spec["valueKey"] = "correlation"
-                        visuals.append(heatmap_spec)
-                except Exception as exc:
-                    logger.warning(
-                        "Correlation heatmap query failed for %s: %s",
-                        column_name,
-                        exc,
+            except Exception as exc:
+                logger.warning(
+                    "Correlation heatmap combo query failed for %s (combo %s): %s",
+                    column_name,
+                    idx,
+                    exc,
+                )
+                analysis_errors.append(
+                    {
+                        "step": "correlation_heatmap_combo",
+                        "combo_index": idx,
+                        "columns": combo,
+                        "error": str(exc),
+                    }
+                )
+                continue
+            if not heatmap_data:
+                continue
+            metrics = self._score_correlation_combo(combo, heatmap_data)
+            combo_results.append(
+                {
+                    "id": f"combo_{idx}",
+                    "columns": combo,
+                    "data": heatmap_data,
+                    "metrics": metrics,
+                }
+            )
+
+        if combo_results:
+            combo_results.sort(
+                key=lambda item: float((item.get("metrics") or {}).get("score") or -1.0),
+                reverse=True,
+            )
+            selected_combo = combo_results[0]
+            selection_rationale: str | None = None
+
+            ai_combo_selection = overrides.get("visual_correlation_combo_ai_select")
+            if len(combo_results) > 1 and ai_combo_selection is not False:
+                selected_id, ai_rationale = await self._select_best_correlation_combo(
+                    column_name, combo_results
+                )
+                if selected_id:
+                    matched = next(
+                        (
+                            candidate
+                            for candidate in combo_results
+                            if str(candidate.get("id")) == selected_id
+                        ),
+                        None,
                     )
-                    analysis_errors.append(
-                        {"step": "correlation_heatmap", "error": str(exc)}
+                    if matched:
+                        selected_combo = matched
+                if ai_rationale:
+                    selection_rationale = ai_rationale
+
+            selected_columns = list(selected_combo.get("columns") or [])
+            selected_data = list(selected_combo.get("data") or [])
+            selected_columns, selected_data, dropped_columns = self._prune_heatmap_by_target_signal(
+                column_name,
+                selected_columns,
+                selected_data,
+                min_abs_correlation,
+            )
+            if selected_data:
+                narrative = [
+                    "Pairwise correlation matrix across auto-selected numeric columns",
+                    "Color indicates strength and direction from -1 to 1",
+                ]
+                if dropped_columns:
+                    narrative.append(
+                        f"Filtered {len(dropped_columns)} weak columns below |r|<{round(min_abs_correlation, 3)} vs target."
                     )
+                heatmap_spec = self._build_chart_spec(
+                    chart_type="heatmap",
+                    title=f"Correlation heatmap for {column_name}",
+                    x_key="feature_x",
+                    y_key="feature_y",
+                    data=selected_data,
+                    narrative=narrative,
+                    source_columns=selected_columns,
+                    x_title="Feature",
+                    y_title="Feature",
+                )
+                heatmap_spec["valueKey"] = "correlation"
+                heatmap_spec["selection"] = {
+                    "mode": "auto_combo_selection",
+                    "candidate_count": len(combo_results),
+                    "selected_id": selected_combo.get("id"),
+                    "metrics": selected_combo.get("metrics"),
+                    "rationale": selection_rationale,
+                    "min_abs_correlation": min_abs_correlation,
+                    "dropped_columns": dropped_columns,
+                }
+                if selection_rationale:
+                    heatmap_spec["narrative"] = [
+                        *list(heatmap_spec.get("narrative") or []),
+                        f"Selection rationale: {selection_rationale}",
+                    ]
+                insight = await self._generate_heatmap_ai_insight(
+                    column_name,
+                    selected_columns,
+                    selected_data,
+                )
+                if insight:
+                    heatmap_spec["insight"] = insight
+                visuals.append(heatmap_spec)
+        elif candidate_combos:
+            analysis_errors.append(
+                {
+                    "step": "correlation_heatmap",
+                    "error": "no_valid_correlation_combo",
+                    "candidate_count": len(candidate_combos),
+                }
+            )
 
         filtered_visuals, dropped_visuals = self._filter_low_signal_visuals(
             visuals, overrides
@@ -1743,8 +2801,11 @@ class ColumnWorkflowVisualsMixin:
         analysis: dict[str, Any] = {
             "visuals": visuals,
             "stats": stats,
+            "panel_visual_sampling": panel_visual_sampling,
             "queries": {"stats_query": stats_query.strip()},
         }
+        if year_anomaly_context:
+            analysis["year_value_anomalies"] = year_anomaly_context
         if analysis_errors:
             analysis["errors"] = analysis_errors
         if histogram_data and hist_query:
@@ -1988,7 +3049,7 @@ class ColumnWorkflowVisualsMixin:
         temporal_columns = [item["column"] for item in temporal_meta]
         for temporal_column in temporal_columns:
             temporal_expr = self._resolve_temporal_expr(
-                ctx, self._quote_ident(temporal_column)
+                ctx, self._quote_ident(temporal_column), temporal_column
             )
             bucket_override = (
                 overrides.get("visual_time_bucket")
@@ -1996,7 +3057,7 @@ class ColumnWorkflowVisualsMixin:
             )
             default_bucket = self._default_time_bucket(temporal_column)
             bucket = str(bucket_override or default_bucket or "day").lower()
-            if bucket not in {"hour", "day", "week", "month"}:
+            if bucket not in {"year", "month", "week", "day", "hour", "raw"}:
                 bucket = "day"
             limit_override = (
                 overrides.get("visual_time_limit") or overrides.get("visual_point_limit")
@@ -2015,12 +3076,15 @@ class ColumnWorkflowVisualsMixin:
                     if bucket_key == "raw"
                     else f"DATE_TRUNC('{bucket_key}', {temporal_expr})"
                 )
+                time_bucket_select = self._format_time_bucket_sql(
+                    bucket_key, time_bucket_expr
+                )
                 query = f"""
                 WITH base AS (
                     {ctx.analysis_query}
                 )
                 SELECT
-                    TO_VARCHAR({time_bucket_expr}) AS time_bucket,
+                    {time_bucket_select} AS time_bucket,
                     COUNT(*) AS count
                 FROM base
                 WHERE {temporal_expr} IS NOT NULL

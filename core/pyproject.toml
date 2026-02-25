@@ -19,6 +19,7 @@ dependencies = [
     "pydantic-settings>=2.0.3",
     # Snowflake & Data Processing
     "snowflake-connector-python>=3.6.0",
+    "keyring>=25.6.0",
     "snowflake-sqlalchemy>=1.5.0",
     "pandas>=2.1.0",
     "numpy>=1.26.0",

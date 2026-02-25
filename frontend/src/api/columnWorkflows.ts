@@ -2,7 +2,7 @@
  * Column Workflow API Service
  */
 
-import { apiRequest } from './client';
+import { apiRequest, getApiBase } from './client';
 import { ApiResponse } from './types';
 import type { WorkflowLogEvent } from './eda';
 import { getSnowflakeConfigHeaders } from '@/lib/snowflakeConfig';
@@ -49,6 +49,24 @@ export interface ColumnWorkflowSelectedRunRequest {
   focus?: string;
 }
 
+export interface CorrelationHeatmapRecomputeRequest {
+  columns: string[];
+  sample_size?: number;
+  window_days?: number;
+}
+
+export interface CorrelationHeatmapRecomputeResponse {
+  column: string;
+  chart?: Record<string, any> | null;
+  insight?: string;
+  source_columns?: string[];
+  sample_size?: number | null;
+  window_days?: number | null;
+  skipped?: boolean;
+  reason?: string;
+  error?: string;
+}
+
 const withSnowflakeHeaders = (headers: Record<string, string> = {}): Record<string, string> => ({
   ...headers,
   ...getSnowflakeConfigHeaders(),
@@ -57,7 +75,7 @@ const withSnowflakeHeaders = (headers: Record<string, string> = {}): Record<stri
 export const columnWorkflowsApi = {
   async estimate(tableAssetId: number, columnName: string): Promise<ApiResponse<ColumnWorkflowEstimate>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/estimate`, {
+      const response = await fetch(`${getApiBase()}/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/estimate`, {
         method: 'POST',
         headers: withSnowflakeHeaders(),
       });
@@ -79,7 +97,7 @@ export const columnWorkflowsApi = {
         params.set('focus', options.focus);
       }
       const query = params.toString();
-      const response = await fetch(`/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/run${query ? `?${query}` : ''}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/run${query ? `?${query}` : ''}`, {
         method: 'POST',
         headers: withSnowflakeHeaders(),
       });
@@ -97,7 +115,7 @@ export const columnWorkflowsApi = {
   ): Promise<ApiResponse<ColumnWorkflowRunResponse>> {
     return apiRequest(async () => {
       const response = await fetch(
-        `/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/run-selected`,
+        `${getApiBase()}/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/run-selected`,
         {
           method: "POST",
           headers: withSnowflakeHeaders({ "Content-Type": "application/json" }),
@@ -106,6 +124,27 @@ export const columnWorkflowsApi = {
       );
       if (!response.ok) {
         throw new Error("Failed to run selected workflow nodes");
+      }
+      return await response.json();
+    });
+  },
+
+  async recomputeCorrelationHeatmap(
+    tableAssetId: number,
+    columnName: string,
+    payload: CorrelationHeatmapRecomputeRequest
+  ): Promise<ApiResponse<CorrelationHeatmapRecomputeResponse>> {
+    return apiRequest(async () => {
+      const response = await fetch(
+        `${getApiBase()}/api/v1/column-workflows/${tableAssetId}/${encodeURIComponent(columnName)}/recompute-correlation-heatmap`,
+        {
+          method: "POST",
+          headers: withSnowflakeHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(payload),
+        }
+      );
+      if (!response.ok) {
+        throw new Error("Failed to recompute correlation heatmap");
       }
       return await response.json();
     });

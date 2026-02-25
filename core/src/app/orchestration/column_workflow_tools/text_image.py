@@ -6,6 +6,8 @@ import json
 from typing import Any
 from strands import tool
 
+from ...core.config import settings
+
 class ColumnWorkflowTextImageMixin:
     """Tool mixin."""
 
@@ -62,7 +64,20 @@ class ColumnWorkflowTextImageMixin:
 
         await self._ensure_column(ctx.table_ref, output_column)
         prompt_expr = f"CONCAT('{safe_instruction}', ' ', TO_VARCHAR({col}))"
-        complete_expr = f"AI_COMPLETE('{self.model_id}', {prompt_expr})"
+        model_literal = self._sanitize_literal(str(self.model_id))
+        max_tokens = max(
+            1,
+            self._coerce_int(
+                getattr(settings, "SNOWFLAKE_CORTEX_COMPLETE_MAX_TOKENS", 8192), 8192
+            ),
+        )
+        complete_options_literal = self._sanitize_literal(
+            json.dumps({"max_tokens": max_tokens})
+        )
+        complete_expr = (
+            f"AI_COMPLETE('{model_literal}', {prompt_expr}, "
+            f"PARSE_JSON('{complete_options_literal}'))"
+        )
         if response_format:
             if isinstance(response_format, str):
                 try:
@@ -75,7 +90,12 @@ class ColumnWorkflowTextImageMixin:
                 response_json = json.dumps(response_format)
                 response_literal = self._sanitize_literal(response_json)
                 complete_expr = (
-                    f"AI_COMPLETE('{self.model_id}', {prompt_expr}, NULL, PARSE_JSON('{response_literal}'))"
+                    "AI_COMPLETE("
+                    f"'{model_literal}', "
+                    f"{prompt_expr}, "
+                    f"PARSE_JSON('{complete_options_literal}'), "
+                    f"PARSE_JSON('{response_literal}')"
+                    ")"
                 )
 
         update_query = f"""
@@ -216,4 +236,3 @@ class ColumnWorkflowTextImageMixin:
         await self._update_column_analysis(ctx, analysis)
 
         return {"column": column_name, "output_column": output_column, "token_estimate": token_info}
-

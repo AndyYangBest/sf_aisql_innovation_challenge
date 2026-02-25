@@ -20,6 +20,12 @@ class ColumnWorkflowSelectedRunRequest(BaseModel):
     focus: str | None = None
 
 
+class CorrelationHeatmapRecomputeRequest(BaseModel):
+    columns: list[str] = Field(default_factory=list)
+    sample_size: int | None = None
+    window_days: int | None = None
+
+
 @router.post("/{table_asset_id}/{column_name}/estimate")
 async def estimate_column_workflow(
     table_asset_id: int,
@@ -135,4 +141,27 @@ async def run_selected_tools(
     except ValueError as exc:
         if execution:
             await persistence.fail_execution(workflow_id=workflow_id, error_message=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{table_asset_id}/{column_name}/recompute-correlation-heatmap")
+async def recompute_correlation_heatmap(
+    table_asset_id: int,
+    column_name: str,
+    payload: CorrelationHeatmapRecomputeRequest,
+    db: AsyncSession = Depends(get_async_db_session),
+    sf_service: SnowflakeService = Depends(get_snowflake_service),
+    ai_sql_service: ModularAISQLService = Depends(get_ai_sql_service),
+):
+    """Recompute correlation heatmap for selected columns and regenerate insight."""
+    tools = ColumnWorkflowTools(sf_service, ai_sql_service, db)
+    try:
+        return await tools.recompute_correlation_heatmap(
+            table_asset_id=table_asset_id,
+            column_name=column_name,
+            columns=payload.columns,
+            sample_size=payload.sample_size,
+            window_days=payload.window_days,
+        )
+    except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

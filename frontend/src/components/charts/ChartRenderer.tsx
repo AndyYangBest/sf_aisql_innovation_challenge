@@ -130,6 +130,75 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
     }).format(numeric);
   };
 
+  const formatSeriesName = (value: string) =>
+    value
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+
+  const formatTooltipItem = (value: unknown, name: unknown) => {
+    const rawName = String(name ?? "").trim();
+    const genericNames = new Set([
+      String(yKey || ""),
+      "avg_value",
+      "count",
+      "value",
+      "y",
+    ]);
+    const displayName = rawName && !genericNames.has(rawName)
+      ? formatSeriesName(rawName)
+      : yTitle;
+    return [formatTick(value), displayName];
+  };
+
+  const formatXAxisTick = (value: unknown) => {
+    if (value === null || value === undefined || value === "") {
+      return "";
+    }
+    const raw = String(value).trim();
+    if (!raw) {
+      return "";
+    }
+    if (/^[12]\d{3}$/.test(raw)) {
+      return raw;
+    }
+    const yearStartMatch = raw.match(
+      /^([12]\d{3})-01-01(?:[ T]00:00(?::00(?:\.\d+)?)?(?:Z)?)?$/
+    );
+    if (yearStartMatch) {
+      return yearStartMatch[1];
+    }
+    const epochYearMatch = raw.match(/^1970-01-01[ T]00:(\d{2}):(\d{2})(?:\.\d+)?$/);
+    if (epochYearMatch) {
+      const minute = Number(epochYearMatch[1]);
+      const second = Number(epochYearMatch[2]);
+      const possibleYear = minute * 60 + second;
+      if (Number.isInteger(possibleYear) && possibleYear >= 1000 && possibleYear <= 2999) {
+        return String(possibleYear);
+      }
+    }
+    if (/^[12]\d{3}-\d{2}$/.test(raw)) {
+      return raw;
+    }
+    const dateOnlyMatch = raw.match(/^([12]\d{3})-(\d{2})-(\d{2})$/);
+    if (dateOnlyMatch) {
+      const [, year, month, day] = dateOnlyMatch;
+      if (month === "01" && day === "01") {
+        return year;
+      }
+      return `${month}-${day}`;
+    }
+    const numeric = Number(raw);
+    if (
+      Number.isFinite(numeric) &&
+      Number.isInteger(numeric) &&
+      numeric >= 1800 &&
+      numeric <= 2200
+    ) {
+      return String(numeric);
+    }
+    return raw;
+  };
+
   const yAxisProps =
     shouldUseLog && minValue !== null
       ? { scale: "log" as const, domain: [Math.max(minValue, 1e-6), "auto"] as const }
@@ -163,6 +232,7 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 tick={axisStyle}
                 axisLine={false}
                 tickLine={false}
+                tickFormatter={formatXAxisTick}
                 label={{ value: xTitle, position: "insideBottom", offset: -12, ...axisLabelStyle }}
               />
             )}
@@ -176,7 +246,13 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 label={{ value: yTitle, angle: -90, position: "insideLeft", ...axisLabelStyle }}
               />
             )}
-            <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              labelStyle={{ color: "#f1f5f9" }}
+              itemStyle={{ color: "#f1f5f9" }}
+              labelFormatter={formatXAxisTick}
+              formatter={formatTooltipItem}
+            />
             <Bar
               dataKey={yKey}
               fill="hsl(191 91% 45%)"
@@ -199,6 +275,7 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 tick={axisStyle}
                 axisLine={false}
                 tickLine={false}
+                tickFormatter={formatXAxisTick}
                 label={{ value: xTitle, position: "insideBottom", offset: -12, ...axisLabelStyle }}
               />
             )}
@@ -212,7 +289,13 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 label={{ value: yTitle, angle: -90, position: "insideLeft", ...axisLabelStyle }}
               />
             )}
-            <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              labelStyle={{ color: "#f1f5f9" }}
+              itemStyle={{ color: "#f1f5f9" }}
+              labelFormatter={formatXAxisTick}
+              formatter={formatTooltipItem}
+            />
             {series ? (
               <>
                 {series.length > 1 && (
@@ -267,6 +350,7 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 tick={axisStyle}
                 axisLine={false}
                 tickLine={false}
+                tickFormatter={formatXAxisTick}
                 label={{ value: xTitle, position: "insideBottom", offset: -12, ...axisLabelStyle }}
               />
             )}
@@ -280,7 +364,13 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 label={{ value: yTitle, angle: -90, position: "insideLeft", ...axisLabelStyle }}
               />
             )}
-            <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              labelStyle={{ color: "#f1f5f9" }}
+              itemStyle={{ color: "#f1f5f9" }}
+              labelFormatter={formatXAxisTick}
+              formatter={formatTooltipItem}
+            />
             <Area
               type="monotone"
               dataKey={yKey}
@@ -463,7 +553,13 @@ const ChartRenderer = memo(({ spec, showAxes = true }: ChartRendererProps) => {
                 <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
               ))}
             </Pie>
-            <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "#f1f5f9" }} itemStyle={{ color: "#f1f5f9" }} />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              labelStyle={{ color: "#f1f5f9" }}
+              itemStyle={{ color: "#f1f5f9" }}
+              labelFormatter={formatXAxisTick}
+              formatter={formatTooltipItem}
+            />
           </PieChart>
         </ResponsiveContainer>
       );

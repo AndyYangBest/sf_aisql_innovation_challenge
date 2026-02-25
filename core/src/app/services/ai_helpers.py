@@ -26,7 +26,7 @@ class AIMetadataGenerator:
         sql: str,
         columns: list[dict[str, str]] | None = None,
         sample_rows: list[dict[str, Any]] | None = None,
-        model: str = "mistral-large2",
+        model: str = "claude-sonnet-4-5",
     ) -> dict[str, Any]:
         """
         Generate metadata suggestions for a SQL query.
@@ -50,21 +50,7 @@ class AIMetadataGenerator:
         # Build prompt using centralized template
         prompt = build_metadata_prompt(sql, columns, sample_rows)
 
-        # Escape single quotes for Snowflake
-        escaped_prompt = prompt.replace("'", "''")
-        escaped_model = model.replace("'", "''")
-
-        # Build SQL query with escaped prompt as literal
-        query = f"""
-        SELECT AI_COMPLETE(
-            '{escaped_model}',
-            '{escaped_prompt}'
-        ) as response
-        """
-
-        # Execute query directly
-        result = await self.ai_service.sf.execute_query(query)
-        response = result[0]["RESPONSE"] if result else ""
+        response = await self.ai_service.ai_complete(model=model, prompt=prompt)
 
         # Parse and validate response; fall back quietly on malformed output
         metadata = None
@@ -98,7 +84,7 @@ class AIDataAnalyzer:
         table_name: str,
         columns: list[dict[str, str]],
         sample_data: list[dict[str, Any]],
-        model: str = "mistral-large2",
+        model: str = "claude-sonnet-4-5",
     ) -> dict[str, Any]:
         """
         Analyze table structure and provide insights.
@@ -127,7 +113,7 @@ class AIInsightGenerator:
         self,
         data_summary: str,
         column_stats: dict[str, Any],
-        model: str = "mistral-large2",
+        model: str = "claude-sonnet-4-5",
     ) -> list[str]:
         """
         Generate business insights from data.

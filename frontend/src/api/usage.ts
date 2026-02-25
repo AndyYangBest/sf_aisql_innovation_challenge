@@ -3,7 +3,7 @@
  * Snowflake credits usage
  */
 
-import { apiRequest } from "./client";
+import { apiRequest, getApiBase } from "./client";
 import type { ApiResponse } from "./types";
 
 export interface CreditUsageDay {
@@ -20,7 +20,7 @@ export interface CreditUsageResponse {
 export const usageApi = {
   async getCreditUsage(days: number = 7): Promise<ApiResponse<CreditUsageResponse>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/usage/credits?days=${encodeURIComponent(days)}`);
+      const response = await fetch(`${getApiBase()}/api/v1/usage/credits?days=${encodeURIComponent(days)}`);
       if (!response.ok) {
         const text = await response.text().catch(() => "");
         throw new Error(text || "Failed to fetch credit usage");

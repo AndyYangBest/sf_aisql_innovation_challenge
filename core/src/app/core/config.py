@@ -86,7 +86,10 @@ class SnowflakeSettings(BaseSettings):
     SNOWFLAKE_QUERY_TAG: str = "PLATTII_AI_ASSISTANT"
     SNOWFLAKE_STATEMENT_TIMEOUT_IN_SECONDS: int = 1800
     SNOWFLAKE_ABORT_DETACHED_QUERY: bool = False
-    SNOWFLAKE_CORTEX_MODEL: str = "mistral-large2"
+    SNOWFLAKE_SSO_CACHE_TTL_SECONDS: int = 43200
+    SNOWFLAKE_SSO_ENABLE_TOKEN_CACHE: bool = True
+    SNOWFLAKE_CORTEX_MODEL: str = "claude-sonnet-4-5"
+    SNOWFLAKE_CORTEX_COMPLETE_MAX_TOKENS: int = 8192
     SNOWFLAKE_CORTEX_IMAGE_MODEL: str = "pixtral-large"
 
     def _normalize_account(self, account: str) -> str:

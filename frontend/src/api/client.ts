@@ -12,6 +12,118 @@ const defaultConfig: ApiConfig = {
   timeout: 30000,
 };
 
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+let cachedApiBase: string | null = null;
+const FETCH_PATCH_FLAG = '__sf_ai_sql_fetch_patched__';
+
+function isBrowser(): boolean {
+  return typeof window !== 'undefined' && typeof window.location !== 'undefined';
+}
+
+function normalizeApiBase(raw: string): string {
+  const trimmed = raw.trim().replace(/\/$/, '');
+  if (!trimmed) {
+    return '';
+  }
+  try {
+    const url = new URL(trimmed);
+    const isLocalTarget = LOCAL_HOSTS.has(url.hostname.toLowerCase());
+    if (isLocalTarget && isBrowser()) {
+      const currentHost = window.location.hostname.toLowerCase();
+      const currentProtocol = window.location.protocol;
+      // 在 HTTPS / 远程域名场景，强制走相对路径让 Vite proxy 转发，避免 localhost 被浏览器升级为 HTTPS。
+      if (currentProtocol === 'https:' || !LOCAL_HOSTS.has(currentHost)) {
+        return '';
+      }
+    }
+    if (isLocalTarget) {
+      url.hostname = '127.0.0.1';
+      if (url.protocol === 'https:') {
+        url.protocol = 'http:';
+      }
+    }
+    const normalizedPath = url.pathname.replace(/\/$/, '');
+    return `${url.origin}${normalizedPath}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+function normalizeLocalHttpsUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return rawUrl;
+  }
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return rawUrl;
+  }
+  try {
+    const parsed = new URL(trimmed, globalThis.location?.origin);
+    if (LOCAL_HOSTS.has(parsed.hostname.toLowerCase())) {
+      parsed.hostname = '127.0.0.1';
+      if (parsed.protocol === 'https:') {
+        parsed.protocol = 'http:';
+      }
+      return parsed.toString();
+    }
+    return rawUrl;
+  } catch {
+    return rawUrl;
+  }
+}
+
+function installLocalhostFetchPatch(): void {
+  const state = globalThis as typeof globalThis & Record<string, unknown>;
+  if (state[FETCH_PATCH_FLAG] || typeof globalThis.fetch !== 'function') {
+    return;
+  }
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  const patchedFetch: typeof fetch = (input, init) => {
+    const logFetchUrl = (url: string) => {
+      if (import.meta.env.DEV) {
+        console.info(`[api] outgoing fetch: ${url}`);
+      }
+    };
+    if (typeof input === 'string') {
+      const normalized = normalizeLocalHttpsUrl(input);
+      logFetchUrl(normalized);
+      return originalFetch(normalized, init);
+    }
+    if (input instanceof URL) {
+      const normalized = normalizeLocalHttpsUrl(input.toString());
+      logFetchUrl(normalized);
+      return originalFetch(new URL(normalized), init);
+    }
+    if (input instanceof Request) {
+      const normalized = normalizeLocalHttpsUrl(input.url);
+      if (normalized !== input.url) {
+        const rewritten = new Request(normalized, input);
+        logFetchUrl(rewritten.url);
+        return originalFetch(rewritten, init);
+      }
+      logFetchUrl(input.url);
+    }
+    return originalFetch(input, init);
+  };
+  globalThis.fetch = patchedFetch;
+  state[FETCH_PATCH_FLAG] = true;
+}
+
+installLocalhostFetchPatch();
+
+/**
+ * API 请求的 base URL。开发时用相对路径走 Vite proxy；若前后端分离（例如后端单独 ngrok），
+ * 在 .env 设置 VITE_API_BASE 为后端地址（如 https://xxx.ngrok-free.app）可避免 ERR_SSL_PROTOCOL_ERROR。
+ */
+export function getApiBase(): string {
+  if (cachedApiBase !== null) {
+    return cachedApiBase;
+  }
+  const base = import.meta.env.VITE_API_BASE;
+  cachedApiBase = typeof base === 'string' ? normalizeApiBase(base) : '';
+  return cachedApiBase;
+}
+
 /**
  * Custom error class for authentication errors
  */

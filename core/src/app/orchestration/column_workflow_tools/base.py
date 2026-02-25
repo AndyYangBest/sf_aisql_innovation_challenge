@@ -509,7 +509,7 @@ class ColumnWorkflowToolsBase:
         y_semantic: str,
     ) -> dict[str, Any] | None:
         x_ident = self._quote_ident(x_column)
-        time_expr = self._resolve_temporal_expr(ctx, x_ident)
+        time_expr = self._resolve_temporal_expr(ctx, x_ident, x_column)
         time_bucket_expr = f"DATE_TRUNC('day', {time_expr})"
 
         use_count = y_column == "count" or y_semantic != "numeric"
@@ -920,24 +920,67 @@ class ColumnWorkflowToolsBase:
         except (TypeError, ValueError):
             return default
 
-    def _resolve_temporal_expr(self, ctx: ColumnContext, col: str) -> str:
+    def _infer_identifier_from_expr(self, expr: str) -> str | None:
+        text = str(expr or "").strip()
+        if not text:
+            return None
+        parts = [part.strip() for part in text.split(".") if part.strip()]
+        if not parts:
+            return None
+        candidate = parts[-1]
+        if candidate.startswith('"') and candidate.endswith('"') and len(candidate) >= 2:
+            return candidate[1:-1]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", candidate):
+            return candidate
+        return None
+
+    def _year_value_bounds(self) -> tuple[int, int]:
+        current_year = datetime.now(timezone.utc).year
+        return 1800, current_year + 5
+
+    def _resolve_temporal_expr(
+        self,
+        ctx: ColumnContext,
+        col: str,
+        column_name: str | None = None,
+    ) -> str:
+        min_year, max_year = self._year_value_bounds()
+        resolved_name = column_name or self._infer_identifier_from_expr(col)
+        year_name_hint = self._looks_like_year_name(resolved_name)
         raw_expr = f"TO_VARCHAR({col})"
+        raw_trimmed = f"TRIM({raw_expr})"
         # Only treat as epoch-like when the full value is numeric (optionally delimited by "||").
         # This avoids mis-parsing clock-like strings (e.g. "10:30") as epoch seconds.
         numeric_like_expr = (
-            f"REGEXP_LIKE({raw_expr}, '^[[:space:]]*[-]?[0-9]+([.][0-9]+)?([|][|][-]?[0-9]+([.][0-9]+)?)*[[:space:]]*$')"
+            f"REGEXP_LIKE({raw_expr}, '^[[:space:]]*[-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?([|][|][-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?)*[[:space:]]*$')"
         )
+        year_like_expr = (
+            f"REGEXP_LIKE({raw_trimmed}, '^[12][0-9]{{3}}([.]0+)?$') "
+            f"AND TRY_TO_NUMBER({raw_trimmed}) BETWEEN {min_year} AND {max_year}"
+        )
+        year_token_expr = f"REGEXP_SUBSTR({raw_trimmed}, '[12][0-9]{{3}}')"
         # Extract the first numeric token so delimited values like "1650795600||1650807300" are parseable.
         num_expr = (
             "IFF("
             f"{numeric_like_expr}, "
-            f"TRY_TO_NUMBER(REGEXP_SUBSTR({raw_expr}, '[-]?[0-9]+([.][0-9]+)?')), "
+            f"TRY_TO_NUMBER(REGEXP_SUBSTR({raw_expr}, '[-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?')), "
+            "NULL"
+            ")"
+        )
+        year_from_numeric_expr = (
+            "IFF("
+            f"{num_expr} IS NOT NULL "
+            f"AND ROUND({num_expr}, 0) = {num_expr} "
+            f"AND {num_expr} BETWEEN {min_year} AND {max_year}, "
+            f"TRY_TO_TIMESTAMP_NTZ(TO_VARCHAR(ROUND({num_expr}, 0)), 'YYYY'), "
             "NULL"
             ")"
         )
         epoch_seconds_rounded = (
             "CASE "
             f"WHEN {num_expr} IS NULL THEN NULL "
+            # Four-digit year-like values should never be interpreted as epoch seconds.
+            f"WHEN {num_expr} BETWEEN {min_year} AND {max_year} THEN NULL "
             # Nanoseconds
             f"WHEN ABS({num_expr}) >= 1000000000000000 THEN ROUND({num_expr} / 1000000000, 0) "
             # Milliseconds (and some 11-digit pseudo-epoch variants)
@@ -953,14 +996,34 @@ class ColumnWorkflowToolsBase:
             f"DATEADD('second', {epoch_seconds_rounded}, TO_TIMESTAMP_NTZ('1970-01-01 00:00:00'))"
             ")"
         )
-        ts_expr = f"TRY_TO_TIMESTAMP_NTZ({raw_expr})"
+        ts_expr = f"IFF({numeric_like_expr}, NULL, TRY_TO_TIMESTAMP_NTZ({raw_expr}))"
         yyyymmdd_expr = (
             f"TRY_TO_TIMESTAMP_NTZ(REGEXP_SUBSTR({raw_expr}, '(19|20)[0-9]{{6}}'), 'YYYYMMDD')"
         )
+        yyyy_expr = (
+            "IFF("
+            f"{year_like_expr}, "
+            f"TRY_TO_TIMESTAMP_NTZ({year_token_expr}, 'YYYY'), "
+            "NULL"
+            ")"
+        )
+        # Prefer explicit calendar formats before generic timestamp parsing.
+        # This prevents 4-digit years like "2019" from being interpreted as epoch seconds.
+        if year_name_hint:
+            return (
+                "COALESCE("
+                f"{yyyymmdd_expr}, "
+                f"{yyyy_expr}, "
+                f"{year_from_numeric_expr}, "
+                f"{ts_expr}"
+                ")"
+            )
         return (
             "COALESCE("
-            f"{ts_expr}, "
             f"{yyyymmdd_expr}, "
+            f"{yyyy_expr}, "
+            f"{year_from_numeric_expr}, "
+            f"{ts_expr}, "
             f"{epoch_seconds_expr}"
             ")"
         )
@@ -1021,11 +1084,15 @@ class ColumnWorkflowToolsBase:
         sample_size: int | None,
         window_days: int | None,
         time_column: str | None,
+        focus_column: str | None = None,
+        prefer_non_null: bool = False,
     ) -> str:
         base = ctx.analysis_query
         filters: list[str] = []
         if window_days and time_column:
-            time_expr = self._resolve_temporal_expr(ctx, self._quote_ident(time_column))
+            time_expr = self._resolve_temporal_expr(
+                ctx, self._quote_ident(time_column), time_column
+            )
             filters.append(
                 f"{time_expr} >= DATEADD(day, -{int(window_days)}, CURRENT_TIMESTAMP())"
             )
@@ -1033,7 +1100,16 @@ class ColumnWorkflowToolsBase:
         if filters:
             query += " WHERE " + " AND ".join(filters)
         if sample_size and sample_size > 0:
-            query += f" LIMIT {int(sample_size)}"
+            if prefer_non_null and focus_column:
+                focus_ident = self._quote_ident(focus_column)
+                query = (
+                    f"WITH filtered AS ({query}) "
+                    f"SELECT * FROM filtered "
+                    f"ORDER BY CASE WHEN {focus_ident} IS NULL THEN 1 ELSE 0 END "
+                    f"LIMIT {int(sample_size)}"
+                )
+            else:
+                query += f" LIMIT {int(sample_size)}"
         return query
 
     async def _compute_snapshot(
@@ -1066,7 +1142,13 @@ class ColumnWorkflowToolsBase:
         col = self._quote_ident(column_name)
         base_query = ctx.analysis_query
         time_column = ctx.time_column
-        time_expr = self._resolve_temporal_expr(ctx, self._quote_ident(time_column)) if time_column else None
+        time_expr = (
+            self._resolve_temporal_expr(
+                ctx, self._quote_ident(time_column), time_column
+            )
+            if time_column
+            else None
+        )
         time_select = ""
         if time_expr:
             time_select = f", MIN({time_expr}) AS min_time, MAX({time_expr}) AS max_time"
@@ -1424,16 +1506,49 @@ class ColumnWorkflowToolsBase:
                 "time",
                 "timestamp",
                 "epoch",
+                "month",
+                "day",
             )
+        ) or self._looks_like_year_name(column_name)
+
+    def _looks_like_year_name(self, column_name: str | None) -> bool:
+        lowered = str(column_name or "").lower().strip()
+        if not lowered:
+            return False
+        tokens = [token for token in re.split(r"[^a-z0-9]+", lowered) if token]
+        if "year" in tokens or "yr" in tokens:
+            return True
+        if lowered.endswith("year") or lowered.endswith("yr"):
+            return True
+        compact_markers = (
+            "modelyear",
+            "fiscalyear",
+            "calendaryear",
+            "manufactureyear",
         )
+        return any(marker in lowered for marker in compact_markers)
 
     def _default_time_bucket(self, column_name: str | None) -> str:
         lowered = str(column_name or "").lower()
+        if "year" in lowered:
+            return "year"
         if "epoch" in lowered:
             return "hour"
         if "time" in lowered and "date" not in lowered:
             return "hour"
         return "day"
+
+    def _format_time_bucket_sql(self, bucket_key: str, time_expr: str) -> str:
+        bucket = str(bucket_key or "day").lower()
+        if bucket == "year":
+            return f"TO_VARCHAR({time_expr}, 'YYYY')"
+        if bucket == "month":
+            return f"TO_VARCHAR({time_expr}, 'YYYY-MM')"
+        if bucket in {"week", "day"}:
+            return f"TO_VARCHAR({time_expr}, 'YYYY-MM-DD')"
+        if bucket == "hour":
+            return f"TO_VARCHAR({time_expr}, 'YYYY-MM-DD HH24:00')"
+        return f"TO_VARCHAR({time_expr})"
 
     async def _list_temporal_columns_with_meta(
         self, table_asset_id: int
@@ -1792,7 +1907,7 @@ class ColumnWorkflowToolsBase:
         col = self._quote_ident(column_name)
         is_temporal = ctx.column_meta.semantic_type == "temporal"
         if is_temporal:
-            time_expr = self._resolve_temporal_expr(ctx, col)
+            time_expr = self._resolve_temporal_expr(ctx, col, column_name)
             stats_query = f"""
             WITH base AS (
                 {ctx.analysis_query}
@@ -1875,7 +1990,9 @@ class ColumnWorkflowToolsBase:
         if is_temporal:
             time_col = time_expr or col
         elif ctx.time_column:
-            time_col = self._resolve_temporal_expr(ctx, self._quote_ident(ctx.time_column))
+            time_col = self._resolve_temporal_expr(
+                ctx, self._quote_ident(ctx.time_column), ctx.time_column
+            )
         if time_col:
             time_bucket_expr = f"DATE_TRUNC('day', {time_col})"
             time_query = f"""

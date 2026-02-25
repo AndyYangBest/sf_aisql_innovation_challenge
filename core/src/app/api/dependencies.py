@@ -1,4 +1,5 @@
 import base64
+import importlib.util
 import json
 import threading
 import time
@@ -24,11 +25,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_LIMIT = settings.DEFAULT_RATE_LIMIT_LIMIT
 DEFAULT_PERIOD = settings.DEFAULT_RATE_LIMIT_PERIOD
 SNOWFLAKE_CONFIG_HEADER = "X-Snowflake-Config"
-SNOWFLAKE_SSO_CACHE_TTL_SECONDS = 3600
+_DEFAULT_SSO_CACHE_TTL_SECONDS = 43200
 
 _sso_connection_cache: dict[str, SnowflakeConnection] = {}
 _sso_connection_last_used: dict[str, float] = {}
 _sso_cache_lock = threading.Lock()
+_sso_keyring_warning_emitted = False
 
 
 def _decode_snowflake_config(raw_value: str) -> dict[str, Any]:
@@ -75,10 +77,10 @@ def _extract_snowflake_connector_params(request: Request) -> dict[str, Any] | No
     account = _normalize_snowflake_account(_get_required_string(payload, "account"))
     user = _get_required_string(payload, "user")
     authenticator = _get_optional_string(payload, "authenticator", "")
-    warehouse = _get_optional_string(payload, "warehouse", "")
-    database = _get_optional_string(payload, "database", "")
-    schema = _get_optional_string(payload, "schema", "")
-    role = _get_optional_string(payload, "role", "")
+    warehouse = _get_optional_string(payload, "warehouse", settings.SNOWFLAKE_WAREHOUSE or "")
+    database = _get_optional_string(payload, "database", settings.SNOWFLAKE_DATABASE or "")
+    schema = _get_optional_string(payload, "schema", settings.SNOWFLAKE_SCHEMA or "")
+    role = _get_optional_string(payload, "role", settings.SNOWFLAKE_ROLE or "")
     params: dict[str, Any] = {
         "account": account,
         "user": user,
@@ -102,6 +104,8 @@ def _extract_snowflake_connector_params(request: Request) -> dict[str, Any] | No
         params["authenticator"] = authenticator
     if authenticator.lower() != "externalbrowser":
         params["password"] = _get_required_string(payload, "password")
+    elif settings.SNOWFLAKE_SSO_ENABLE_TOKEN_CACHE:
+        params["client_store_temporary_credential"] = True
 
     return params
 
@@ -115,11 +119,11 @@ def _build_sso_cache_key(connector_params: dict[str, Any]) -> str:
     return json.dumps(safe, sort_keys=True, default=str)
 
 
-def _prune_stale_sso_connections(now: float) -> None:
+def _prune_stale_sso_connections(now: float, ttl_seconds: int) -> None:
     stale_keys = [
         key
         for key, last_used in _sso_connection_last_used.items()
-        if now - last_used > SNOWFLAKE_SSO_CACHE_TTL_SECONDS
+        if now - last_used > ttl_seconds
     ]
     for key in stale_keys:
         conn = _sso_connection_cache.pop(key, None)
@@ -129,14 +133,36 @@ def _prune_stale_sso_connections(now: float) -> None:
 
 
 def _get_or_create_sso_connection(connector_params: dict[str, Any]) -> SnowflakeConnection:
+    global _sso_keyring_warning_emitted
     key = _build_sso_cache_key(connector_params)
     now = time.time()
+    ttl_seconds = max(
+        60,
+        int(getattr(settings, "SNOWFLAKE_SSO_CACHE_TTL_SECONDS", _DEFAULT_SSO_CACHE_TTL_SECONDS)),
+    )
+    if (
+        not _sso_keyring_warning_emitted
+        and str(connector_params.get("authenticator", "")).lower() == "externalbrowser"
+        and importlib.util.find_spec("keyring") is None
+    ):
+        logger.warning(
+            "Snowflake SSO is running without keyring; token cache persistence is unavailable "
+            "(install snowflake-connector-python[secure-local-storage] to reduce repeated logins)."
+        )
+        _sso_keyring_warning_emitted = True
     with _sso_cache_lock:
-        _prune_stale_sso_connections(now)
+        _prune_stale_sso_connections(now, ttl_seconds)
         conn = _sso_connection_cache.get(key)
         if conn is None:
             conn = SnowflakeConnection(connector_params=connector_params)
             _sso_connection_cache[key] = conn
+            logger.info(
+                "Created new Snowflake SSO connection cache entry (ttl=%ss, entries=%s)",
+                ttl_seconds,
+                len(_sso_connection_cache),
+            )
+        else:
+            logger.debug("Reusing cached Snowflake SSO connection")
         _sso_connection_last_used[key] = now
         return conn
 

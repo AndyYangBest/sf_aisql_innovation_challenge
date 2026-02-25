@@ -320,6 +320,41 @@ const buildVisualInsightFallback = (visual: any, columnName: string): string | u
     return `Correlations span ${minVal.toFixed(3)} to ${maxVal.toFixed(3)}, highlighting the most related peers.`;
   }
   if (chartType === "line" || chartType === "area") {
+    const series = Array.isArray(visual?.series) ? visual.series : [];
+    if (series.length > 1) {
+      const ranked = series
+        .map((entry: any) => {
+          const key = String(entry?.key || "");
+          if (!key) {
+            return null;
+          }
+          const seriesValues = extractNumericSeries(data, key);
+          if (seriesValues.length === 0) {
+            return null;
+          }
+          const localMin = Math.min(...seriesValues);
+          const localMax = Math.max(...seriesValues);
+          return {
+            label: String(entry?.label || key),
+            span: localMax - localMin,
+            trend: computeTrend(seriesValues),
+          };
+        })
+        .filter(Boolean) as Array<{ label: string; span: number; trend: "upward" | "downward" | "flat" }>;
+      if (ranked.length > 0) {
+        ranked.sort((left, right) => right.span - left.span);
+        const topLabels = ranked.slice(0, 3).map((item) => item.label).join(", ");
+        const upwardCount = ranked.filter((item) => item.trend === "upward").length;
+        const downwardCount = ranked.filter((item) => item.trend === "downward").length;
+        const directionSummary =
+          upwardCount === downwardCount
+            ? "mixed directions"
+            : upwardCount > downwardCount
+              ? "mostly upward"
+              : "mostly downward";
+        return `${title} compares ${ranked.length} series (${topLabels}) with ${directionSummary} trajectories.`;
+      }
+    }
     const trend = computeTrend(values);
     return `${title} ranges from ${minVal.toFixed(2)} to ${maxVal.toFixed(2)} across ${values.length} points, with an overall ${trend} trend.`;
   }
@@ -406,6 +441,11 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
           visual?.insight ??
           visualInsightMap.get(String(visual.id)) ??
           buildVisualInsightFallback(visual, column.column_name);
+        const warnings = Array.isArray(visual?.warnings)
+          ? visual.warnings
+          : visual?.warning
+            ? [visual.warning]
+            : [];
         return {
           type: "chart",
           id: withRunKey(visual.id || `chart_${tableId}_${column.column_name}_${idx}`),
@@ -428,6 +468,7 @@ const buildOutputGroups = (columns: ColumnMetadataRecord[], tableId: string): Ou
             insight: visualInsight,
             aiSelected:
               visual?.selected || selectionIds.has(String(visual?.id || "")),
+            warnings: warnings,
           },
           createdAt,
         };

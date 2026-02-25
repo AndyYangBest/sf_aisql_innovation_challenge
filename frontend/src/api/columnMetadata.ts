@@ -2,7 +2,7 @@
  * Column Metadata API Service
  */
 
-import { apiRequest } from './client';
+import { apiRequest, getApiBase } from './client';
 import { ApiResponse } from './types';
 import { getSnowflakeConfigHeaders } from '@/lib/snowflakeConfig';
 
@@ -46,7 +46,7 @@ const withSnowflakeHeaders = (headers: Record<string, string> = {}): Record<stri
 export const columnMetadataApi = {
   async get(tableAssetId: number): Promise<ApiResponse<ColumnMetadataListResponse>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/column-metadata/${tableAssetId}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/column-metadata/${tableAssetId}`, {
         cache: 'no-store',
         headers: withSnowflakeHeaders({
           'Cache-Control': 'no-store',
@@ -61,7 +61,7 @@ export const columnMetadataApi = {
 
   async initialize(tableAssetId: number, force: boolean = false): Promise<ApiResponse<ColumnMetadataListResponse>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/column-metadata/${tableAssetId}/initialize?force=${force}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/column-metadata/${tableAssetId}/initialize?force=${force}`, {
         method: 'POST',
         cache: 'no-store',
         headers: withSnowflakeHeaders({
@@ -77,7 +77,7 @@ export const columnMetadataApi = {
 
   async override(tableAssetId: number, columnName: string, overrides: Record<string, any>): Promise<ApiResponse<ColumnMetadataListResponse>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/column-metadata/${tableAssetId}/override`, {
+      const response = await fetch(`${getApiBase()}/api/v1/column-metadata/${tableAssetId}/override`, {
         method: 'PUT',
         headers: withSnowflakeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ column_name: columnName, overrides }),
@@ -94,7 +94,7 @@ export const columnMetadataApi = {
     overrides: Array<{ column_name: string; overrides: Record<string, any> }>,
   ): Promise<ApiResponse<ColumnMetadataListResponse>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/column-metadata/${tableAssetId}/bulk-override`, {
+      const response = await fetch(`${getApiBase()}/api/v1/column-metadata/${tableAssetId}/bulk-override`, {
         method: 'PUT',
         headers: withSnowflakeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(overrides),
@@ -108,7 +108,7 @@ export const columnMetadataApi = {
 
   async overrideTable(tableAssetId: number, overrides: Record<string, any>): Promise<ApiResponse<ColumnMetadataListResponse>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/column-metadata/${tableAssetId}/table-override`, {
+      const response = await fetch(`${getApiBase()}/api/v1/column-metadata/${tableAssetId}/table-override`, {
         method: 'PUT',
         headers: withSnowflakeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ overrides }),

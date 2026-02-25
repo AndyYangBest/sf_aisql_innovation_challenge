@@ -5,7 +5,7 @@
 
 import { TableAsset, TableResult } from '@/types';
 import { ApiResponse } from './types';
-import { apiRequest, AuthenticationError } from './client';
+import { apiRequest, AuthenticationError, getApiBase } from './client';
 import { getSnowflakeConfigHeaders } from '@/lib/snowflakeConfig';
 
 // Snowflake table interface
@@ -39,7 +39,7 @@ export const tablesApi = {
   // 获取所有表格
   async getAll(): Promise<ApiResponse<TableAsset[]>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/table-assets?page=1&page_size=50');
+      const response = await fetch(`${getApiBase()}/api/v1/table-assets/?page=1&page_size=50`);
       if (!response.ok) {
         throw new Error('Failed to fetch table assets');
       }
@@ -63,7 +63,7 @@ export const tablesApi = {
   // 获取单个表格
   async getById(id: string): Promise<ApiResponse<TableAsset | null>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/table-assets/${id}`);
+      const response = await fetch(`${getApiBase()}/api/v1/table-assets/${id}`);
       if (!response.ok) {
         if (response.status === 404) {
           return null;
@@ -90,7 +90,7 @@ export const tablesApi = {
   // Get table asset by id from database
   async getTableAssetById(id: string): Promise<ApiResponse<TableAsset | null>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/table-assets/${id}`);
+      const response = await fetch(`${getApiBase()}/api/v1/table-assets/${id}`);
       if (!response.ok) {
         if (response.status === 404) {
           return null;
@@ -118,7 +118,7 @@ export const tablesApi = {
   // 获取表格结果数据
   async getResult(id: string): Promise<ApiResponse<TableResult | null>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/table-assets/${id}/preview`, {
+      const response = await fetch(`${getApiBase()}/api/v1/table-assets/${id}/preview`, {
         cache: 'no-store',
         headers: withSnowflakeHeaders({
           'Cache-Control': 'no-store',
@@ -148,7 +148,7 @@ export const tablesApi = {
   // 创建表格
   async create(asset: Omit<TableAsset, 'id' | 'createdAt' | 'updatedAt'>): Promise<ApiResponse<TableAsset>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/table-assets', {
+      const response = await fetch(`${getApiBase()}/api/v1/table-assets/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -185,7 +185,7 @@ export const tablesApi = {
   // 更新表格
   async update(id: string, updates: Partial<TableAsset>): Promise<ApiResponse<TableAsset | null>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/table-assets/${id}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/table-assets/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -224,7 +224,7 @@ export const tablesApi = {
   // 删除表格
   async delete(id: string): Promise<ApiResponse<boolean>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/table-assets/${id}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/table-assets/${id}`, {
         method: 'DELETE',
       });
       if (!response.ok) {
@@ -240,7 +240,7 @@ export const tablesApi = {
   // Get Snowflake tables from backend
   async getSnowflakeDatabases(): Promise<ApiResponse<SnowflakeDatabase[]>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/tables/databases', {
+      const response = await fetch(`${getApiBase()}/api/v1/tables/databases`, {
         headers: withSnowflakeHeaders(),
       });
       let result: any = null;
@@ -264,7 +264,7 @@ export const tablesApi = {
     return apiRequest(async () => {
       const params = new URLSearchParams();
       params.append('database', database);
-      const response = await fetch(`/api/v1/tables/schemas?${params.toString()}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/tables/schemas?${params.toString()}`, {
         headers: withSnowflakeHeaders(),
       });
       let result: any = null;
@@ -290,7 +290,7 @@ export const tablesApi = {
       if (database) params.append('database', database);
       if (schema) params.append('schema', schema);
 
-      const response = await fetch(`/api/v1/tables/?${params.toString()}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/tables/?${params.toString()}`, {
         headers: withSnowflakeHeaders(),
       });
       let result: any = null;
@@ -319,7 +319,7 @@ export const tablesApi = {
     error: string | null;
   }>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/ai-sql/execute', {
+      const response = await fetch(`${getApiBase()}/api/v1/ai-sql/execute`, {
         method: 'POST',
         headers: withSnowflakeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ sql, limit }),
@@ -348,7 +348,7 @@ export const tablesApi = {
     error: string | null;
   }>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/ai-sql/suggest-metadata', {
+      const response = await fetch(`${getApiBase()}/api/v1/ai-sql/suggest-metadata`, {
         method: 'POST',
         headers: withSnowflakeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
@@ -379,7 +379,7 @@ export const tablesApi = {
     use_cases?: string[];
   }): Promise<ApiResponse<TableAsset>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/table-assets', {
+      const response = await fetch(`${getApiBase()}/api/v1/table-assets/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -428,7 +428,11 @@ export const tablesApi = {
       params.append('page', page.toString());
       params.append('page_size', pageSize.toString());
 
-      const response = await fetch(`/api/v1/table-assets?${params.toString()}`);
+      const requestUrl = `${getApiBase()}/api/v1/table-assets/?${params.toString()}`;
+      if (import.meta.env.DEV) {
+        console.info(`[tablesApi] getAllTableAssets url: ${requestUrl}`);
+      }
+      const response = await fetch(requestUrl);
 
       if (!response.ok) {
         // Check for authentication error

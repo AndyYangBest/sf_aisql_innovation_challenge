@@ -23,6 +23,164 @@ class ColumnWorkflowQualityMixin:
             items = []
         return [str(item) for item in items if item]
 
+    def _is_id_like_group_column(self, name: str, semantic_type: str | None = None) -> bool:
+        lowered = str(name or "").strip().lower()
+        if not lowered:
+            return False
+        if str(semantic_type or "").strip().lower() == "id":
+            return True
+        if lowered in {"id", "uuid", "pk", "primary_key"}:
+            return True
+        if lowered.endswith("id") or "_id" in lowered:
+            return True
+        if "uuid" in lowered:
+            return True
+        return bool(re.search(r"(^|_)(id|key|code)$", lowered))
+
+    def _is_likely_id_grouping_conflict(
+        self,
+        group_by_columns: list[str],
+        conflicts: dict[str, Any],
+        semantic_map: dict[str, str] | None = None,
+    ) -> bool:
+        if not group_by_columns:
+            return False
+        if str(conflicts.get("type") or "") != "group_by_inconsistency":
+            return False
+        semantic_map = semantic_map or {}
+        id_like_count = sum(
+            1
+            for col in group_by_columns
+            if self._is_id_like_group_column(col, semantic_map.get(col))
+        )
+        if id_like_count <= 0:
+            return False
+        conflict_rate = self._coerce_float(conflicts.get("conflict_rate"), 0.0) or 0.0
+        conflict_groups = self._coerce_int(conflicts.get("conflict_groups"), 0)
+        group_count = self._coerce_int(conflicts.get("group_count"), 0)
+        max_distinct = self._coerce_int(conflicts.get("max_distinct"), 0)
+        return (
+            conflict_groups > 0
+            and group_count > 0
+            and conflict_groups == group_count
+            and conflict_rate >= 0.95
+            and max_distinct >= 5
+        )
+
+    async def _infer_alternative_conflict_group_by_columns(
+        self,
+        ctx: Any,
+        column_name: str,
+        current_group_by: list[str],
+        *,
+        max_columns: int = 2,
+    ) -> list[str]:
+        try:
+            all_columns = await self._list_all_columns(ctx.table_asset_id)
+            semantic_map = await self._get_semantic_type_map(ctx.table_asset_id)
+        except Exception:
+            return []
+        excluded = {str(column_name).strip().lower()}
+        excluded.update(str(item).strip().lower() for item in (current_group_by or []) if item)
+
+        scored: list[tuple[float, str]] = []
+        for raw_name in all_columns or []:
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            lowered = name.lower()
+            if lowered in excluded:
+                continue
+            semantic = str(semantic_map.get(name) or "").lower()
+            if self._is_id_like_group_column(name, semantic):
+                continue
+            score = 0.0
+            if semantic == "categorical":
+                score += 55.0
+            elif semantic == "text":
+                score += 42.0
+            elif semantic == "temporal":
+                score += 38.0
+            elif semantic == "numeric":
+                score += 8.0
+            else:
+                score += 4.0
+
+            if self._looks_like_year_name(name):
+                score += 34.0
+            if any(
+                token in lowered
+                for token in (
+                    "model",
+                    "segment",
+                    "category",
+                    "class",
+                    "type",
+                    "style",
+                    "brand",
+                    "series",
+                    "year",
+                    "month",
+                    "quarter",
+                    "region",
+                    "market",
+                    "country",
+                    "state",
+                )
+            ):
+                score += 26.0
+            if any(
+                token in lowered
+                for token in (
+                    "amount",
+                    "price",
+                    "fare",
+                    "distance",
+                    "duration",
+                    "score",
+                    "count",
+                    "ratio",
+                    "rate",
+                    "pct",
+                )
+            ):
+                score -= 20.0
+
+            if score > 0:
+                scored.append((score, name))
+
+        scored.sort(key=lambda item: (item[0], item[1].lower()), reverse=True)
+        selected: list[str] = []
+        for score, name in scored:
+            if score < 25:
+                continue
+            selected.append(name)
+            if len(selected) >= max(1, max_columns):
+                break
+        return selected
+
+    async def _persist_conflict_group_by_override(
+        self,
+        ctx: Any,
+        group_by_columns: list[str],
+    ) -> bool:
+        group_by = [str(item) for item in (group_by_columns or []) if item]
+        if not group_by:
+            return False
+        try:
+            await self.db.refresh(ctx.column_meta)
+            overrides = dict(ctx.column_meta.overrides or {})
+            if overrides.get("conflict_group_columns") == group_by:
+                return False
+            overrides["conflict_group_columns"] = group_by
+            ctx.column_meta.overrides = overrides
+            await self.db.commit()
+            await self.db.refresh(ctx.column_meta)
+            return True
+        except Exception:
+            await self.db.rollback()
+            return False
+
     def _normalize_plan_payload(self, plan: Any) -> dict[str, Any]:
         if isinstance(plan, str):
             try:
@@ -30,6 +188,49 @@ class ColumnWorkflowQualityMixin:
             except json.JSONDecodeError:
                 return {}
         return plan if isinstance(plan, dict) else {}
+
+    def _normalize_conflict_value_samples(self, payload: Any) -> list[dict[str, Any]]:
+        raw_values = payload
+        if isinstance(raw_values, str):
+            text = raw_values.strip()
+            if not text:
+                return []
+            try:
+                raw_values = json.loads(text)
+            except json.JSONDecodeError:
+                return []
+        if isinstance(raw_values, dict):
+            raw_values = [raw_values]
+        if not isinstance(raw_values, list):
+            return []
+
+        normalized: list[dict[str, Any]] = []
+        for item in raw_values:
+            parsed_item = item
+            if isinstance(parsed_item, str):
+                text = parsed_item.strip()
+                if not text:
+                    continue
+                try:
+                    parsed_item = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed_item = {"value": text}
+
+            if isinstance(parsed_item, dict):
+                value = parsed_item.get("value")
+                count = self._coerce_int(parsed_item.get("count"), 0)
+            else:
+                value = parsed_item
+                count = 0
+
+            if value is None:
+                continue
+            normalized_entry: dict[str, Any] = {"value": value}
+            if count > 0:
+                normalized_entry["count"] = count
+            normalized.append(normalized_entry)
+
+        return normalized
 
     def _coerce_table_ref(
         self,
@@ -242,7 +443,14 @@ class ColumnWorkflowQualityMixin:
     ) -> list[dict[str, Any]]:
         """Detect likely categorical typos / near-duplicates (e.g. SFO vs SF0)."""
         col = self._quote_ident(column_name)
-        base_query = self._build_windowed_query(ctx, sample_size, None, None)
+        base_query = self._build_windowed_query(
+            ctx,
+            sample_size,
+            None,
+            None,
+            focus_column=column_name,
+            prefer_non_null=True,
+        )
         query = f"""
         WITH base AS (
             {base_query}
@@ -314,6 +522,149 @@ class ColumnWorkflowQualityMixin:
                     return anomalies
         return anomalies
 
+    async def _detect_year_value_conflicts(
+        self,
+        ctx: Any,
+        column_name: str,
+        sample_size: int,
+        *,
+        max_pairs: int = 12,
+        window_days: int | None = None,
+        time_column: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Detect out-of-range / malformed values for year-like columns."""
+        if not self._looks_like_year_name(column_name):
+            return None
+        min_year, max_year = self._year_value_bounds()
+        col = self._quote_ident(column_name)
+        target_time_column = time_column or ctx.time_column
+        base_query = self._build_windowed_query(
+            ctx,
+            sample_size,
+            window_days,
+            target_time_column,
+            focus_column=column_name,
+            prefer_non_null=True,
+        )
+        raw_expr = "TRIM(value_text)"
+        cte = f"""
+        WITH base AS (
+            {base_query}
+        ),
+        value_counts AS (
+            SELECT
+                TO_VARCHAR({col}) AS value_text,
+                COUNT(*) AS value_count
+            FROM base
+            WHERE {col} IS NOT NULL
+            GROUP BY 1
+        ),
+        tagged AS (
+            SELECT
+                value_text,
+                value_count,
+                {raw_expr} AS value_trimmed,
+                IFF(
+                    REGEXP_LIKE({raw_expr}, '^[+-]?[0-9]+([.][0-9]+)?$'),
+                    TRY_TO_NUMBER({raw_expr}),
+                    NULL
+                ) AS numeric_value,
+                TRY_TO_NUMBER(REGEXP_SUBSTR({raw_expr}, '^[0-9]{{4}}')) AS extracted_year
+            FROM value_counts
+        )
+        """.strip()
+        valid_numeric_expr = (
+            f"numeric_value IS NOT NULL "
+            f"AND ROUND(numeric_value, 0) = numeric_value "
+            f"AND numeric_value BETWEEN {min_year} AND {max_year}"
+        )
+        valid_date_expr = (
+            f"extracted_year IS NOT NULL "
+            f"AND extracted_year BETWEEN {min_year} AND {max_year} "
+            "AND REGEXP_LIKE(value_trimmed, '^[0-9]{4}([-/][0-9]{1,2}([-/][0-9]{1,2})?)?([ T].*)?$')"
+        )
+        valid_expr = f"(({valid_numeric_expr}) OR ({valid_date_expr}))"
+
+        summary_query = f"""
+        {cte}
+        SELECT
+            COALESCE(SUM(value_count), 0) AS non_null_count,
+            COALESCE(SUM(CASE WHEN NOT ({valid_expr}) THEN value_count ELSE 0 END), 0) AS anomaly_count
+        FROM tagged
+        """.strip()
+        sample_query = f"""
+        {cte}
+        SELECT
+            value_text,
+            value_count,
+            numeric_value,
+            extracted_year,
+            CASE
+                WHEN numeric_value IS NOT NULL AND ROUND(numeric_value, 0) != numeric_value THEN 'non_integer_year'
+                WHEN numeric_value IS NOT NULL AND ROUND(numeric_value, 0) < {min_year} THEN 'year_below_range'
+                WHEN numeric_value IS NOT NULL AND ROUND(numeric_value, 0) > {max_year} THEN 'year_above_range'
+                WHEN extracted_year IS NOT NULL AND extracted_year < {min_year} THEN 'year_below_range'
+                WHEN extracted_year IS NOT NULL AND extracted_year > {max_year} THEN 'year_above_range'
+                ELSE 'not_year_format'
+            END AS reason
+        FROM tagged
+        WHERE NOT ({valid_expr})
+        ORDER BY value_count DESC, value_text
+        LIMIT {int(max_pairs)}
+        """.strip()
+        try:
+            summary_rows = await self.sf.execute_query(summary_query)
+            summary_row = summary_rows[0] if summary_rows else {}
+            non_null_count = self._coerce_int(
+                summary_row.get("NON_NULL_COUNT") or summary_row.get("non_null_count")
+            )
+            anomaly_count = self._coerce_int(
+                summary_row.get("ANOMALY_COUNT") or summary_row.get("anomaly_count")
+            )
+            if anomaly_count <= 0:
+                return None
+            sample_rows = await self.sf.execute_query(sample_query)
+        except Exception:
+            return None
+
+        suggested_range = f"{min_year}-{max_year}"
+        anomalies: list[dict[str, Any]] = []
+        for row in sample_rows or []:
+            raw_value = row.get("VALUE_TEXT") or row.get("value_text")
+            value_count = self._coerce_int(row.get("VALUE_COUNT") or row.get("value_count"))
+            reason = str(row.get("REASON") or row.get("reason") or "invalid_year")
+            numeric_value = self._coerce_float(
+                row.get("NUMERIC_VALUE") or row.get("numeric_value")
+            )
+            extracted_year = self._coerce_float(
+                row.get("EXTRACTED_YEAR") or row.get("extracted_year")
+            )
+            parsed_year = None
+            if numeric_value is not None and float(numeric_value).is_integer():
+                parsed_year = int(numeric_value)
+            elif extracted_year is not None and float(extracted_year).is_integer():
+                parsed_year = int(extracted_year)
+            anomalies.append(
+                {
+                    "value": raw_value,
+                    "value_count": value_count,
+                    "likely_canonical": suggested_range,
+                    "canonical_count": None,
+                    "reason": reason,
+                    "parsed_year": parsed_year,
+                }
+            )
+
+        anomaly_rate = round(anomaly_count / non_null_count, 6) if non_null_count else None
+        return {
+            "range_min": min_year,
+            "range_max": max_year,
+            "non_null_count": non_null_count,
+            "anomaly_count": anomaly_count,
+            "anomaly_rate": anomaly_rate,
+            "value_conflicts": anomalies,
+        }
+
     @tool
     async def scan_nulls(
         self,
@@ -337,7 +688,12 @@ class ColumnWorkflowQualityMixin:
             time_column = str(override_time_column)
         target_time_column = time_column or ctx.time_column
         col = self._quote_ident(column_name)
-        base_query = self._build_windowed_query(ctx, sample_size, window_days, target_time_column)
+        base_query = self._build_windowed_query(
+            ctx,
+            sample_size,
+            window_days,
+            target_time_column,
+        )
         query = f"""
         WITH base AS (
             {base_query}
@@ -376,13 +732,16 @@ class ColumnWorkflowQualityMixin:
         group_by_columns: list[str] | str | None = None,
         sample_size: int = 20000,
         sample_group_limit: int = 12,
-        sample_value_limit: int = 5,
+        sample_value_limit: int = 8,
         window_days: int | None = None,
         time_column: str | None = None,
+        auto_regroup: bool = True,
     ) -> dict[str, Any]:
         """Detect conflicting values within groups defined by other columns."""
         ctx = await self._load_context(table_asset_id, column_name)
         overrides = ctx.column_meta.overrides or {}
+        if overrides.get("scan_conflicts_auto_regroup") is False:
+            auto_regroup = False
         group_by = group_by_columns or overrides.get("conflict_group_columns") or []
         override_sample_size = overrides.get("scan_conflicts_sample_size")
         if override_sample_size is not None:
@@ -416,20 +775,57 @@ class ColumnWorkflowQualityMixin:
                 ctx, column_name, max_columns=1
             )
             group_by = auto_group_by
+        year_conflict_payload = await self._detect_year_value_conflicts(
+            ctx,
+            column_name,
+            sample_size,
+            max_pairs=max(6, self._coerce_int(sample_value_limit, 8)),
+            window_days=window_days,
+            time_column=time_column,
+        )
+        year_value_conflicts: list[dict[str, Any]] = []
+        if isinstance(year_conflict_payload, dict):
+            year_value_conflicts = list(year_conflict_payload.get("value_conflicts") or [])
         if not group_by:
             value_conflicts: list[dict[str, Any]] = []
             if ctx.column_meta.semantic_type in {"categorical", "text"}:
                 value_conflicts = await self._detect_categorical_value_conflicts(
                     ctx, column_name, sample_size
                 )
-            if value_conflicts:
+            combined_value_conflicts = [*value_conflicts, *year_value_conflicts]
+            if combined_value_conflicts:
+                year_anomaly_count = (
+                    self._coerce_int(year_conflict_payload.get("anomaly_count"))
+                    if isinstance(year_conflict_payload, dict)
+                    else 0
+                )
+                year_non_null_count = (
+                    self._coerce_int(year_conflict_payload.get("non_null_count"))
+                    if isinstance(year_conflict_payload, dict)
+                    else 0
+                )
+                year_anomaly_rate = (
+                    year_conflict_payload.get("anomaly_rate")
+                    if isinstance(year_conflict_payload, dict)
+                    else None
+                )
+                conflict_type = (
+                    "year_value_anomaly"
+                    if year_value_conflicts and not value_conflicts
+                    else "categorical_value_anomaly"
+                )
+                definition = (
+                    "Year-like column contains out-of-range or malformed year values."
+                    if year_value_conflicts and not value_conflicts
+                    else "Potential category typos or inconsistent spellings detected."
+                )
                 conflicts = {
-                    "type": "categorical_value_anomaly",
-                    "definition": "Potential category typos or inconsistent spellings detected.",
+                    "type": conflict_type,
+                    "definition": definition,
                     "group_by_columns": [],
-                    "group_count": None,
-                    "conflict_groups": len(value_conflicts),
-                    "conflict_rate": None,
+                    "group_count": year_non_null_count or None,
+                    "conflict_groups": year_anomaly_count or len(combined_value_conflicts),
+                    "conflict_rate": year_anomaly_rate,
                     "max_distinct": None,
                     "sample_group_limit": sample_group_limit,
                     "sample_value_limit": sample_value_limit,
@@ -438,9 +834,17 @@ class ColumnWorkflowQualityMixin:
                     "sample_size_requested": sample_size,
                     "sample_window_days": window_days,
                     "auto_group_by_columns": [],
-                    "value_conflict_count": len(value_conflicts),
-                    "value_conflicts": value_conflicts,
+                    "value_conflict_count": len(combined_value_conflicts),
+                    "value_conflicts": combined_value_conflicts,
                 }
+                if year_value_conflicts and isinstance(year_conflict_payload, dict):
+                    conflicts["year_anomaly_count"] = year_anomaly_count
+                    conflicts["year_anomaly_rate"] = year_anomaly_rate
+                    conflicts["year_valid_range"] = {
+                        "min": year_conflict_payload.get("range_min"),
+                        "max": year_conflict_payload.get("range_max"),
+                    }
+                    conflicts["year_value_conflicts"] = year_value_conflicts
                 await self._update_column_analysis(ctx, {"conflicts": conflicts})
                 return {"column": column_name, "conflicts": conflicts}
             conflicts = {
@@ -471,7 +875,14 @@ class ColumnWorkflowQualityMixin:
                 return {"column": column_name, "conflicts": conflicts}
 
         target_time_column = time_column or ctx.time_column
-        base_query = self._build_windowed_query(ctx, sample_size, window_days, target_time_column)
+        base_query = self._build_windowed_query(
+            ctx,
+            sample_size,
+            window_days,
+            target_time_column,
+            focus_column=column_name,
+            prefer_non_null=True,
+        )
         col = self._quote_ident(column_name)
         group_exprs = ", ".join(self._quote_ident(name) for name in group_by)
         query = f"""
@@ -616,6 +1027,7 @@ class ColumnWorkflowQualityMixin:
                         values = row.get("VALUE_SAMPLES")
                         if values is None:
                             values = row.get("value_samples")
+                    normalized_values = self._normalize_conflict_value_samples(values)
                     distinct_values = None
                     total_rows = None
                     if isinstance(row, dict):
@@ -630,27 +1042,101 @@ class ColumnWorkflowQualityMixin:
                             "group": group_payload,
                             "distinct_values": self._coerce_int(distinct_values),
                             "total_rows": self._coerce_int(total_rows),
-                            "values": values or [],
+                            "values": normalized_values,
                         }
                     )
                 conflicts["sample_groups"] = sample_groups
                 conflicts["sampled_groups"] = len(sample_groups)
             except Exception as exc:
                 conflicts["sample_error"] = str(exc)
+        value_conflicts: list[dict[str, Any]] = []
         if ctx.column_meta.semantic_type in {"categorical", "text"}:
             value_conflicts = await self._detect_categorical_value_conflicts(
                 ctx, column_name, sample_size
             )
-            if value_conflicts:
-                conflicts["value_conflict_count"] = len(value_conflicts)
-                conflicts["value_conflicts"] = value_conflicts
-                if not self._coerce_int(conflicts.get("conflict_groups")):
-                    conflicts["type"] = "categorical_value_anomaly"
-                    conflicts["definition"] = (
-                        "Potential category typos or inconsistent spellings detected."
+        combined_value_conflicts = [*value_conflicts, *year_value_conflicts]
+        if combined_value_conflicts:
+            conflicts["value_conflict_count"] = len(combined_value_conflicts)
+            conflicts["value_conflicts"] = combined_value_conflicts
+        if year_value_conflicts and isinstance(year_conflict_payload, dict):
+            year_anomaly_count = self._coerce_int(year_conflict_payload.get("anomaly_count"))
+            year_non_null_count = self._coerce_int(year_conflict_payload.get("non_null_count"))
+            year_anomaly_rate = year_conflict_payload.get("anomaly_rate")
+            conflicts["year_anomaly_count"] = year_anomaly_count
+            conflicts["year_anomaly_rate"] = year_anomaly_rate
+            conflicts["year_valid_range"] = {
+                "min": year_conflict_payload.get("range_min"),
+                "max": year_conflict_payload.get("range_max"),
+            }
+            conflicts["year_value_conflicts"] = year_value_conflicts
+            if not self._coerce_int(conflicts.get("conflict_groups")):
+                conflicts["type"] = "year_value_anomaly"
+                conflicts["definition"] = (
+                    "Year-like column contains out-of-range or malformed year values."
+                )
+                conflicts["group_count"] = year_non_null_count or conflicts.get("group_count")
+                conflicts["conflict_groups"] = year_anomaly_count or len(year_value_conflicts)
+                conflicts["conflict_rate"] = year_anomaly_rate
+        elif value_conflicts and not self._coerce_int(conflicts.get("conflict_groups")):
+            conflicts["type"] = "categorical_value_anomaly"
+            conflicts["definition"] = (
+                "Potential category typos or inconsistent spellings detected."
+            )
+            conflicts["conflict_groups"] = len(value_conflicts)
+            conflicts["conflict_rate"] = None
+
+        if auto_regroup and group_by:
+            semantic_map: dict[str, str] = {}
+            try:
+                semantic_map = await self._get_semantic_type_map(ctx.table_asset_id)
+            except Exception:
+                semantic_map = {}
+            if self._is_likely_id_grouping_conflict(group_by, conflicts, semantic_map):
+                suggested_group_by = await self._infer_alternative_conflict_group_by_columns(
+                    ctx,
+                    column_name,
+                    group_by,
+                    max_columns=max(2, len(group_by)),
+                )
+                if suggested_group_by:
+                    retry = await self.scan_conflicts(
+                        table_asset_id=table_asset_id,
+                        column_name=column_name,
+                        group_by_columns=suggested_group_by,
+                        sample_size=sample_size,
+                        sample_group_limit=sample_group_limit,
+                        sample_value_limit=sample_value_limit,
+                        window_days=window_days,
+                        time_column=time_column,
+                        auto_regroup=False,
                     )
-                    conflicts["conflict_groups"] = len(value_conflicts)
-                    conflicts["conflict_rate"] = None
+                    retry_conflicts = (
+                        retry.get("conflicts")
+                        if isinstance(retry, dict)
+                        else None
+                    )
+                    if isinstance(retry_conflicts, dict):
+                        enriched_conflicts = dict(retry_conflicts)
+                        enriched_conflicts["auto_regroup_applied"] = True
+                        enriched_conflicts["auto_regroup_reason"] = (
+                            "id_like_grouping_conflict_high_rate"
+                        )
+                        enriched_conflicts["original_group_by_columns"] = group_by
+                        enriched_conflicts["recommended_group_by_columns"] = suggested_group_by
+                        persisted = await self._persist_conflict_group_by_override(
+                            ctx, suggested_group_by
+                        )
+                        enriched_conflicts["recommended_group_by_persisted"] = persisted
+                        await self._update_column_analysis(
+                            ctx, {"conflicts": enriched_conflicts}
+                        )
+                        return {"column": column_name, "conflicts": enriched_conflicts}
+                    conflicts["recommended_group_by_columns"] = suggested_group_by
+                    conflicts["auto_regroup_applied"] = False
+                else:
+                    conflicts["recommended_group_by_columns"] = []
+                    conflicts["auto_regroup_applied"] = False
+
         await self._update_column_analysis(ctx, {"conflicts": conflicts})
         return {"column": column_name, "conflicts": conflicts}
 

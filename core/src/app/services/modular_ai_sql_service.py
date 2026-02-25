@@ -8,6 +8,8 @@ import json
 import re
 from snowflake.connector.errors import ProgrammingError
 
+from ..core.config import settings
+
 from .ai_sql_builders import (
     AIAggregateBuilder,
     AIClassifyBuilder,
@@ -79,7 +81,21 @@ class ModularAISQLService:
         """
         # Snowflake COMPLETE requires model and prompt to be string literals
 
+        effective_model = (
+            (settings.SNOWFLAKE_CORTEX_MODEL or "").strip()
+            or str(model or "").strip()
+            or "claude-sonnet-4-5"
+        )
+        safe_model = effective_model.replace("'", "''")
+        max_tokens = max(
+            1,
+            int(getattr(settings, "SNOWFLAKE_CORTEX_COMPLETE_MAX_TOKENS", 8192) or 8192),
+        )
+        options_json = json.dumps({"max_tokens": max_tokens}).replace("'", "''")
+
         # Debug visibility for current prompt
+        print(f"\n[AI_COMPLETE] model: {effective_model}")
+        print(f"[AI_COMPLETE] max_tokens: {max_tokens}")
         print("\n[AI_COMPLETE] prompt length:", len(prompt))
         print("[AI_COMPLETE] prompt content:\n", prompt)
 
@@ -109,16 +125,17 @@ class ModularAISQLService:
                 response_format_json = json.dumps(format_payload).replace("'", "''")
                 return f"""
                 SELECT AI_COMPLETE(
-                    '{model}',
+                    '{safe_model}',
                     '{safe_prompt}',
-                    NULL,
+                    PARSE_JSON('{options_json}'),
                     PARSE_JSON('{response_format_json}')
                 ) as response
                 """
             return f"""
             SELECT AI_COMPLETE(
-                '{model}',
-                '{safe_prompt}'
+                '{safe_model}',
+                '{safe_prompt}',
+                PARSE_JSON('{options_json}')
             ) as response
             """
 

@@ -15,12 +15,12 @@ class ColumnWorkflowAnalysisMixin:
         self,
         table_asset_id: int,
         column_name: str,
-        sample_size: int = 5000,
+        sample_size: int | None = None,
         max_columns: int = 12,
         window_days: int | None = None,
         positive_threshold: float = 0.3,
         weak_threshold: float = 0.1,
-        compare_sample_size: int | None = 2000,
+        compare_sample_size: int | None = None,
         compare_window_days: int | None = None,
     ) -> dict[str, Any]:
         """Detect correlations between a numeric column and other numeric columns.
@@ -70,7 +70,14 @@ class ColumnWorkflowAnalysisMixin:
                 alias_map[alias] = other
                 select_parts.append(f"CORR({col_expr}, {other_expr}) AS {alias}")
 
-            base_query = self._build_windowed_query(ctx, sample_limit, window_limit, ctx.time_column)
+            base_query = self._build_windowed_query(
+                ctx,
+                sample_limit,
+                window_limit,
+                ctx.time_column,
+                focus_column=column_name,
+                prefer_non_null=True,
+            )
             query = f"""
             WITH base AS (
                 {base_query}
@@ -177,7 +184,7 @@ class ColumnWorkflowAnalysisMixin:
         self,
         table_asset_id: int,
         column_name: str,
-        sample_size: int = 10000,
+        sample_size: int | None = None,
         window_days: int | None = None,
         time_column: str | None = None,
     ) -> dict[str, Any]:
@@ -195,7 +202,14 @@ class ColumnWorkflowAnalysisMixin:
             time_column = str(override_time_column)
         target_time_column = time_column or ctx.time_column
         col_expr = self._numeric_expr(self._quote_ident(column_name))
-        base_query = self._build_windowed_query(ctx, sample_size, window_days, target_time_column)
+        base_query = self._build_windowed_query(
+            ctx,
+            sample_size,
+            window_days,
+            target_time_column,
+            focus_column=column_name,
+            prefer_non_null=True,
+        )
 
         if self._log_buffer:
             self._log_buffer.add_entry(
@@ -275,7 +289,7 @@ class ColumnWorkflowAnalysisMixin:
                 or overrides.get("visual_time_granularity")
             )
             bucket_key = str(bucket_override or "day").lower()
-            if bucket_key not in {"hour", "day", "week", "month"}:
+            if bucket_key not in {"year", "month", "week", "day", "hour"}:
                 bucket_key = "day"
             limit_override = (
                 overrides.get("numeric_distribution_time_limit")
@@ -291,7 +305,9 @@ class ColumnWorkflowAnalysisMixin:
                 time_limit = max(1, self._coerce_int(limit_override, 30))
             else:
                 time_limit = 30
-            time_expr = self._resolve_temporal_expr(ctx, self._quote_ident(target_time_column))
+            time_expr = self._resolve_temporal_expr(
+                ctx, self._quote_ident(target_time_column), target_time_column
+            )
             temporal_query = f"""
             WITH base AS (
                 {base_query}
@@ -457,11 +473,11 @@ class ColumnWorkflowAnalysisMixin:
         table_asset_id: int,
         column_name: str,
         bucket: str = "day",
-        sample_size: int = 10000,
-        window_days: int | None = 180,
+        sample_size: int | None = None,
+        window_days: int | None = None,
         time_column: str | None = None,
         periodicity_threshold: float = 0.4,
-        compare_sample_size: int | None = 2000,
+        compare_sample_size: int | None = None,
         compare_window_days: int | None = None,
     ) -> dict[str, Any]:
         """Analyze numeric periodicity against temporal columns."""
@@ -490,18 +506,27 @@ class ColumnWorkflowAnalysisMixin:
             compare_window_days = self._coerce_int(override_compare_window)
         target_time_column = time_column or ctx.time_column
         bucket_key = str(bucket or "day").lower()
-        if bucket_key not in {"hour", "day", "week", "month"}:
+        if bucket_key not in {"year", "month", "week", "day", "hour"}:
             bucket_key = "day"
         if not target_time_column:
             temporal_columns = await self._list_temporal_columns(table_asset_id)
             target_time_column = temporal_columns[0] if temporal_columns else None
 
         col_expr = self._numeric_expr(self._quote_ident(column_name))
-        base_query = self._build_windowed_query(ctx, sample_size, window_days, target_time_column)
+        base_query = self._build_windowed_query(
+            ctx,
+            sample_size,
+            window_days,
+            target_time_column,
+            focus_column=column_name,
+            prefer_non_null=True,
+        )
 
         periodicity: dict[str, Any] = {"detected": False, "bucket": bucket_key, "time_column": target_time_column}
         if target_time_column:
-            time_expr = self._resolve_temporal_expr(ctx, self._quote_ident(target_time_column))
+            time_expr = self._resolve_temporal_expr(
+                ctx, self._quote_ident(target_time_column), target_time_column
+            )
             lags = self._periodicity_lags(bucket_key)
             lag_exprs = ",\n                ".join(
                 f"LAG(value, {lag}) OVER (ORDER BY bucket) AS lag_{lag}" for lag in lags
@@ -566,7 +591,14 @@ class ColumnWorkflowAnalysisMixin:
 
             if compare_sample_size and compare_sample_size > 0:
                 compare_window = compare_window_days if compare_window_days is not None else window_days
-                compare_query = self._build_windowed_query(ctx, compare_sample_size, compare_window, target_time_column)
+                compare_query = self._build_windowed_query(
+                    ctx,
+                    compare_sample_size,
+                    compare_window,
+                    target_time_column,
+                    focus_column=column_name,
+                    prefer_non_null=True,
+                )
                 secondary = await compute_periodicity(compare_query)
                 confidence = {
                     "primary_detected": periodicity.get("detected"),
@@ -599,7 +631,7 @@ class ColumnWorkflowAnalysisMixin:
         table_asset_id: int,
         column_name: str,
         top_n: int = 10,
-        sample_size: int = 20000,
+        sample_size: int | None = None,
     ) -> dict[str, Any]:
         """Group categorical values into head + tail buckets for faster review."""
         ctx = await self._load_context(table_asset_id, column_name)
@@ -611,7 +643,14 @@ class ColumnWorkflowAnalysisMixin:
         if override_sample_size is not None:
             sample_size = self._coerce_int(override_sample_size) or sample_size
         col = self._quote_ident(column_name)
-        base_query = self._build_windowed_query(ctx, sample_size, None, None)
+        base_query = self._build_windowed_query(
+            ctx,
+            sample_size,
+            None,
+            None,
+            focus_column=column_name,
+            prefer_non_null=True,
+        )
 
         head_query = f"""
         WITH base AS (

@@ -39,6 +39,7 @@ export type InsightArtifact = {
     summary?: string;
     sourceColumns?: string[];
     sourceCharts?: string[];
+    displayInCharts?: boolean;
   };
   author?: string;
   createdAt: string;
@@ -64,6 +65,20 @@ export type ChartArtifact = {
     series?: { key: string; label?: string; highlight?: boolean }[];
     insight?: string;
     aiSelected?: boolean;
+    warnings?: Array<{
+      code?: string;
+      severity?: "warning" | "info" | "error";
+      title?: string;
+      message?: string;
+      anomaly_count?: number;
+      valid_range?: { min?: number | null; max?: number | null };
+      sample_values?: Array<{
+        value: string | number;
+        count?: number;
+        reason?: string;
+        parsed_year?: number;
+      }>;
+    }>;
   };
   createdAt: string;
   pinned?: boolean;

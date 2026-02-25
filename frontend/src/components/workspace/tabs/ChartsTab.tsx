@@ -1,8 +1,27 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
-import { BarChart3 } from "lucide-react";
+import {
+  BarChart3,
+  Lightbulb,
+  GripVertical,
+  MoreHorizontal,
+  Pin,
+  Trash2,
+  MessageSquare,
+  List,
+  Clock,
+} from "lucide-react";
 import { useTableStore } from "@/store/tableStore";
 import { ChartSpec } from "@/lib/chartUtils";
 import ChartCard from "@/components/charts/ChartCard";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import GridLayout from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
@@ -21,9 +40,25 @@ interface ChartsTabProps {
   tableId: string;
 }
 
-const RGL = GridLayout as any;
+type DisplayCard =
+  | {
+      id: string;
+      kind: "chart";
+      sourceColumns: string[];
+      chartSpec: ChartSpec;
+      chartPinned?: boolean;
+    }
+  | {
+      id: string;
+      kind: "insight";
+      sourceColumns: string[];
+      insightArtifact: any;
+    };
 
-// Normalize layout item values to integers to avoid floating-point issues
+const RGL = GridLayout as any;
+const CHART_MIN_W = 2;
+const CHART_MIN_H = 1;
+
 const normalizeLayout = (items: LayoutItem[]): LayoutItem[] =>
   items.map((item) => ({
     i: item.i,
@@ -39,19 +74,35 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
   const artifacts = useTableStore((s) => s.artifacts);
   const deleteArtifact = useTableStore((s) => s.deleteArtifact);
   const toggleArtifactPin = useTableStore((s) => s.toggleArtifactPin);
+  const setInsightDisplayInCharts = useTableStore((s) => s.setInsightDisplayInCharts);
   const tableResult = useTableStore((s) => s.getTableResult(tableId));
   const loadTableResult = useTableStore((s) => s.loadTableResult);
 
   const [layout, setLayout] = useState<LayoutItem[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(800);
+  const [activeView, setActiveView] = useState("all");
+
+  useEffect(() => {
+    setActiveView("all");
+  }, [tableId]);
 
   const chartArtifacts = useMemo(
     () => artifacts.filter((a) => a.tableId === tableId && a.type === "chart"),
     [artifacts, tableId]
   );
 
-  // Convert artifacts to ChartSpec format
+  const movedInsightArtifacts = useMemo(
+    () =>
+      artifacts.filter(
+        (artifact) =>
+          artifact.tableId === tableId &&
+          artifact.type === "insight" &&
+          Boolean(artifact.content?.displayInCharts)
+      ),
+    [artifacts, tableId]
+  );
+
   const chartSpecs: ChartSpec[] = useMemo(
     () =>
       chartArtifacts.map((artifact) => {
@@ -71,62 +122,138 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
           series: artifact.content.series,
           sourceColumns: artifact.content.sourceColumns || [],
           insight: artifact.content.insight,
+          warnings: artifact.content.warnings,
         };
       }).filter(Boolean) as ChartSpec[],
     [chartArtifacts]
   );
 
-  // Use chart IDs as stable dependency to avoid re-running on content changes
-  const chartIdsKey = useMemo(
-    () => chartSpecs.map((s) => s.id).join("|"),
-    [chartSpecs]
+  const displayCards: DisplayCard[] = useMemo(() => {
+    const chartCards: DisplayCard[] = chartSpecs.map((spec) => {
+      const chartArtifact = chartArtifacts.find((artifact) => artifact.id === spec.id);
+      return {
+        id: `chart:${spec.id}`,
+        kind: "chart",
+        sourceColumns: Array.isArray(spec.sourceColumns) ? spec.sourceColumns : [],
+        chartSpec: spec,
+        chartPinned: chartArtifact?.pinned,
+      };
+    });
+    const insightCards: DisplayCard[] = movedInsightArtifacts.map((artifact) => ({
+      id: `insight:${artifact.id}`,
+      kind: "insight",
+      sourceColumns: Array.isArray(artifact.content?.sourceColumns)
+        ? artifact.content.sourceColumns
+        : [],
+      insightArtifact: artifact,
+    }));
+    return [...chartCards, ...insightCards];
+  }, [chartArtifacts, chartSpecs, movedInsightArtifacts]);
+
+  const cardIdsKey = useMemo(
+    () => displayCards.map((card) => card.id).join("|"),
+    [displayCards]
   );
 
-  // Generate initial layout for new charts - only when chart IDs change
+  const cardKindById = useMemo(
+    () => new Map(displayCards.map((card) => [card.id, card.kind] as const)),
+    [displayCards]
+  );
+
+  const cardsByColumn = useMemo(() => {
+    const counts = new Map<string, number>();
+    displayCards.forEach((card) => {
+      const uniqueColumns = Array.from(new Set(card.sourceColumns.filter(Boolean)));
+      uniqueColumns.forEach((column) => {
+        counts.set(column, (counts.get(column) || 0) + 1);
+      });
+    });
+    return Array.from(counts.entries()).sort((left, right) => {
+      if (right[1] !== left[1]) {
+        return right[1] - left[1];
+      }
+      return left[0].localeCompare(right[0]);
+    });
+  }, [displayCards]);
+
   useEffect(() => {
-    const ids = chartIdsKey.split("|").filter(Boolean);
-    
+    if (activeView === "all") {
+      return;
+    }
+    const exists = cardsByColumn.some(([column]) => column === activeView);
+    if (!exists) {
+      setActiveView("all");
+    }
+  }, [activeView, cardsByColumn]);
+
+  const visibleCards = useMemo(() => {
+    if (activeView === "all") {
+      return displayCards;
+    }
+    return displayCards.filter((card) => card.sourceColumns.includes(activeView));
+  }, [activeView, displayCards]);
+
+  const visibleCardIds = useMemo(
+    () => new Set(visibleCards.map((card) => card.id)),
+    [visibleCards]
+  );
+
+  const visibleLayout = useMemo(
+    () => layout.filter((item) => visibleCardIds.has(item.i)),
+    [layout, visibleCardIds]
+  );
+
+  useEffect(() => {
+    const ids = cardIdsKey.split("|").filter(Boolean);
+
     if (ids.length === 0) {
       setLayout((prev) => (prev.length === 0 ? prev : []));
       return;
     }
 
     setLayout((prevLayout) => {
-      const existingById = new Map(prevLayout.map((l) => [l.i, l] as const));
+      const existingById = new Map(prevLayout.map((item) => [item.i, item] as const));
       const currentIds = new Set(ids);
 
-      // Keep existing layout for still-present charts
-      const keptLayout = prevLayout.filter((l) => currentIds.has(l.i));
+      const keptLayout = prevLayout
+        .filter((item) => currentIds.has(item.i))
+        .map((item) => ({
+          ...item,
+          minW: CHART_MIN_W,
+          minH: CHART_MIN_H,
+        }));
 
-      // Add layout for new charts (default: 2 per row with 30 cols => 15+15)
       const newItems: LayoutItem[] = [];
       let newIndex = keptLayout.length;
       ids.forEach((id) => {
-        if (!existingById.has(id)) {
-          const col = newIndex % 2; // 2 charts per row
-          const row = Math.floor(newIndex / 2);
-          newItems.push({
-            i: id,
-            x: col * 15,
-            y: row * 3,
-            w: 6,
-            h: 3,
-            minW: 3,
-            minH: 2,
-          });
-          newIndex++;
+        if (existingById.has(id)) {
+          return;
         }
+        const kind = cardKindById.get(id);
+        const col = newIndex % 2;
+        const row = Math.floor(newIndex / 2);
+        const defaultW = kind === "insight" ? 8 : 6;
+        const defaultH = kind === "insight" ? 5 : 3;
+        newItems.push({
+          i: id,
+          x: col * 15,
+          y: row * 5,
+          w: defaultW,
+          h: defaultH,
+          minW: CHART_MIN_W,
+          minH: CHART_MIN_H,
+        });
+        newIndex++;
       });
 
       if (newItems.length === 0 && keptLayout.length === prevLayout.length) {
-        return prevLayout; // No changes needed
+        return prevLayout;
       }
 
-      return [...keptLayout, ...newItems];
+      return normalizeLayout([...keptLayout, ...newItems]);
     });
-  }, [chartIdsKey]);
+  }, [cardIdsKey, cardKindById]);
 
-  // Track container width for responsive layout
   useEffect(() => {
     const updateWidth = () => {
       if (containerRef.current) {
@@ -135,60 +262,93 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
     };
 
     updateWidth();
-    window.addEventListener('resize', updateWidth);
-    
+    window.addEventListener("resize", updateWidth);
+
     const resizeObserver = new ResizeObserver(updateWidth);
     if (containerRef.current) {
       resizeObserver.observe(containerRef.current);
     }
 
     return () => {
-      window.removeEventListener('resize', updateWidth);
+      window.removeEventListener("resize", updateWidth);
       resizeObserver.disconnect();
     };
   }, []);
 
-  // Handle layout changes only on drag/resize end to avoid infinite loops
-  const handleDragStop = useCallback((_layout: LayoutItem[], _oldItem: LayoutItem, newItem: LayoutItem) => {
-    setLayout((prev) => {
-      const normalized = normalizeLayout(prev.map((item) =>
-        item.i === newItem.i ? { ...item, x: newItem.x, y: newItem.y } : item
-      ));
-      return normalized;
-    });
-  }, []);
+  const handleDragStop = useCallback(
+    (_layout: LayoutItem[], _oldItem: LayoutItem, newItem: LayoutItem) => {
+      setLayout((prev) =>
+        normalizeLayout(
+          prev.map((item) =>
+            item.i === newItem.i ? { ...item, x: newItem.x, y: newItem.y } : item
+          )
+        )
+      );
+    },
+    []
+  );
 
-  const handleResizeStop = useCallback((_layout: LayoutItem[], _oldItem: LayoutItem, newItem: LayoutItem) => {
-    setLayout((prev) => {
-      const normalized = normalizeLayout(prev.map((item) =>
-        item.i === newItem.i ? { ...item, w: newItem.w, h: newItem.h, x: newItem.x, y: newItem.y } : item
-      ));
-      return normalized;
-    });
-  }, []);
+  const handleResizeStop = useCallback(
+    (_layout: LayoutItem[], _oldItem: LayoutItem, newItem: LayoutItem) => {
+      setLayout((prev) =>
+        normalizeLayout(
+          prev.map((item) =>
+            item.i === newItem.i
+              ? { ...item, w: newItem.w, h: newItem.h, x: newItem.x, y: newItem.y }
+              : item
+          )
+        )
+      );
+    },
+    []
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-semibold">Charts</h2>
         <p className="text-sm text-muted-foreground">
-          {chartSpecs.length} chart{chartSpecs.length !== 1 && "s"} - Drag to reorder, resize from corners
+          {visibleCards.length}
+          {activeView !== "all" ? ` / ${displayCards.length}` : ""} card
+          {visibleCards.length !== 1 && "s"} - Drag to reorder, resize from corners
         </p>
       </div>
 
-      {chartSpecs.length === 0 ? (
+      {cardsByColumn.length > 0 && (
+        <Tabs value={activeView} onValueChange={setActiveView}>
+          <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto whitespace-nowrap">
+            <TabsTrigger value="all">All ({displayCards.length})</TabsTrigger>
+            {cardsByColumn.map(([column, count]) => (
+              <TabsTrigger key={column} value={column} title={column}>
+                {column} ({count})
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      )}
+
+      {visibleCards.length === 0 ? (
         <div className="flex items-center justify-center h-64 text-muted-foreground border border-dashed border-border rounded-lg">
           <div className="text-center">
             <BarChart3 className="h-12 w-12 mx-auto mb-3 opacity-50" />
-            <p className="mb-2">No charts yet</p>
-            <p className="text-sm">Save charts from Workflow Outputs to add them to the report</p>
+            {displayCards.length === 0 ? (
+              <>
+                <p className="mb-2">No chart cards yet</p>
+                <p className="text-sm">Charts and moved insight cards will appear here</p>
+              </>
+            ) : (
+              <>
+                <p className="mb-2">No cards for this column</p>
+                <p className="text-sm">Switch tab to view another column’s cards</p>
+              </>
+            )}
           </div>
         </div>
       ) : (
         <div ref={containerRef} className="chart-grid-container">
           <RGL
             className="layout"
-            layout={layout}
+            layout={visibleLayout}
             cols={30}
             rowHeight={8}
             width={containerWidth || 800}
@@ -203,18 +363,31 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
             containerPadding={[0, 0]}
             useCSSTransforms={true}
           >
-            {chartSpecs.map((spec) => {
-              const artifact = chartArtifacts.find((a) => a.id === spec.id);
+            {visibleCards.map((card) => {
+              if (card.kind === "chart") {
+                return (
+                  <div key={card.id} style={{ width: "100%", height: "100%" }}>
+                    <ChartCard
+                      spec={card.chartSpec}
+                      tableId={tableId}
+                      tableResult={tableResult}
+                      onRequestTableResult={() => loadTableResult(tableId)}
+                      isPinned={card.chartPinned}
+                      onPin={() => toggleArtifactPin(card.chartSpec.id)}
+                      onDelete={() => deleteArtifact(card.chartSpec.id)}
+                    />
+                  </div>
+                );
+              }
+
+              const insightArtifact = card.insightArtifact;
               return (
-                <div key={spec.id} style={{ width: '100%', height: '100%' }}>
-                  <ChartCard
-                    spec={spec}
-                    tableId={tableId}
-                    tableResult={tableResult}
-                    onRequestTableResult={() => loadTableResult(tableId)}
-                    isPinned={artifact?.pinned}
-                    onPin={() => toggleArtifactPin(spec.id)}
-                    onDelete={() => deleteArtifact(spec.id)}
+                <div key={card.id} style={{ width: "100%", height: "100%" }}>
+                  <InsightInChartsCard
+                    artifact={insightArtifact}
+                    onPin={() => toggleArtifactPin(insightArtifact.id)}
+                    onDelete={() => deleteArtifact(insightArtifact.id)}
+                    onMoveBack={() => setInsightDisplayInCharts(insightArtifact.id, false)}
                   />
                 </div>
               );
@@ -222,6 +395,100 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
           </RGL>
         </div>
       )}
+    </div>
+  );
+};
+
+interface InsightInChartsCardProps {
+  artifact: any;
+  onPin: () => void;
+  onDelete: () => void;
+  onMoveBack: () => void;
+}
+
+const InsightInChartsCard = ({
+  artifact,
+  onPin,
+  onDelete,
+  onMoveBack,
+}: InsightInChartsCardProps) => {
+  const stripBullet = (text: string) => text.replace(/^\s*[-•*]\s+/, "").trim();
+  const bullets = Array.isArray(artifact.content?.bullets)
+    ? artifact.content.bullets.map((bullet: string) => stripBullet(String(bullet))).filter(Boolean)
+    : [];
+
+  const dateText = new Date(artifact.createdAt).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  return (
+    <div className="h-full flex flex-col bg-card border border-border rounded-lg overflow-hidden transition-shadow">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-secondary/30">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="chart-drag-handle cursor-grab active:cursor-grabbing p-1 -ml-1 hover:bg-muted rounded">
+            <GripVertical className="w-4 h-4 text-muted-foreground" />
+          </div>
+          <div className="p-1.5 rounded bg-warning/10 flex-shrink-0">
+            <Lightbulb className="h-4 w-4 text-warning" />
+          </div>
+          <h3 className="text-sm font-medium text-foreground/90 truncate min-w-0">
+            {artifact.content?.title || "Insight"}
+          </h3>
+          {artifact.pinned && (
+            <Badge variant="outline" className="text-xs text-primary border-primary/30">
+              Pinned
+            </Badge>
+          )}
+        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm">
+              <MoreHorizontal className="w-3.5 h-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={onPin}>
+              <Pin className="h-4 w-4 mr-2" />
+              {artifact.pinned ? "Unpin" : "Pin"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onMoveBack}>
+              <List className="h-4 w-4 mr-2" />
+              Move back to Insights
+            </DropdownMenuItem>
+            <DropdownMenuItem>
+              <MessageSquare className="h-4 w-4 mr-2" />
+              Comment
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onDelete} className="text-destructive">
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      <div className="flex-1 p-3 overflow-auto">
+        {artifact.content?.summary && (
+          <p className="text-xs text-muted-foreground mb-2">{artifact.content.summary}</p>
+        )}
+        <ul className="space-y-1.5">
+          {bullets.slice(0, 8).map((bullet: string, index: number) => (
+            <li key={index} className="text-xs text-foreground/90 flex items-start gap-1.5">
+              <span className="text-primary mt-px">•</span>
+              <span className="break-words">{bullet}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="px-3 py-2 border-t border-border bg-secondary/20">
+        <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          {dateText}
+        </div>
+      </div>
     </div>
   );
 };

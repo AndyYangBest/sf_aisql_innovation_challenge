@@ -98,6 +98,23 @@ const RepairApprovalDialog = ({
       ? Math.round(conflictInfo.conflict_rate * 10000) / 100
       : null;
   const maxDistinct = conflictInfo?.max_distinct ?? null;
+  const groupByColumns = Array.isArray(conflictInfo?.group_by_columns)
+    ? conflictInfo.group_by_columns
+    : [];
+  const likelyIdGroupBy = groupByColumns.some((col: string) =>
+    /(^|_)(id|key|code)$/i.test(String(col || ""))
+  );
+  const likelyGroupingIssue =
+    conflictRate !== null &&
+    conflictRate >= 95 &&
+    totalConflictGroups > 0 &&
+    totalConflictGroups === conflictGroupCount &&
+    (maxDistinct ?? 0) >= 5;
+  const groupingHint = likelyGroupingIssue
+    ? likelyIdGroupBy
+      ? "Every sampled group conflicts, and group-by columns look ID-like. Consider grouping by a higher-level business key (e.g. model/segment/year) before auto repair."
+      : "Every sampled group conflicts. Consider revisiting `group_by_columns` so groups reflect stable business entities before auto repair."
+    : null;
   const visibleConflicts = showAllConflicts
     ? conflictSamples
     : conflictSamples.slice(0, 6);
@@ -305,6 +322,11 @@ const RepairApprovalDialog = ({
                       Diagnosis: {String(conflictInfo.definition)}
                     </div>
                   )}
+                  {groupingHint && (
+                    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100 break-words">
+                      {groupingHint}
+                    </div>
+                  )}
                   {valueConflicts.length > 0 && (
                     <div className="space-y-2">
                       <div className="text-[10px] uppercase tracking-wide text-slate-500">
@@ -317,12 +339,33 @@ const RepairApprovalDialog = ({
                             className="rounded-md border border-slate-800/70 bg-slate-950/40 px-2 py-1 text-[11px] text-slate-200"
                           >
                             <span className="font-medium">{String(item?.value ?? "—")}</span>
-                            {" -> "}
-                            <span className="font-medium">{String(item?.likely_canonical ?? "—")}</span>
+                            {item?.likely_canonical ? (
+                              <>
+                                {" -> "}
+                                <span className="font-medium">
+                                  {String(item?.likely_canonical)}
+                                </span>
+                              </>
+                            ) : null}
                             <span className="text-slate-400">
                               {" "}
-                              ({String(item?.value_count ?? "—")} vs {String(item?.canonical_count ?? "—")})
+                              ({String(item?.value_count ?? "—")}
+                              {item?.canonical_count !== undefined &&
+                              item?.canonical_count !== null
+                                ? ` vs ${String(item?.canonical_count)}`
+                                : ""}
+                              )
                             </span>
+                            {(item?.reason || item?.parsed_year !== undefined) && (
+                              <div className="mt-1 text-[10px] text-slate-400">
+                                {item?.reason
+                                  ? String(item.reason).replace(/_/g, " ")
+                                  : ""}
+                                {item?.parsed_year !== undefined && item?.parsed_year !== null
+                                  ? ` · parsed year: ${String(item.parsed_year)}`
+                                  : ""}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -402,7 +445,10 @@ const RepairApprovalDialog = ({
                               )}
                               {values.length === 0 && (
                                 <div className="mt-2 text-[10px] text-slate-500">
-                                  No value samples available.
+                                  No value samples available for this group.
+                                  {conflictValueLimit
+                                    ? ` Current value sample limit: ${conflictValueLimit}.`
+                                    : ""}
                                 </div>
                               )}
                             </div>

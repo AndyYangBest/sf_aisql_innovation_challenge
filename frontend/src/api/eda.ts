@@ -5,7 +5,7 @@
 
 import type { WorkflowJSON } from '@flowgram.ai/free-layout-editor';
 import { ApiResponse } from './types';
-import { apiRequest } from './client';
+import { apiRequest, getApiBase } from './client';
 import { getSnowflakeConfigHeaders } from '@/lib/snowflakeConfig';
 
 // ============================================================================
@@ -99,7 +99,7 @@ export const edaApi = {
    */
   async runWorkflow(request: EDARunRequest): Promise<ApiResponse<EDARunResponse>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/eda/run', {
+      const response = await fetch(`${getApiBase()}/api/v1/eda/run`, {
         method: 'POST',
         headers: withSnowflakeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(request),
@@ -136,7 +136,7 @@ export const edaApi = {
         params.set('workflow_json', encoded);
       }
 
-      const eventSource = new EventSource(`/api/v1/eda/run-stream?${params}`);
+      const eventSource = new EventSource(`${getApiBase()}/api/v1/eda/run-stream?${params}`);
       let hasCompleted = false;
       let hasErrored = false;
 
@@ -208,7 +208,7 @@ export const edaApi = {
    */
   async cancelWorkflow(workflowId: string): Promise<ApiResponse<{ success: boolean }>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/eda/workflow/${workflowId}/cancel`, {
+      const response = await fetch(`${getApiBase()}/api/v1/eda/workflow/${workflowId}/cancel`, {
         method: 'POST',
         headers: withSnowflakeHeaders(),
       });
@@ -229,7 +229,7 @@ export const edaApi = {
     limit: number = 10
   ): Promise<ApiResponse<{ table_asset_id: number; total: number; executions: WorkflowExecution[] }>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/eda/history/${tableAssetId}?limit=${limit}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/eda/history/${tableAssetId}?limit=${limit}`, {
         headers: withSnowflakeHeaders(),
       });
 
@@ -246,7 +246,7 @@ export const edaApi = {
    */
   async getWorkflowDetails(workflowId: string): Promise<ApiResponse<WorkflowDetails>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/eda/workflow/${workflowId}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/eda/workflow/${workflowId}`, {
         headers: withSnowflakeHeaders(),
       });
 
@@ -263,7 +263,7 @@ export const edaApi = {
    */
   async getStats(tableAssetId: number): Promise<ApiResponse<WorkflowStats>> {
     return apiRequest(async () => {
-      const response = await fetch(`/api/v1/eda/stats/${tableAssetId}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/eda/stats/${tableAssetId}`, {
         headers: withSnowflakeHeaders(),
       });
 
@@ -280,7 +280,7 @@ export const edaApi = {
    */
   async getWorkflowTypes(): Promise<ApiResponse<{ workflows: Array<{ type: string; name: string; description: string }> }>> {
     return apiRequest(async () => {
-      const response = await fetch('/api/v1/eda/workflows', {
+      const response = await fetch(`${getApiBase()}/api/v1/eda/workflows`, {
         headers: withSnowflakeHeaders(),
       });
 

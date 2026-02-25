@@ -12,6 +12,24 @@ export interface ChartSeries {
   highlight?: boolean;
 }
 
+export interface ChartWarning {
+  code?: string;
+  severity?: "warning" | "info" | "error";
+  title?: string;
+  message?: string;
+  anomaly_count?: number;
+  valid_range?: {
+    min?: number | null;
+    max?: number | null;
+  };
+  sample_values?: Array<{
+    value: string | number;
+    count?: number;
+    reason?: string;
+    parsed_year?: number;
+  }>;
+}
+
 export interface ChartSpec {
   id: string;
   chartType: ChartType;
@@ -27,6 +45,7 @@ export interface ChartSpec {
   sourceColumns: string[];
   series?: ChartSeries[];
   insight?: string;
+  warnings?: ChartWarning[];
 }
 
 // Color palette for charts - using direct HSL values for recharts compatibility

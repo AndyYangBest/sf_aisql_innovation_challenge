@@ -4,8 +4,11 @@ This module provides composable building blocks for creating AISQL queries.
 Each builder can be used independently or combined to create complex queries.
 """
 
+import json
 from abc import ABC, abstractmethod
 from typing import Any
+
+from ..core.config import settings
 
 
 # ============================================================================
@@ -40,31 +43,49 @@ class AICompleteBuilder:
         self.model = model
         self.prompt = prompt
         self.response_format = None
+        self.max_tokens = max(
+            1,
+            int(getattr(settings, "SNOWFLAKE_CORTEX_COMPLETE_MAX_TOKENS", 8192) or 8192),
+        )
 
     def with_response_format(self, schema: dict[str, Any]) -> "AICompleteBuilder":
         """Add structured output format."""
         self.response_format = schema
         return self
 
+    def with_max_tokens(self, max_tokens: int) -> "AICompleteBuilder":
+        """Set max output tokens."""
+        self.max_tokens = max(1, int(max_tokens))
+        return self
+
     def build(self) -> str:
         """Build AI_COMPLETE function call."""
         # Escape single quotes in prompt
         escaped_prompt = self.prompt.replace("'", "''")
+        effective_model = (
+            (settings.SNOWFLAKE_CORTEX_MODEL or "").strip() or self.model
+        ).replace("'", "''")
+        options_json = json.dumps({"max_tokens": self.max_tokens}).replace("'", "''")
 
         if self.response_format:
             # Convert dict to JSON string for Snowflake
-            import json
             format_payload = self.response_format
             if "schema" not in self.response_format:
                 format_payload = {"type": "json", "schema": self.response_format}
             format_json = json.dumps(format_payload).replace("'", "''")
             return f"""AI_COMPLETE(
-                '{self.model}',
+                '{effective_model}',
                 '{escaped_prompt}',
-                NULL,
+                PARSE_JSON('{options_json}'),
                 PARSE_JSON('{format_json}')
             )"""
-        return f"AI_COMPLETE('{self.model}', '{escaped_prompt}')"
+        return (
+            "AI_COMPLETE("
+            f"'{effective_model}', "
+            f"'{escaped_prompt}', "
+            f"PARSE_JSON('{options_json}')"
+            ")"
+        )
 
 
 class AIClassifyBuilder:

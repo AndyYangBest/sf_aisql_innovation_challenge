@@ -99,6 +99,7 @@ interface TableStore {
   addArtifact: (artifact: Artifact, title?: string) => void;
   deleteArtifact: (id: string) => void;
   toggleArtifactPin: (id: string) => void;
+  setInsightDisplayInCharts: (id: string, displayInCharts: boolean) => void;
   loadReport: (tableId: string) => Promise<void>;
   updateReportNotes: (tableId: string, notes: string) => Promise<void>;
   setSelectedColumn: (column: string | null) => void;
@@ -375,6 +376,71 @@ export const useTableStore = create<TableStore>()(
               console.error("Failed to persist report overrides", error);
             });
           }
+        },
+
+        setInsightDisplayInCharts: (id, displayInCharts) => {
+          const artifact = get().artifacts.find(
+            (item) => item.id === id && item.type === "insight"
+          );
+          if (!artifact || artifact.type !== "insight") {
+            return;
+          }
+
+          const tableId = artifact.tableId;
+          const currentOverrides = get().reportOverrides[tableId] || {};
+          const nextArtifact: Artifact = {
+            ...artifact,
+            content: {
+              ...artifact.content,
+              displayInCharts,
+            },
+          };
+
+          const sourceManualArtifacts = currentOverrides.manual_artifacts || [];
+          let manualUpdated = false;
+          const manualArtifacts = sourceManualArtifacts.map((item) => {
+            if (item.id !== id) {
+              return item;
+            }
+            manualUpdated = true;
+            if (item.type !== "insight") {
+              return item;
+            }
+            return {
+              ...item,
+              content: {
+                ...item.content,
+                displayInCharts,
+              },
+            };
+          });
+          if (!manualUpdated) {
+            manualArtifacts.push(nextArtifact);
+          }
+
+          const nextOverrides: ReportOverrides = {
+            ...currentOverrides,
+            manual_artifacts: mergeArtifactsById(manualArtifacts),
+          };
+
+          set((state) => ({
+            artifacts: state.artifacts.map((item) =>
+              item.id === id && item.type === "insight"
+                ? {
+                    ...item,
+                    content: {
+                      ...item.content,
+                      displayInCharts,
+                    },
+                  }
+                : item
+            ),
+            reportOverrides: { ...state.reportOverrides, [tableId]: nextOverrides },
+          }));
+
+          void persistReportOverrides(tableId, nextOverrides).catch((error) => {
+            console.error("Failed to persist report overrides", error);
+          });
         },
 
         loadReport: async (tableId: string) => {

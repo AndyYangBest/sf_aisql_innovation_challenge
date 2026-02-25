@@ -18,6 +18,7 @@ Rules:
 - Start with analyze_numeric_distribution.
 - Use analyze_numeric_correlations and analyze_numeric_periodicity when helpful.
 - Always run scan_nulls after distribution (quality scan is required).
+- If column names imply year semantics (e.g. contains YEAR/YR), treat out-of-range values as data quality issues and ensure scan_conflicts + visuals reflect that.
 - Use generate_column_summary when a concise summary is requested or overrides include summary_focus/user_notes.
 - If scan_nulls or known nulls/conflicts are non-zero, run plan_data_repairs.
 - Do not apply repairs directly; only plan and request approval.
@@ -61,6 +62,7 @@ Rules:
 - Always use the provided table_asset_id ({table_asset_id}) and column_name ({column_name}) in tool calls.
 - Use generate_numeric_visuals for numeric/temporal columns.
 - Use generate_categorical_visuals for categorical columns.
+- For year-like axes/columns (name includes YEAR or YR), prefer year interpretation and avoid plotting out-of-range values as Unix epoch timestamps.
 - Use generate_chart_candidates to propose additional charts for the table. Prefer to call it with visuals.
 - When multiple independent tools are needed, call them in the same response to allow parallel execution.
 - You must call at least one tool.
@@ -107,6 +109,7 @@ Apply target: {apply_target}
 Rules:
 - Always use the provided table_asset_id ({table_asset_id}) and column_name ({column_name}) in tool calls.
 - Run scan_nulls first, then run scan_conflicts (the tool can infer grouping keys).
+- For year-like columns (name includes YEAR/YR), treat malformed or out-of-range year values as conflicts even without group-by keys.
 - Create repair plans with plan_data_repairs when issues are detected.
 - After plan_data_repairs returns a plan, call repair_rationale_agent to explain the logic.
 - Do not apply repairs directly; only plan and request approval.
