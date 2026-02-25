@@ -21,7 +21,7 @@ const sections = [
   },
   {
     id: "visuals",
-    label: "Visuals",
+    label: "Insight Canvas",
     icon: BarChart3,
     color: "text-[hsl(var(--viz-orange))]",
   },
@@ -146,7 +146,7 @@ const ScrollableWorkspace = ({
           >
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <BarChart3 className="h-5 w-5 text-[hsl(var(--viz-orange))]" />
-              Visuals
+              Insight Canvas
             </h2>
             <ChartsTab tableId={tableAsset.id} />
           </div>

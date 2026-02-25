@@ -16,6 +16,20 @@ const mockCollaborators: Collaborator[] = [
   { id: "2", name: "Bob Wang", email: "bob@example.com", status: "idle", color: "#F59E0B" },
 ];
 
+const WORKSPACE_MODE_STORAGE_PREFIX = "table-workspace-mode:";
+
+const readWorkspaceMode = (tableId?: string): "workflow" | "report" | null => {
+  if (!tableId || typeof window === "undefined") return null;
+  const value = window.sessionStorage.getItem(`${WORKSPACE_MODE_STORAGE_PREFIX}${tableId}`);
+  if (value === "workflow" || value === "report") return value;
+  return null;
+};
+
+const writeWorkspaceMode = (tableId: string, mode: "workflow" | "report") => {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(`${WORKSPACE_MODE_STORAGE_PREFIX}${tableId}`, mode);
+};
+
 const TableWorkspace = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -27,7 +41,9 @@ const TableWorkspace = () => {
     loadReport,
     loadTableResult,
   } = useTableStore();
-  const [activeTab, setActiveTab] = useState<"workflow" | "report">("workflow");
+  const [activeTab, setActiveTab] = useState<"workflow" | "report">(
+    () => readWorkspaceMode(id) ?? "workflow"
+  );
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [creditUsage, setCreditUsage] = useState<CreditUsage | null>(null);
@@ -35,6 +51,11 @@ const TableWorkspace = () => {
 
   const tableAsset = tableAssets.find((t) => t.id === id);
   const tableResult = id ? getTableResult(id) : undefined;
+
+  useEffect(() => {
+    setActiveTab(readWorkspaceMode(id) ?? "workflow");
+  }, [id]);
+
   useEffect(() => {
     if (!id || tableAsset) return;
     setIsLoading(true);
@@ -117,6 +138,9 @@ const TableWorkspace = () => {
   // 处理模式切换
   const handleModeChange = (mode: "workflow" | "report") => {
     setActiveTab(mode);
+    if (id) {
+      writeWorkspaceMode(id, mode);
+    }
   };
 
   // 处理邀请协作者

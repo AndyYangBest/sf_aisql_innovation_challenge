@@ -13,6 +13,7 @@ import {
 import { useTableStore } from "@/store/tableStore";
 import { ChartSpec } from "@/lib/chartUtils";
 import ChartCard from "@/components/charts/ChartCard";
+import { InsightArtifact } from "@/types";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -52,12 +53,20 @@ type DisplayCard =
       id: string;
       kind: "insight";
       sourceColumns: string[];
-      insightArtifact: any;
+      insightArtifact: InsightArtifact;
     };
 
-const RGL = GridLayout as any;
+const RGL = GridLayout;
 const CHART_MIN_W = 2;
 const CHART_MIN_H = 1;
+type ReportLayoutItem = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  kind?: "chart" | "insight";
+  artifactId?: string;
+};
 
 const normalizeLayout = (items: LayoutItem[]): LayoutItem[] =>
   items.map((item) => ({
@@ -70,18 +79,56 @@ const normalizeLayout = (items: LayoutItem[]): LayoutItem[] =>
     minH: item.minH,
   }));
 
+const parseCardIdentity = (cardId: string): { kind: "chart" | "insight" | undefined; artifactId: string } => {
+  const [prefix, ...rest] = cardId.split(":");
+  const artifactId = rest.join(":") || cardId;
+  if (prefix === "chart" || prefix === "insight") {
+    return { kind: prefix, artifactId };
+  }
+  return { kind: undefined, artifactId };
+};
+
+const mergeVisibleLayout = (previous: LayoutItem[], visible: LayoutItem[]): LayoutItem[] => {
+  const visibleById = new Map(
+    normalizeLayout(
+      visible.map((item) => ({
+        ...item,
+        minW: CHART_MIN_W,
+        minH: CHART_MIN_H,
+      }))
+    ).map((item) => [item.i, item] as const)
+  );
+  const merged = previous.map((item) => visibleById.get(item.i) || item);
+  const existingIds = new Set(merged.map((item) => item.i));
+  visibleById.forEach((item, id) => {
+    if (!existingIds.has(id)) {
+      merged.push(item);
+    }
+  });
+  return normalizeLayout(merged);
+};
+
 const ChartsTab = ({ tableId }: ChartsTabProps) => {
   const artifacts = useTableStore((s) => s.artifacts);
   const deleteArtifact = useTableStore((s) => s.deleteArtifact);
   const toggleArtifactPin = useTableStore((s) => s.toggleArtifactPin);
   const setInsightDisplayInCharts = useTableStore((s) => s.setInsightDisplayInCharts);
+  const updateReportLayout = useTableStore((s) => s.updateReportLayout);
+  const reportLayout = useTableStore((s) => s.reportOverrides[tableId]?.layout);
   const tableResult = useTableStore((s) => s.getTableResult(tableId));
   const loadTableResult = useTableStore((s) => s.loadTableResult);
 
   const [layout, setLayout] = useState<LayoutItem[]>([]);
+  const layoutRef = useRef<LayoutItem[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(800);
   const [activeView, setActiveView] = useState("all");
+
+  useEffect(() => {
+    layoutRef.current = layout;
+  }, [layout]);
+
+  const persistedLayout = useMemo(() => reportLayout || {}, [reportLayout]);
 
   useEffect(() => {
     setActiveView("all");
@@ -95,7 +142,7 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
   const movedInsightArtifacts = useMemo(
     () =>
       artifacts.filter(
-        (artifact) =>
+        (artifact): artifact is InsightArtifact =>
           artifact.tableId === tableId &&
           artifact.type === "insight" &&
           Boolean(artifact.content?.displayInCharts)
@@ -218,7 +265,7 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
       const keptLayout = prevLayout
         .filter((item) => currentIds.has(item.i))
         .map((item) => ({
-          ...item,
+          ...(persistedLayout[item.i] || item),
           minW: CHART_MIN_W,
           minH: CHART_MIN_H,
         }));
@@ -230,16 +277,17 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
           return;
         }
         const kind = cardKindById.get(id);
+        const persisted = persistedLayout[id];
         const col = newIndex % 2;
         const row = Math.floor(newIndex / 2);
         const defaultW = kind === "insight" ? 8 : 6;
         const defaultH = kind === "insight" ? 5 : 3;
         newItems.push({
           i: id,
-          x: col * 15,
-          y: row * 5,
-          w: defaultW,
-          h: defaultH,
+          x: persisted?.x ?? col * 15,
+          y: persisted?.y ?? row * 5,
+          w: persisted?.w ?? defaultW,
+          h: persisted?.h ?? defaultH,
           minW: CHART_MIN_W,
           minH: CHART_MIN_H,
         });
@@ -252,7 +300,7 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
 
       return normalizeLayout([...keptLayout, ...newItems]);
     });
-  }, [cardIdsKey, cardKindById]);
+  }, [cardIdsKey, cardKindById, persistedLayout]);
 
   useEffect(() => {
     const updateWidth = () => {
@@ -275,38 +323,57 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
     };
   }, []);
 
-  const handleDragStop = useCallback(
-    (_layout: LayoutItem[], _oldItem: LayoutItem, newItem: LayoutItem) => {
-      setLayout((prev) =>
-        normalizeLayout(
-          prev.map((item) =>
-            item.i === newItem.i ? { ...item, x: newItem.x, y: newItem.y } : item
-          )
-        )
-      );
+  const persistLayout = useCallback(
+    (nextLayout: LayoutItem[]) => {
+      const payload = nextLayout.reduce<Record<string, ReportLayoutItem>>((acc, item) => {
+        const kindFromMap = cardKindById.get(item.i);
+        const identity = parseCardIdentity(item.i);
+        if (!kindFromMap && !identity.kind) {
+          return acc;
+        }
+        acc[item.i] = {
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h,
+          kind: kindFromMap || identity.kind,
+          artifactId: identity.artifactId,
+        };
+        return acc;
+      }, {});
+      updateReportLayout(tableId, payload);
     },
-    []
+    [cardKindById, tableId, updateReportLayout]
+  );
+
+  const syncVisibleLayout = useCallback(
+    (nextVisibleLayout: LayoutItem[]) => {
+      const mergedLayout = mergeVisibleLayout(layoutRef.current, nextVisibleLayout);
+      layoutRef.current = mergedLayout;
+      setLayout(mergedLayout);
+      persistLayout(mergedLayout);
+    },
+    [persistLayout]
+  );
+
+  const handleDragStop = useCallback(
+    (nextVisibleLayout: LayoutItem[]) => {
+      syncVisibleLayout(nextVisibleLayout);
+    },
+    [syncVisibleLayout]
   );
 
   const handleResizeStop = useCallback(
-    (_layout: LayoutItem[], _oldItem: LayoutItem, newItem: LayoutItem) => {
-      setLayout((prev) =>
-        normalizeLayout(
-          prev.map((item) =>
-            item.i === newItem.i
-              ? { ...item, w: newItem.w, h: newItem.h, x: newItem.x, y: newItem.y }
-              : item
-          )
-        )
-      );
+    (nextVisibleLayout: LayoutItem[]) => {
+      syncVisibleLayout(nextVisibleLayout);
     },
-    []
+    [syncVisibleLayout]
   );
 
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Charts</h2>
+        <h2 className="text-lg font-semibold">Insight Canvas</h2>
         <p className="text-sm text-muted-foreground">
           {visibleCards.length}
           {activeView !== "all" ? ` / ${displayCards.length}` : ""} card
@@ -333,8 +400,8 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
             <BarChart3 className="h-12 w-12 mx-auto mb-3 opacity-50" />
             {displayCards.length === 0 ? (
               <>
-                <p className="mb-2">No chart cards yet</p>
-                <p className="text-sm">Charts and moved insight cards will appear here</p>
+                <p className="mb-2">No canvas cards yet</p>
+                <p className="text-sm">Charts and moved insight cards will appear in the Insight Canvas</p>
               </>
             ) : (
               <>
@@ -357,7 +424,7 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
             draggableHandle=".chart-drag-handle"
             isResizable={true}
             isDraggable={true}
-            compactType="horizontal"
+            compactType={null}
             preventCollision={false}
             margin={[16, 16]}
             containerPadding={[0, 0]}
@@ -400,7 +467,7 @@ const ChartsTab = ({ tableId }: ChartsTabProps) => {
 };
 
 interface InsightInChartsCardProps {
-  artifact: any;
+  artifact: InsightArtifact;
   onPin: () => void;
   onDelete: () => void;
   onMoveBack: () => void;

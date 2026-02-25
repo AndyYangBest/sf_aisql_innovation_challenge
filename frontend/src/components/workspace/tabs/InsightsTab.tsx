@@ -2,6 +2,7 @@ import { Lightbulb, Pin, Trash2, MessageSquare, Clock, MoreHorizontal, BarChart3
 import { useTableStore } from "@/store/tableStore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { InsightArtifact } from "@/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,7 +18,7 @@ const InsightsTab = ({ tableId }: InsightsTabProps) => {
   const { getArtifactsByTable, deleteArtifact, toggleArtifactPin, setInsightDisplayInCharts } =
     useTableStore();
   const artifacts = getArtifactsByTable(tableId);
-  const insightArtifacts = artifacts.filter((a) => a.type === "insight");
+  const insightArtifacts = artifacts.filter((a): a is InsightArtifact => a.type === "insight");
   const visibleInsights = insightArtifacts.filter(
     (artifact) => !artifact.content?.displayInCharts
   );
@@ -43,7 +44,7 @@ const InsightsTab = ({ tableId }: InsightsTabProps) => {
           <div className="text-center">
             <Lightbulb className="h-12 w-12 mx-auto mb-3 opacity-50" />
             <p className="mb-2">No insights here yet</p>
-            <p className="text-sm">Moved cards now appear in the Charts tab</p>
+            <p className="text-sm">Moved cards now appear in the Insight Canvas</p>
           </div>
         </div>
       ) : (
@@ -90,7 +91,7 @@ const InsightsTab = ({ tableId }: InsightsTabProps) => {
 };
 
 interface InsightCardProps {
-  artifact: any;
+  artifact: InsightArtifact;
   onPin: () => void;
   onDelete: () => void;
   onMoveToCharts: () => void;
@@ -104,7 +105,7 @@ const InsightCard = ({ artifact, onPin, onDelete, onMoveToCharts, formatDate }: 
     const cleaned = stripBullet(text).trim();
     if (!cleaned) return true;
     if (/^\{/.test(cleaned) || /^\[/.test(cleaned)) return true;
-    if (/\"insights\"\s*:/.test(cleaned)) return true;
+    if (/"insights"\s*:/.test(cleaned)) return true;
     if (/^\]$/.test(cleaned) || /^\}$/.test(cleaned)) return true;
     return false;
   };
@@ -144,7 +145,7 @@ const InsightCard = ({ artifact, onPin, onDelete, onMoveToCharts, formatDate }: 
             </DropdownMenuItem>
             <DropdownMenuItem onClick={onMoveToCharts}>
               <BarChart3 className="h-4 w-4 mr-2" />
-              Move to Charts area
+              Move to Insight Canvas
             </DropdownMenuItem>
             <DropdownMenuItem>
               <MessageSquare className="h-4 w-4 mr-2" />

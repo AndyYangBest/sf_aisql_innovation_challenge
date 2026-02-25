@@ -4,3 +4,4 @@ from .table_asset import TableAsset
 from .column_metadata import ColumnMetadata
 from .table_asset_metadata import TableAssetMetadata
 from .agent_prompt import AgentPrompt
+from .report_layout_event import ReportLayoutEvent

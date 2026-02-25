@@ -25,7 +25,7 @@ const allTabs: { id: WorkspaceTab; label: string; icon: React.ElementType; color
   { id: "data", label: "Data", icon: Table, color: "text-[hsl(var(--viz-cyan))]" },
   { id: "profile", label: "Profile", icon: Columns, color: "text-[hsl(var(--viz-green))]" },
   { id: "columnmap", label: "Column Map", icon: Network, color: "text-[hsl(var(--viz-purple))]" },
-  { id: "charts", label: "Charts", icon: BarChart3, color: "text-[hsl(var(--viz-orange))]" },
+  { id: "charts", label: "Insight Canvas", icon: BarChart3, color: "text-[hsl(var(--viz-orange))]" },
   { id: "insights", label: "Insights", icon: Lightbulb, color: "text-[hsl(var(--viz-yellow))]" },
   { id: "notes", label: "Notes", icon: FileText, color: "text-[hsl(var(--viz-pink))]" },
   { id: "lineage", label: "Lineage", icon: GitBranch, color: "text-muted-foreground" },

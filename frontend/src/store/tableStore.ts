@@ -4,11 +4,23 @@ import { columnMetadataApi, ColumnMetadataRecord } from '@/api/columnMetadata';
 import { tablesApi } from '@/api/tables';
 import { TableAsset, TableResult, Artifact, ChangelogEntry } from '@/types';
 
+type ReportLayoutItem = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  kind?: "chart" | "insight";
+  artifactId?: string;
+};
+
+type ReportLayoutMap = Record<string, ReportLayoutItem>;
+
 type ReportOverrides = {
   notes?: string;
   manual_artifacts?: Artifact[];
   pinned_artifact_ids?: string[];
   hidden_artifact_ids?: string[];
+  layout?: ReportLayoutMap;
 };
 
 type ReportStatus = {
@@ -32,6 +44,76 @@ const mergeArtifactsById = (artifacts: Artifact[]): Artifact[] => {
     byId.set(artifact.id, artifact);
   });
   return Array.from(byId.values());
+};
+
+const normalizeReportLayout = (rawLayout: unknown): ReportLayoutMap => {
+  if (!rawLayout || typeof rawLayout !== "object") {
+    return {};
+  }
+
+  const normalized: ReportLayoutMap = {};
+  Object.entries(rawLayout).forEach(([cardId, rawItem]) => {
+    if (typeof cardId !== "string" || !rawItem || typeof rawItem !== "object") {
+      return;
+    }
+
+    const item = rawItem as Record<string, unknown>;
+    const x = Number.parseInt(String(item.x), 10);
+    const y = Number.parseInt(String(item.y), 10);
+    const w = Number.parseInt(String(item.w), 10);
+    const h = Number.parseInt(String(item.h), 10);
+    if ([x, y, w, h].some((value) => Number.isNaN(value))) {
+      return;
+    }
+
+    const kind = item.kind === "chart" || item.kind === "insight" ? item.kind : undefined;
+    const artifactId =
+      typeof item.artifactId === "string"
+        ? item.artifactId
+        : typeof item.artifact_id === "string"
+          ? item.artifact_id
+          : undefined;
+
+    normalized[cardId] = {
+      x: Math.max(0, x),
+      y: Math.max(0, y),
+      w: Math.max(1, w),
+      h: Math.max(1, h),
+      ...(kind ? { kind } : {}),
+      ...(artifactId ? { artifactId } : {}),
+    };
+  });
+
+  return normalized;
+};
+
+const reportLayoutsEqual = (
+  left: ReportLayoutMap | undefined,
+  right: ReportLayoutMap | undefined,
+): boolean => {
+  const leftLayout = left || {};
+  const rightLayout = right || {};
+  const leftKeys = Object.keys(leftLayout);
+  const rightKeys = Object.keys(rightLayout);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  return leftKeys.every((key) => {
+    const leftItem = leftLayout[key];
+    const rightItem = rightLayout[key];
+    if (!leftItem || !rightItem) {
+      return false;
+    }
+    return (
+      leftItem.x === rightItem.x &&
+      leftItem.y === rightItem.y &&
+      leftItem.w === rightItem.w &&
+      leftItem.h === rightItem.h &&
+      (leftItem.kind || "") === (rightItem.kind || "") &&
+      (leftItem.artifactId || "") === (rightItem.artifactId || "")
+    );
+  });
 };
 
 const buildReportArtifacts = (
@@ -58,23 +140,30 @@ const buildReportArtifacts = (
     }));
 };
 
-const extractReportOverrides = (rawOverrides: any): ReportOverrides => {
+const extractReportOverrides = (rawOverrides: unknown): ReportOverrides => {
   if (!rawOverrides || typeof rawOverrides !== "object") {
     return {};
   }
-  const report = rawOverrides.report;
+  const report = (rawOverrides as Record<string, unknown>).report;
   if (!report || typeof report !== "object") {
     return {};
   }
+  const reportRecord = report as Record<string, unknown>;
   return {
-    notes: typeof report.notes === "string" ? report.notes : undefined,
-    manual_artifacts: Array.isArray(report.manual_artifacts) ? report.manual_artifacts : undefined,
-    pinned_artifact_ids: Array.isArray(report.pinned_artifact_ids)
-      ? report.pinned_artifact_ids
+    notes: typeof reportRecord.notes === "string" ? reportRecord.notes : undefined,
+    manual_artifacts: Array.isArray(reportRecord.manual_artifacts)
+      ? (reportRecord.manual_artifacts as Artifact[])
       : undefined,
-    hidden_artifact_ids: Array.isArray(report.hidden_artifact_ids)
-      ? report.hidden_artifact_ids
+    pinned_artifact_ids: Array.isArray(reportRecord.pinned_artifact_ids)
+      ? (reportRecord.pinned_artifact_ids as string[])
       : undefined,
+    hidden_artifact_ids: Array.isArray(reportRecord.hidden_artifact_ids)
+      ? (reportRecord.hidden_artifact_ids as string[])
+      : undefined,
+    layout: (() => {
+      const layout = normalizeReportLayout(reportRecord.layout);
+      return Object.keys(layout).length > 0 ? layout : undefined;
+    })(),
   };
 };
 
@@ -100,6 +189,7 @@ interface TableStore {
   deleteArtifact: (id: string) => void;
   toggleArtifactPin: (id: string) => void;
   setInsightDisplayInCharts: (id: string, displayInCharts: boolean) => void;
+  updateReportLayout: (tableId: string, layout: ReportLayoutMap) => void;
   loadReport: (tableId: string) => Promise<void>;
   updateReportNotes: (tableId: string, notes: string) => Promise<void>;
   setSelectedColumn: (column: string | null) => void;
@@ -443,6 +533,28 @@ export const useTableStore = create<TableStore>()(
           });
         },
 
+        updateReportLayout: (tableId, rawLayout) => {
+          const currentOverrides = get().reportOverrides[tableId] || {};
+          const nextLayout = normalizeReportLayout(rawLayout);
+
+          if (reportLayoutsEqual(currentOverrides.layout, nextLayout)) {
+            return;
+          }
+
+          const nextOverrides: ReportOverrides = {
+            ...currentOverrides,
+            layout: nextLayout,
+          };
+
+          set((state) => ({
+            reportOverrides: { ...state.reportOverrides, [tableId]: nextOverrides },
+          }));
+
+          void persistReportOverrides(tableId, nextOverrides).catch((error) => {
+            console.error("Failed to persist report layout", error);
+          });
+        },
+
         loadReport: async (tableId: string) => {
           const tableAssetId = Number.parseInt(tableId, 10);
           if (Number.isNaN(tableAssetId)) {
@@ -484,8 +596,9 @@ export const useTableStore = create<TableStore>()(
             if (!plan || typeof plan !== "object") {
               return count;
             }
-            const approved = (plan as Record<string, any>).approved;
-            const status = (plan as Record<string, any>).approval_status;
+            const planRecord = plan as Record<string, unknown>;
+            const approved = Boolean(planRecord.approved);
+            const status = planRecord.approval_status;
             return approved || status === "approved" ? count + 1 : count;
           }, 0);
 
@@ -563,21 +676,22 @@ export const useTableStore = create<TableStore>()(
     {
       name: "table-workspace-storage",
       version: 4,
-      migrate: (state: any, version: number) => {
+      migrate: (state: unknown, version: number) => {
+        let nextState = (state || {}) as Record<string, unknown>;
         if (version < 3) {
-          state = {
-            ...state,
+          nextState = {
+            ...nextState,
             tableResults: {},
             reportStatus: {},
           };
         }
         if (version < 4) {
           return {
-            ...state,
+            ...nextState,
             approvedPlansByTable: {},
           };
         }
-        return state;
+        return nextState;
       },
     }
   )
